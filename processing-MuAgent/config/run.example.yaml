@@ -1,0 +1,26 @@
+# Example run configuration for processing-MuAgent
+# Fill in paths and re-save as run.yaml (or pass via --config).
+
+# Where per-run state + artifacts will be written. REQUIRED.
+run_dir: /Users/yunning/Desktop/MuGene-agents/example/output/run_example
+
+# Inputs — at least one is required. Both required for `paired` / `separate`
+# branches; supply only one for `rna_only` or `atac_only`.
+rna_path: /Users/yunning/Desktop/MuGene-agents/example/data/GSE268104_multiomeC57A_filtered_feature_bc_matrix_1of10.h5
+atac_fragments_path: /Users/yunning/Desktop/MuGene-agents/example/data/GSE268104_multiomeC57A_atac_fragments_1of10.tsv.gz
+
+# Genome assembly (REQUIRED; no default)
+genome_assembly: mm10
+
+# Study goal — guides the S3 doublet-removal policy recommendation.
+# One of: clustering_inference | rare_populations | <absent>
+study_goal: clustering_inference
+
+# Optional metadata file (CSV or TSV). If absent, minimal reconstruction is used.
+# metadata_path: /path/to/metadata.csv
+
+# Optional Biological Context Report path. Defaults to <run_dir>/biological_context.md.
+# biological_context_path: /path/to/biological_context.md
+
+# Seed for reproducibility
+seed: 42

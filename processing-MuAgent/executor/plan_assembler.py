@@ -1,0 +1,181 @@
+"""P2 preprocessing plan assembler.
+
+Pulls approved P1 context + S0 validation and produces preprocessing_plan.json
+with {value, source, rationale, confidence} per parameter.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from . import hashing as _h
+
+
+# Per-branch stage set. Keys are stage IDs; values are the stages that should
+# appear under `plan["stages"]` for that branch. See also: workflow_branch ∈
+# {paired, separate, rna_only, atac_only}.
+_STAGES_BY_BRANCH = {
+    "paired":    {"s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
+                   "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"},
+    "separate":  {"s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
+                   "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"},
+    "rna_only":  {"s1_rna_qc", "s3_doublets", "s4_rna_norm",
+                   "s6_dimred", "s7_clustering", "s8_umap"},
+    "atac_only": {"s2_atac_qc", "s3_doublets", "s5_atac_lsi",
+                   "s6_dimred", "s7_clustering", "s8_umap"},
+}
+
+
+def _stages_for_branch(branch: str) -> set[str]:
+    """Return the stage IDs that should appear in `plan['stages']` for `branch`."""
+    try:
+        return _STAGES_BY_BRANCH[branch]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown workflow_branch={branch!r}; expected one of {sorted(_STAGES_BY_BRANCH)}."
+        ) from exc
+
+
+def assemble_plan(run_dir: Path | str, *, workflow_branch: str, sample_type: str = "unknown",
+                  study_goal: str | None = None) -> dict[str, Any]:
+    run_dir = Path(run_dir)
+
+    def p(value, source, rationale, confidence):
+        return {"value": value, "source": source, "rationale": rationale, "confidence": confidence}
+
+    # Sample-type-aware ceilings for RNA QC
+    if sample_type == "nuclei":
+        pct_mt_ceil = 10.0
+        pct_mt_rat = "Nuclei sample: cytoplasmic mRNA largely absent, mito content expected low."
+    else:
+        pct_mt_ceil = 20.0
+        pct_mt_rat = "Whole-cell / unknown sample: standard ceiling."
+
+    stages: dict[str, Any] = {
+        "s1_rna_qc": {
+            "parameters": {
+                "k_mad": p(5.0, "default", "Project convention for symmetric MAD on log1p counts.", "high"),
+                "pct_mt_k": p(3.0, "default", "MAD multiplier for mito upper bound.", "high"),
+                "pct_mt_ceiling": p(pct_mt_ceil, "inferred", pct_mt_rat, "medium"),
+                "pct_mt_floor": p(5.0, "recommended", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),
+                "min_cells_per_gene": p(3, "default", "scanpy convention.", "high"),
+                "min_counts_floor": p(500, "recommended", "Guard against empty droplets dragging MAD down.", "medium"),
+            }
+        },
+        "s2_atac_qc": {
+            "parameters": {
+                "tss_enrichment_min": p(2.0, "recommended", "ENCODE tissue-acceptable minimum.", "high"),
+                "n_fragments_k_mad": p(5.0, "default", "Symmetric MAD on log fragments per cell.", "high"),
+                "n_fragments_floor": p(500, "recommended", "Minimum fragments for a real cell.", "medium"),
+            }
+        },
+        "s3_doublets": {
+            "parameters": {
+                "scrublet_expected_rate": p(0.06, "default", "10x loading-concentration default; sensitive to observed cell count.", "medium"),
+                "removal_policy_recommendation": p(
+                    "union" if (study_goal or "").lower() != "rare_populations" else "intersection",
+                    "recommended",
+                    "Based on study_goal; user must confirm at S3 checkpoint.",
+                    "high",
+                ),
+                "study_goal": p(study_goal or "clustering_inference", "user" if study_goal else "default",
+                                 "From run.yaml or fallback.", "high" if study_goal else "medium"),
+            }
+        },
+        "s4_rna_norm": {
+            "parameters": {
+                "target_sum": p(1e4, "default", "scanpy convention.", "high"),
+                "hvg_flavor": p("seurat_v3", "default", "scanpy-native; operates on raw counts layer.", "high"),
+                "hvg_n_top_genes": p(2000, "default", "Cap; actual count min(2000, 0.1 * n_genes_after_qc).", "high"),
+            }
+        },
+        "s5_atac_lsi": {
+            "parameters": {
+                "n_components": p(50, "default", "Standard LSI dimensionality.", "high"),
+                "drop_first": p(True, "default", "First LSI component is depth-correlated.", "high"),
+                "max_top_peaks": p(50000, "recommended", "Cap on feature selection.", "medium"),
+            }
+        },
+        "s6_dimred": {
+            "parameters": {
+                "rna_n_pcs": p(30, "default", "Conservative default; elbow-based refinement applied at execute time.", "medium"),
+                "n_neighbors": p(15, "default", "scanpy convention.", "high"),
+            }
+        },
+        "s7_clustering": {
+            "parameters": {
+                # Backwards-compat single grid (used if per-modality grids are absent).
+                "leiden_resolution_grid": p([0.4, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2], "default",
+                                             "Project standard grid (legacy; superseded by per-modality grids).", "high"),
+                # Per-modality grids: ATAC is shifted to a lower range per the atac_tilt=lower policy.
+                "leiden_resolution_grid_rna":  p([0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2], "default",
+                                                  "RNA grid; tolerates finer granularity (0.4 dropped; 1.1 added to close the 1.0→1.2 gap).", "high"),
+                "leiden_resolution_grid_atac": p([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0], "default",
+                                                  "ATAC grid; shifted lower to match atac_tilt=lower and avoid over-fragmentation.", "high"),
+                "seeds": p([0, 1, 2], "default", "Three seeds for stability ARI.", "high"),
+                "stability_floor": p(0.85, "default", "Minimum seed-pairwise ARI for stable region.", "medium"),
+                "rna_tilt": p("higher", "default",
+                               "RNA tolerates finer granularity per project policy.", "high"),
+                "atac_tilt": p("lower", "default",
+                               "ATAC prefers broader clusters to avoid over-fragmentation.", "high"),
+            }
+        },
+        "s8_umap": {
+            "parameters": {
+                "min_dist": p(0.5, "default", "scanpy UMAP default.", "high"),
+                "spread": p(1.0, "default", "scanpy UMAP default.", "high"),
+                "random_state": p(42, "user", "Run seed from config.", "high"),
+            }
+        },
+    }
+
+    # Filter stages by branch — single-modality branches drop the irrelevant
+    # per-modality stages (e.g. rna_only drops s2_atac_qc + s5_atac_lsi).
+    keep = _stages_for_branch(workflow_branch)
+    stages = {k: v for k, v in stages.items() if k in keep}
+
+    plan: dict[str, Any] = {
+        "workflow_branch": workflow_branch,
+        "context_ref": "artifacts/p1_context/context_extraction.json",
+        "ingest_ref": "artifacts/s0_ingest/validation_report.json",
+        "stages": stages,
+        "assumptions": [
+            f"sample_type={sample_type}",
+            f"workflow_branch={workflow_branch}",
+        ],
+        "warnings": [],
+    }
+    return plan
+
+
+def write_plan(run_dir: Path | str, plan: dict[str, Any]) -> tuple[Path, str]:
+    from .run_paths import RunPaths
+    out = RunPaths(Path(run_dir)).artifact("p2_plan", "preprocessing_plan.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(plan, indent=2, sort_keys=True, default=str)
+    out.write_text(payload)
+    phash = _h.sha256_bytes(payload.encode())
+    return out, phash
+
+
+def render_plan_summary(plan: dict[str, Any]) -> str:
+    lines: list[str] = [
+        "# Preprocessing Plan Summary",
+        "",
+        f"**Workflow branch:** `{plan['workflow_branch']}`",
+        "",
+    ]
+    for stage, body in plan["stages"].items():
+        lines.append(f"## {stage}")
+        for pname, pv in body["parameters"].items():
+            lines.append(
+                f"- **{pname}**: `{pv['value']}` — {pv['source']}/{pv['confidence']}"
+            )
+            lines.append(f"  - {pv['rationale']}")
+        lines.append("")
+    if plan.get("warnings"):
+        lines.append("## Warnings")
+        for w in plan["warnings"]:
+            lines.append(f"- {w}")
+    return "\n".join(lines) + "\n"

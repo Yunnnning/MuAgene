@@ -1,0 +1,31 @@
+# Local example data / demo runs (root `example/` folder)
+example/
+
+# Snakemake working directory
+.snakemake/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+.pytest_cache/
+*.egg
+
+# Outputs and caches (common evaluation / pipeline artifacts)
+cache/
+output/
+results/
+*.log
+*.tmp
+
+# OS / local tooling
+.DS_Store
+.claude/
+
+# Per-run output dirs when created at repo root
+run_*/

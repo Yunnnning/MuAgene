@@ -1,0 +1,154 @@
+"""S2 — ATAC QC via SnapATAC2.
+
+Imports fragments into a SnapATAC2-backed AnnData and applies two per-cell filters:
+  - n_fragments (MAD bounds on log-scale, after an absolute floor)
+  - TSS enrichment minimum
+
+Note: tile-matrix construction is NOT part of S2. It happens later in S5 alongside
+the LSI/spectral step. S2 only computes QC metrics and subsets cells.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from ..methods import mad_thresholds as _mad
+from .. import provenance as _prov
+from ..log import log_event
+
+
+def _col_to_numpy(adata, key: str) -> np.ndarray:
+    """SnapATAC2 obs is polars; convert one column to a numpy float array, or empty array."""
+    try:
+        col = adata.obs[key]
+    except (KeyError, Exception):
+        return np.array([], dtype=float)
+    # polars Series has .to_numpy(); fall back to np.asarray
+    try:
+        arr = col.to_numpy()
+    except AttributeError:
+        arr = np.asarray(col)
+    return np.asarray(arr, dtype=float)
+
+
+def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
+    import snapatac2 as snap
+    run_dir = Path(run_dir)
+    art = run_dir / "internal" / "artifacts" / "s2_atac_qc"
+    art.mkdir(parents=True, exist_ok=True)
+    params_path = run_dir / "internal" / "parameters.yaml"
+
+    atac_meta = json.loads((run_dir / "internal" / "artifacts" / "s0_ingest" / "atac_ingest.json").read_text())
+    fragments_path = atac_meta["fragments_path"]
+
+    # Strict: require an explicit, SnapATAC2-supported genome. 
+    genome = _prov.get_value(params_path, "ingest.genome_assembly", None)
+    if not genome:
+        raise ValueError(
+            "S2 ATAC QC: `ingest.genome_assembly` is not set. Supply it via run.yaml "
+            "(genome_assembly: mm10 | GRCh38 | ...) — S2 refuses to guess."
+        )
+    genome_ref = getattr(snap.genome, genome, None)
+    if genome_ref is None:
+        available = sorted(n for n in dir(snap.genome) if not n.startswith("_"))
+        raise ValueError(
+            f"S2 ATAC QC: genome {genome!r} is not supported by SnapATAC2. "
+            f"Available assemblies: {available}."
+        )
+
+    # Import fragments into a fresh SnapATAC2-backed h5ad
+    h5_out = art / "atac_snap.h5ad"
+    adata = snap.pp.import_fragments(
+        fragments_path,
+        chrom_sizes=genome_ref,
+        file=str(h5_out),
+        sorted_by_barcode=False,
+    )
+
+    # TSS enrichment (per-cell)
+    try:
+        snap.metrics.tsse(adata, genome_ref)
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "tsse_failed", "error": str(e)})
+
+    n_frag_values = _col_to_numpy(adata, "n_fragment")
+    tss_values = _col_to_numpy(adata, "tsse")
+
+    params = plan["stages"]["s2_atac_qc"]["parameters"]
+    k_mad = params["n_fragments_k_mad"]["value"]
+    n_frag_floor = params["n_fragments_floor"]["value"]
+    tss_min = params["tss_enrichment_min"]["value"]
+
+    if n_frag_values.size:
+        keep_floor = n_frag_values >= n_frag_floor
+        if keep_floor.any():
+            f_lo, f_hi = _mad.log_mad_bounds(n_frag_values[keep_floor], k=k_mad)
+        else:
+            f_lo, f_hi = float(n_frag_floor), float(n_frag_values.max() if n_frag_values.size else 1e6)
+    else:
+        f_lo, f_hi = float(n_frag_floor), 1e12
+
+    _prov.set_param(params_path, "s2_atac_qc.n_fragments_min", float(f_lo),
+                    source="derived", confidence="high",
+                    rationale="MAD lower bound on log1p(n_fragments) after applying floor",
+                    method={"name": "mad_thresholds.log_mad_bounds",
+                            "code_ref": "executor/methods/mad_thresholds.py"})
+    _prov.set_param(params_path, "s2_atac_qc.n_fragments_max", float(f_hi),
+                    source="derived", confidence="high",
+                    rationale="MAD upper bound on log1p(n_fragments)",
+                    method={"name": "mad_thresholds.log_mad_bounds",
+                            "code_ref": "executor/methods/mad_thresholds.py"})
+    _prov.set_param(params_path, "s2_atac_qc.tss_enrichment_min", float(tss_min),
+                    source="recommended", confidence="high",
+                    rationale="ENCODE tissue-acceptable minimum")
+
+    keep = np.ones(adata.n_obs, dtype=bool)
+    if n_frag_values.size:
+        keep &= (n_frag_values >= f_lo) & (n_frag_values <= f_hi)
+    if tss_values.size:
+        keep &= tss_values >= tss_min
+
+    keep_idx = np.nonzero(keep)[0].tolist()
+    n_pre = int(adata.n_obs)
+    filtered_path = art / "atac_qc.h5ad"
+    # SnapATAC2 2.8: inplace defaults to True (returns None); pass inplace=False to get
+    # a new on-disk AnnData written to `out`.
+    adata_f = adata.subset(obs_indices=keep_idx, out=str(filtered_path), inplace=False)
+    if adata_f is None:
+        # Fallback: re-open the written file
+        import snapatac2 as snap
+        adata_f = snap.read(str(filtered_path))
+    n_post = int(adata_f.n_obs)
+
+    if n_post == 0:
+        raise ValueError(
+            f"S2 ATAC QC removed all cells (n_pre={n_pre}, n_post=0). Thresholds used: "
+            f"n_fragments in [{f_lo:.1f}, {f_hi:.1f}], tss_enrichment >= {tss_min}. "
+            "Revise one or more thresholds via `executor revise s2_atac_qc ...` "
+            "before continuing; downstream stages cannot run on an empty ATAC cell set."
+        )
+
+    # Persist summary
+    (art / "qc_summary.json").write_text(json.dumps({
+        "n_cells_pre": n_pre,
+        "n_cells_post": n_post,
+        "thresholds": {"n_fragments": [float(f_lo), float(f_hi)], "tss_min": float(tss_min)},
+    }, indent=2))
+
+    try:
+        adata.close()
+    except Exception:
+        pass
+    try:
+        adata_f.close()
+    except Exception:
+        pass
+
+    log_event(run_dir, {"stage": "s2_atac_qc", "event": "done",
+                         "n_cells_pre": n_pre, "n_cells_post": n_post,
+                         "thresholds": {"n_fragments": [float(f_lo), float(f_hi)],
+                                          "tss_min": float(tss_min)}})
+    return {"n_cells_pre": n_pre, "n_cells_post": n_post}

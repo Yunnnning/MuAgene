@@ -1,0 +1,55 @@
+"""Top-level Snakefile for processing-MuAgent.
+
+Rule DAG: p1_context -> p2_plan -> plan_review -> s0_ingest -> s1_rna_qc ->
+          s2_atac_qc -> s3_doublets -> s4_rna_norm -> s5_atac_lsi ->
+          s6_dimred -> s7_clustering -> s8_umap -> manifest
+
+Each stage has a _propose / _execute pair (see rules/*.smk); the execute rule
+depends on checkpoints/<stage>.approved written by `processing-muagent approve <stage>`.
+
+Direct-write layout:
+    INTERNAL     = <run_dir>/internal               — artifacts, proposals, checkpoints,
+                                                      parameters.yaml, state.yaml, log.jsonl
+    DELIVERABLES = <run_dir>/deliverables           — user-facing, split by phase:
+      PRE_RUN    = deliverables/pre_run             — config + approval-support materials
+                                                      (run.yaml, biological_context.md,
+                                                       context_summary.md, plan_summary.md,
+                                                       plan_review.md)
+      POST_RUN   = deliverables/post_run            — in-run + final results
+                                                      (figures/, processed/, notebooks/,
+                                                       summary/{resolution,qc,manifest,layout})
+Rule outputs land directly at their canonical location; no mirroring.
+"""
+from pathlib import Path
+
+RUN_DIR = Path(config["run_dir"])
+INTERNAL = RUN_DIR / "internal"
+DELIVERABLES = RUN_DIR / "deliverables"
+PRE_RUN = DELIVERABLES / "pre_run"
+POST_RUN = DELIVERABLES / "post_run"
+
+STAGES = [
+    "p1_context", "p2_plan", "plan_review",
+    "s0_ingest", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
+    "s4_rna_norm", "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap",
+]
+
+
+include: "rules/p1_context.smk"
+include: "rules/p2_plan.smk"
+include: "rules/plan_review.smk"
+include: "rules/s0_ingest.smk"
+include: "rules/s1_rna_qc.smk"
+include: "rules/s2_atac_qc.smk"
+include: "rules/s3_doublets.smk"
+include: "rules/s4_rna_norm.smk"
+include: "rules/s5_atac_lsi.smk"
+include: "rules/s6_dimred.smk"
+include: "rules/s7_clustering.smk"
+include: "rules/s8_umap.smk"
+include: "rules/manifest.smk"
+
+
+rule all:
+    input:
+        str(POST_RUN / "summary" / "run_manifest.json"),

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Editable installs
+pip-wheel-metadata/
+
+# macOS
+.DS_Store
+
+# Snakemake
+.snakemake/
+
+# Per-run output directories (when placed inside the package tree)
+run_*/
