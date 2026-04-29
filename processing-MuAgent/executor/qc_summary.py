@@ -90,6 +90,7 @@ def _stage_counts(run_dir: Path) -> dict[str, Any]:
     counts: dict[str, Any] = {
         "rna_raw": None, "atac_raw_barcodes": None,
         "rna_ingest": None,
+        "rna_after_ambient": None,
         "atac_after_snap_import": None,
         "rna_qc_post": None, "atac_qc_post": None,
         "rna_post_doublet": None, "atac_post_doublet": None,
@@ -102,6 +103,18 @@ def _stage_counts(run_dir: Path) -> dict[str, Any]:
         vr = json.loads(vr_path.read_text())
         counts["rna_raw"] = int(vr.get("rna_n_cells", 0))
         counts["atac_raw_barcodes"] = int(vr.get("atac_n_unique_barcodes", 0))
+
+    # S1a ambient correction output
+    rna_ambient = A / "s1a_ambient" / "rna_decontaminated.h5ad"
+    if rna_ambient.exists():
+        try:
+            import anndata as ad
+            a = ad.read_h5ad(rna_ambient, backed="r")
+            counts["rna_after_ambient"] = int(a.n_obs)
+            try: a.file.close()
+            except Exception: pass
+        except Exception:
+            pass
 
     # S0 ingest paired RNA
     rna_ingest = A / "s0_ingest" / "rna_ingest.h5ad"
@@ -198,16 +211,21 @@ def _flow_section(counts: dict[str, Any]) -> str:
         ["2. after S0 ingest (paired intersection)",
          fmt(counts["rna_ingest"]), fmt(atac_raw),
          "RNA: filtered matrix cells intersected with ATAC barcodes"],
-        ["3. after SnapATAC2 `import_fragments`",
-         fmt(counts["rna_ingest"]), fmt(atac_after_import),
+        ["3. after S1a ambient correction",
+         fmt(counts["rna_after_ambient"]), fmt(atac_raw),
+         "RNA: DecontX/SoupX correction (cells preserved; per-cell counts adjusted)"],
+        ["4. after SnapATAC2 `import_fragments`",
+         fmt(counts["rna_after_ambient"] if counts["rna_after_ambient"] is not None else counts["rna_ingest"]),
+         fmt(atac_after_import),
          f"ATAC: SnapATAC2 `min_num_fragments` default drops {fmt(snap_drop)} cells"
          if snap_drop else "ATAC: SnapATAC2 import"],
-        ["4. after S1 RNA QC  /  S2 ATAC QC",
-         fmt(counts["rna_qc_post"]), fmt(counts["atac_qc_post"]), "explicit QC filters"],
-        ["5. after S3 doublet removal",
+        ["5. after S1 RNA QC  /  S2 ATAC QC",
+         fmt(counts["rna_qc_post"]), fmt(counts["atac_qc_post"]),
+         "explicit QC filters (RNA: MAD on counts/genes/mt + ribo ceiling; ATAC: TSS + n_frag + nucleosome_signal)"],
+        ["6. after S3 doublet removal",
          fmt(counts["rna_post_doublet"]), fmt(counts["atac_post_doublet"]),
          "union / intersection policy, applied per modality"],
-        ["6. after S8 paired-intersection (final)",
+        ["7. after S8 paired-intersection (final)",
          fmt(counts["rna_final"]), fmt(counts["atac_final"]),
          f"RNA lost {fmt(rna_inter)}, ATAC lost {fmt(atac_inter)} at pairing"
          if rna_inter is not None else "paired MuData intersection"],
@@ -217,6 +235,67 @@ def _flow_section(counts: dict[str, Any]) -> str:
         "Each row's RNA and ATAC columns describe the cell count _entering the "
         "next stage_ (equivalently, the count _after_ the stage named on that row).\n\n"
         f"{_md_table(['stage', 'RNA', 'ATAC', 'note'], rows)}\n"
+    )
+
+
+def _ambient_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) -> str:
+    from .run_paths import RunPaths
+    s1a = RunPaths(run_dir).stage_dir("s1a_ambient")
+    summary_p = s1a / "summary.json"
+    contam_p = s1a / "contamination.parquet"
+
+    method = _param(params, "s1a_ambient.method")
+    if method in (None, "none", "skipped_empty", "skipped_no_r"):
+        note = {
+            None: "_(stage did not run; legacy run or RNA absent)_",
+            "none": "_user-disabled (method=none); no ambient correction applied._",
+            "skipped_empty": "_RNA AnnData empty (atac_only branch); pass-through._",
+            "skipped_no_r": ("_R / DecontX / SoupX not available at runtime; "
+                              "stage degraded to pass-through. Install R + "
+                              "BiocManager::install(c('celda','SoupX')) to enable._"),
+        }[method]
+        return "## Ambient RNA correction (S1a)\n\n" + note + "\n"
+
+    summary: dict[str, Any] = {}
+    if summary_p.exists():
+        try:
+            summary = json.loads(summary_p.read_text())
+        except Exception:
+            summary = {}
+
+    rows = [
+        ["method", method],
+        ["median contamination", _param(params, "s1a_ambient.median_contamination")],
+        ["high-contamination cells (rho>0.20)",
+         _param(params, "s1a_ambient.n_high_contamination_cells")],
+        ["max-contamination cap",
+         summary.get("max_contam_cap", _param(params, "s1a_ambient.max_contamination"))],
+        ["pre-correction total counts (sum)", summary.get("total_counts_pre")],
+        ["post-correction total counts (sum)", summary.get("total_counts_post")],
+    ]
+
+    contam_stats = ""
+    if contam_p.exists():
+        try:
+            df = pd.read_parquet(contam_p)
+            v = df["contamination"].to_numpy()
+            contam_stats = _md_table(
+                ["metric", "mean", "median", "min", "max"],
+                [_stats_row("contamination", v)],
+            )
+        except Exception:
+            pass
+
+    return (
+        "## Ambient RNA correction (S1a)\n"
+        "\n"
+        "Decontaminated counts overwrite `.X` and `.layers['counts']`; the "
+        "original counts are preserved in `.layers['counts_raw']`. Per-cell "
+        "rho is in `.obs['ambient_contamination']` and `contamination.parquet`.\n"
+        "\n"
+        f"{_md_table(['parameter', 'value'], rows)}\n"
+        "\n"
+        + (("### Per-cell contamination distribution\n\n" + contam_stats + "\n") if contam_stats else "")
     )
 
 
@@ -242,11 +321,14 @@ def _rna_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) 
             ["n_genes_min",      _param(params, "s1_rna_qc.n_genes_min")],
             ["n_genes_max",      _param(params, "s1_rna_qc.n_genes_max")],
             ["pct_counts_mt_max", _param(params, "s1_rna_qc.pct_counts_mt_max")],
+            ["pct_counts_ribo_max", _param(params, "s1_rna_qc.pct_counts_ribo_max")],
+            ["n_mt_genes_detected", _param(params, "s1_rna_qc.n_mt_genes_detected")],
+            ["n_ribo_genes_detected", _param(params, "s1_rna_qc.n_ribo_genes_detected")],
         ],
     )
 
     stat_rows: list[list[Any]] = []
-    for col in ("n_genes_by_counts", "total_counts", "pct_counts_mt"):
+    for col in ("n_genes_by_counts", "total_counts", "pct_counts_mt", "pct_counts_ribo"):
         if col in post_df.columns:
             stat_rows.append(_stats_row(col, post_df[col].to_numpy()))
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else ""
@@ -287,6 +369,7 @@ def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any])
             ["n_fragments_min",    _param(params, "s2_atac_qc.n_fragments_min")],
             ["n_fragments_max",    _param(params, "s2_atac_qc.n_fragments_max")],
             ["tss_enrichment_min", _param(params, "s2_atac_qc.tss_enrichment_min")],
+            ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max")],
         ],
     )
 
@@ -300,11 +383,10 @@ def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any])
             obs = adata.obs[:].to_pandas()
             try: adata.close()
             except Exception: pass
-            # Metrics actually computed in S2. Nucleosome signal is deliberately
-            # not reported — the pipeline no longer claims to filter on it.
             for src_col, label in [
                 ("n_fragment", "fragment_count"),
                 ("tsse", "tss_enrichment"),
+                ("nucleosome_signal", "nucleosome_signal"),
             ]:
                 if src_col in obs.columns:
                     stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
@@ -506,6 +588,7 @@ def build(run_dir: Path | str) -> str:
         "# QC Summary",
         "",
         _flow_section(counts),
+        _ambient_section(run_dir, params, counts),
         _rna_section(run_dir, params, counts),
         _atac_section(run_dir, params, counts),
         _doublet_section(run_dir, counts),

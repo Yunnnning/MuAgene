@@ -86,7 +86,9 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
     _apply_style()
     import matplotlib.pyplot as plt
     n = len(values_dict)
-    fig, axes = plt.subplots(1, n, figsize=QC_VIOLIN_SIZE)
+    # Scale figure width with the metric count so violins stay readable.
+    fig_w = max(QC_VIOLIN_SIZE[0], 3.0 * n)
+    fig, axes = plt.subplots(1, n, figsize=(fig_w, QC_VIOLIN_SIZE[1]))
     if n == 1:
         axes = [axes]
     for ax, (name, vals) in zip(axes, values_dict.items()):
@@ -104,4 +106,97 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
         ax.spines["right"].set_visible(False)
     fig.suptitle(title)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
+    return save_figure(fig, out_dir, stem)
+
+
+def plot_contamination_hist(contamination: np.ndarray, *, out_dir: Path | str,
+                              stem: str, title: str) -> list[Path]:
+    """Histogram of per-cell ambient-RNA contamination fractions in [0, 1]."""
+    _apply_style()
+    import matplotlib.pyplot as plt
+    v = np.asarray(contamination, dtype=float)
+    v = v[np.isfinite(v)]
+    fig, ax = plt.subplots(figsize=(7.0, 4.5))
+    if v.size == 0:
+        ax.set_title(title + " (no data)")
+        return save_figure(fig, out_dir, stem)
+    bins = np.linspace(0.0, max(0.5, float(np.max(v)) * 1.05), 41)
+    ax.hist(v, bins=bins, color="#3b82f6", alpha=0.85, edgecolor="white")
+    med = float(np.median(v))
+    p90 = float(np.quantile(v, 0.90))
+    ax.axvline(med, color="black", linestyle="--", linewidth=1.0, label=f"median={med:.2f}")
+    ax.axvline(p90, color="firebrick", linestyle=":", linewidth=1.0, label=f"p90={p90:.2f}")
+    ax.set_xlabel("contamination fraction (rho)")
+    ax.set_ylabel("cells")
+    ax.set_title(title)
+    ax.legend(fontsize=FONT_SIZE - 1, loc="upper right")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    return save_figure(fig, out_dir, stem)
+
+
+def plot_fragment_size_distribution(distr: np.ndarray, *, out_dir: Path | str,
+                                     stem: str, title: str) -> list[Path]:
+    """Plot a 1D fragment-size histogram (counts per fragment length).
+
+    `distr` is a 1D vector where `distr[i]` is the number of fragments of length
+    `i` (the SnapATAC2 `frag_size_distr` format; index 0 holds the over-max bucket).
+    A well-prepared ATAC library shows distinct peaks at ~150, ~300, ~450 bp.
+    """
+    _apply_style()
+    import matplotlib.pyplot as plt
+    d = np.asarray(distr, dtype=float).ravel()
+    fig, ax = plt.subplots(figsize=(8.0, 4.5))
+    if d.size == 0:
+        ax.set_title(title + " (no data)")
+        return save_figure(fig, out_dir, stem)
+    # Drop the over-max bucket (index 0) — its size is dataset-dependent and
+    # would dominate the y-axis on libraries with many large fragments.
+    body = d[1:]
+    x = np.arange(1, body.size + 1)
+    ax.fill_between(x, 0, body, alpha=0.55, color="#1f77b4", linewidth=0)
+    ax.plot(x, body, color="#1f4f8b", linewidth=1.0)
+    for vline, label in [(147, "nucleosome-free / mono"),
+                         (294, "mono / di"),
+                         (441, "di / tri")]:
+        if vline < body.size:
+            ax.axvline(vline, color="firebrick", linestyle=":", linewidth=0.9, alpha=0.6)
+            ax.text(vline, ax.get_ylim()[1] * 0.95, f" {label}",
+                    fontsize=FONT_SIZE - 3, color="firebrick", verticalalignment="top")
+    ax.set_xlabel("fragment length (bp)")
+    ax.set_ylabel("fragment count")
+    ax.set_xlim(left=0, right=min(1000, body.size))
+    ax.set_title(title)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    return save_figure(fig, out_dir, stem)
+
+
+def plot_counts_before_after(pre: np.ndarray, post: np.ndarray, *,
+                              out_dir: Path | str, stem: str, title: str) -> list[Path]:
+    """Scatter of per-cell total counts before vs after ambient correction."""
+    _apply_style()
+    import matplotlib.pyplot as plt
+    pre = np.asarray(pre, dtype=float)
+    post = np.asarray(post, dtype=float)
+    finite = np.isfinite(pre) & np.isfinite(post) & (pre > 0)
+    pre, post = pre[finite], post[finite]
+    fig, ax = plt.subplots(figsize=(6.0, 5.5))
+    if pre.size == 0:
+        ax.set_title(title + " (no data)")
+        return save_figure(fig, out_dir, stem)
+    ax.scatter(pre, post, s=6, alpha=0.4, color="#1f77b4", linewidths=0)
+    lim_max = float(max(pre.max(), post.max()))
+    ax.plot([0, lim_max], [0, lim_max], color="black", linewidth=0.8,
+            linestyle="--", label="y = x (no correction)")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(left=max(1.0, float(pre.min())))
+    ax.set_ylim(bottom=max(1.0, float(post[post > 0].min()) if (post > 0).any() else 1.0))
+    ax.set_xlabel("total counts (pre-correction)")
+    ax.set_ylabel("total counts (post-correction)")
+    ax.set_title(title)
+    ax.legend(fontsize=FONT_SIZE - 1, loc="upper left")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
     return save_figure(fig, out_dir, stem)

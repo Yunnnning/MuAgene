@@ -1,7 +1,7 @@
 rule s1_rna_qc_propose:
     input:
         plan              = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
-        rna               = str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
+        rna               = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
         plan_review_done  = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         plan_review_md    = str(PRE_RUN / "summary" / "plan_review.md"),
     output:

@@ -22,26 +22,106 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     params_path = run_dir / "internal" / "parameters.yaml"
 
     rna_path = Path(config["rna_path"]) if config.get("rna_path") else None
+    rna_raw_path = Path(config["rna_raw_path"]) if config.get("rna_raw_path") else None
     atac_frag_path = Path(config["atac_fragments_path"]) if config.get("atac_fragments_path") else None
-    if rna_path is None and atac_frag_path is None:
+    if rna_path is None and rna_raw_path is None and atac_frag_path is None:
         raise ValueError(
-            "S0: at least one of `rna_path` or `atac_fragments_path` must be set in run.yaml."
+            "S0: at least one of `rna_path`, `rna_raw_path`, or `atac_fragments_path` "
+            "must be set in run.yaml."
         )
 
     # --- RNA side ---------------------------------------------------------
-    rna = None
+    rna = None                 # cell-called / filtered matrix (used downstream)
+    rna_raw_full = None        # full barcode set (only set when a raw matrix is
+                               # supplied or detected) — required by SoupX.
     rna_fmt: str | None = None
+    rna_filtered_status: str | None = None  # "filtered" | "raw"
+    cell_calling_diag: dict[str, Any] | None = None
     single_file_multiome = False
-    if rna_path is not None:
-        rna_fmt = _io.detect_rna_format(rna_path)
+
+    # If only `rna_raw_path` is supplied (no filtered matrix), promote it to
+    # `rna_path` for downstream code: we'll cell-call internally.
+    rna_input_path = rna_path or rna_raw_path
+    if rna_input_path is not None:
+        rna_fmt = _io.detect_rna_format(rna_input_path)
+        rna_filtered_status = _io.detect_filtered_status(rna_input_path, fmt=rna_fmt)
+        # If user explicitly used `rna_raw_path` to point at a filtered file,
+        # honour the user's intent: treat as raw so cell calling runs.
+        # (Detection threshold may misclassify small / unusual matrices.)
+        if rna_path is None and rna_raw_path is not None:
+            rna_filtered_status = "raw"
         _prov.set_param(params_path, "ingest.rna_format", rna_fmt,
                         source="derived", confidence="high",
-                        rationale=f"Autodetected from {rna_path}",
+                        rationale=f"Autodetected from {rna_input_path}",
                         method={"name": "io.detect_rna_format",
                                 "code_ref": "executor/io.py::detect_rna_format"})
-        rna = _io.load_rna(rna_path, fmt=rna_fmt)
+        _prov.set_param(params_path, "ingest.rna_filtered_status", rna_filtered_status,
+                        source="derived", confidence="high",
+                        rationale=("Detected via barcode count "
+                                    f"(threshold={_io.RAW_BARCODE_THRESHOLD})."),
+                        method={"name": "io.detect_filtered_status",
+                                "code_ref": "executor/io.py::detect_filtered_status"})
+
+        loaded = _io.load_rna(rna_input_path, fmt=rna_fmt)
         if rna_fmt == "10x_h5":
-            single_file_multiome = _io.detect_peaks_in_10x_h5(rna_path)
+            single_file_multiome = _io.detect_peaks_in_10x_h5(rna_input_path)
+
+        if rna_filtered_status == "raw":
+            # Cell-call from the raw matrix via barcode-rank knee.
+            rna_raw_full = loaded
+            rna, cell_calling_diag = _io.call_cells_from_raw(loaded)
+            _prov.set_param(params_path, "ingest.cell_calling_method",
+                            cell_calling_diag.get("method", "unknown"),
+                            source="derived", confidence="high",
+                            rationale=("Raw RNA matrix supplied; cells called via "
+                                        "barcode-rank knee on log-counts vs log-rank curve."),
+                            method={"name": "io.call_cells_from_raw",
+                                    "code_ref": "executor/io.py::call_cells_from_raw"})
+            _prov.set_param(params_path, "ingest.cell_calling_threshold",
+                            float(cell_calling_diag.get("threshold", 0.0)),
+                            source="derived", confidence="medium",
+                            rationale=("Total-count threshold derived from the "
+                                        "barcode-rank knee."),
+                            method={"name": "io.barcode_rank_knee",
+                                    "code_ref": "executor/io.py::barcode_rank_knee"})
+            _prov.set_param(params_path, "ingest.n_cells_called",
+                            int(cell_calling_diag.get("n_kept", rna.n_obs)),
+                            source="derived", confidence="high",
+                            rationale="Cells retained after barcode-rank knee call.",
+                            method={"name": "io.call_cells_from_raw",
+                                    "code_ref": "executor/io.py::call_cells_from_raw"})
+        else:
+            rna = loaded
+            # Optional companion raw matrix (filtered + raw both supplied):
+            # used downstream by SoupX for soup-profile estimation.
+            if rna_raw_path is not None:
+                raw_fmt = _io.detect_rna_format(rna_raw_path)
+                rna_raw_full = _io.load_rna(rna_raw_path, fmt=raw_fmt)
+                _prov.set_param(params_path, "ingest.rna_raw_format", raw_fmt,
+                                source="derived", confidence="high",
+                                rationale=f"Autodetected from {rna_raw_path}",
+                                method={"name": "io.detect_rna_format",
+                                        "code_ref": "executor/io.py::detect_rna_format"})
+
+        # Integer-counts guard. seurat_v3 HVG (S4) and Scrublet (S3) require
+        # raw integer counts. Refuse early if X is already normalized.
+        try:
+            x = rna.X
+            sample = x[:50] if hasattr(x, "shape") and x.shape[0] > 50 else x
+            arr = sample.toarray() if hasattr(sample, "toarray") else np.asarray(sample)
+            arr = arr.ravel()
+            arr = arr[np.isfinite(arr)]
+            if arr.size and not np.allclose(arr, np.round(arr), atol=1e-6):
+                raise ValueError(
+                    "S0: RNA matrix .X does not look like raw integer counts (sample "
+                    "contains non-integer values). seurat_v3 HVG and Scrublet require "
+                    "raw counts. If you supplied a normalized .h5ad, replace it with "
+                    "a raw-counts matrix or move the raw counts into .X."
+                )
+        except ValueError:
+            raise
+        except Exception:
+            pass
 
     # --- ATAC side --------------------------------------------------------
     frag_info: dict[str, Any] | None = None
@@ -139,6 +219,8 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("input_hashes", {})
     if rna_path is not None:
         state["input_hashes"][str(rna_path)] = _h.sha256_file(rna_path)
+    if rna_raw_path is not None:
+        state["input_hashes"][str(rna_raw_path)] = _h.sha256_file(rna_raw_path)
     if atac_frag_path is not None:
         state["input_hashes"][str(atac_frag_path)] = _h.sha256_file(atac_frag_path)
     with state_path.open("w") as f:
@@ -151,11 +233,17 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         "genome_assembly": genome_assembly,
         "metadata_source": meta_source,
         "single_file_multiome": single_file_multiome,
+        "rna_filtered_status": rna_filtered_status,
+        "has_raw_matrix": rna_raw_full is not None,
     }
     if rna is not None:
         report["rna_format"] = rna_fmt
         report["rna_n_cells"] = int(rna.n_obs)
         report["rna_n_genes"] = int(rna.n_vars)
+    if cell_calling_diag is not None:
+        report["cell_calling"] = cell_calling_diag
+    if rna_raw_full is not None:
+        report["rna_raw_n_barcodes"] = int(rna_raw_full.n_obs)
     if frag_info is not None:
         report["atac_fragment_peek"] = frag_info
         report["atac_n_unique_barcodes"] = len(atac_bc)
@@ -177,6 +265,11 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         import scipy.sparse as sp
         import anndata as _ad
         _ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(rna_out)
+
+    # --- Optional companion raw matrix (used by SoupX in S1a) ------------
+    rna_raw_out = artifacts / "rna_raw.h5ad"
+    if rna_raw_full is not None:
+        rna_raw_full.write_h5ad(rna_raw_out)
 
     # --- ATAC ingest metadata (only if ATAC present) ---------------------
     if atac_frag_path is not None:

@@ -16,11 +16,11 @@ from . import hashing as _h
 # appear under `plan["stages"]` for that branch. See also: workflow_branch ∈
 # {paired, separate, rna_only, atac_only}.
 _STAGES_BY_BRANCH = {
-    "paired":    {"s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
+    "paired":    {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
                    "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"},
-    "separate":  {"s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
+    "separate":  {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
                    "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"},
-    "rna_only":  {"s1_rna_qc", "s3_doublets", "s4_rna_norm",
+    "rna_only":  {"s1a_ambient", "s1_rna_qc", "s3_doublets", "s4_rna_norm",
                    "s6_dimred", "s7_clustering", "s8_umap"},
     "atac_only": {"s2_atac_qc", "s3_doublets", "s5_atac_lsi",
                    "s6_dimred", "s7_clustering", "s8_umap"},
@@ -53,12 +53,26 @@ def assemble_plan(run_dir: Path | str, *, workflow_branch: str, sample_type: str
         pct_mt_rat = "Whole-cell / unknown sample: standard ceiling."
 
     stages: dict[str, Any] = {
+        "s1a_ambient": {
+            "parameters": {
+                "method": p("auto", "default",
+                             "auto = SoupX if a raw matrix companion exists, else DecontX. "
+                             "Use 'none' to disable; 'decontx' or 'soupx' to force.", "high"),
+                "max_contamination": p(0.5, "recommended",
+                                        "Cap per-cell rho/contamination at this fraction; "
+                                        "prevents pathological over-correction on noisy cells.", "medium"),
+            }
+        },
         "s1_rna_qc": {
             "parameters": {
                 "k_mad": p(5.0, "default", "Project convention for symmetric MAD on log1p counts.", "high"),
                 "pct_mt_k": p(3.0, "default", "MAD multiplier for mito upper bound.", "high"),
                 "pct_mt_ceiling": p(pct_mt_ceil, "inferred", pct_mt_rat, "medium"),
                 "pct_mt_floor": p(5.0, "recommended", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),
+                "pct_ribo_max": p(50.0, "recommended",
+                                    "Soft ceiling on pct_counts_ribo (Rps/Rpl/Mrps/Mrpl). "
+                                    "Stressed/dying cells often exceed this; tissues with very high "
+                                    "ribo expression (e.g. plasma cells) may need a higher value.", "medium"),
                 "min_cells_per_gene": p(3, "default", "scanpy convention.", "high"),
                 "min_counts_floor": p(500, "recommended", "Guard against empty droplets dragging MAD down.", "medium"),
             }
@@ -68,11 +82,19 @@ def assemble_plan(run_dir: Path | str, *, workflow_branch: str, sample_type: str
                 "tss_enrichment_min": p(2.0, "recommended", "ENCODE tissue-acceptable minimum.", "high"),
                 "n_fragments_k_mad": p(5.0, "default", "Symmetric MAD on log fragments per cell.", "high"),
                 "n_fragments_floor": p(500, "recommended", "Minimum fragments for a real cell.", "medium"),
+                "nucleosome_signal_max": p(4.0, "recommended",
+                                            "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
+                                            "ratio). High values flag poor nucleosome positioning.", "medium"),
             }
         },
         "s3_doublets": {
             "parameters": {
-                "scrublet_expected_rate": p(0.06, "default", "10x loading-concentration default; sensitive to observed cell count.", "medium"),
+                "scrublet_expected_rate": p("auto", "recommended",
+                                              "If 'auto', the rate scales as min(0.10, 0.0008 * n_cells) "
+                                              "to track 10x's empirical doublet curve (~0.8% per 1000 cells). "
+                                              "Override with a float to force a fixed rate.", "high"),
+                "atac_doublet_threshold": p(0.5, "recommended",
+                                              "SnapATAC2 scrublet doublet-probability threshold.", "medium"),
                 "removal_policy_recommendation": p(
                     "union" if (study_goal or "").lower() != "rare_populations" else "intersection",
                     "recommended",
@@ -99,7 +121,15 @@ def assemble_plan(run_dir: Path | str, *, workflow_branch: str, sample_type: str
         },
         "s6_dimred": {
             "parameters": {
-                "rna_n_pcs": p(30, "default", "Conservative default; elbow-based refinement applied at execute time.", "medium"),
+                "rna_n_pcs": p("auto", "recommended",
+                                "If 'auto', n_pcs is chosen by elbow detection on the cumulative "
+                                "explained-variance curve (knee with `chord_distance`). Override "
+                                "with an int to force a fixed value.", "medium"),
+                "rna_n_pcs_max": p(50, "default",
+                                     "Upper cap for the auto-elbow search.", "high"),
+                "rna_scale": p(True, "recommended",
+                                 "Apply sc.pp.scale(max_value=10) before PCA — the scanpy-standard "
+                                 "preprocessing path. Disable to PCA the unscaled log-normalized data.", "high"),
                 "n_neighbors": p(15, "default", "scanpy convention.", "high"),
             }
         },

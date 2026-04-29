@@ -13,6 +13,7 @@ from typing import Any
 import anndata as ad
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 import scrublet as scr
 
 from ..methods import doublet_policy as _pol
@@ -20,7 +21,31 @@ from .. import provenance as _prov
 from ..log import log_event
 
 
-def _score_atac_doublets_snapatac(atac, *, probability_threshold: float = 0.5):
+def _resolve_doublet_rate(value: Any, n_cells: int) -> tuple[float, str]:
+    """Resolve plan's `scrublet_expected_rate` into a numeric rate.
+
+    'auto' → min(0.10, 0.0008 * n_cells), tracking 10x's empirical curve
+    (~0.8% per 1000 cells, capped at 10%). Otherwise coerced to float.
+    """
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        rate = min(0.10, 0.0008 * max(n_cells, 0))
+        return float(rate), f"auto (0.0008 * {n_cells} cells, capped at 0.10)"
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        rate = 0.06
+        return rate, f"fallback 0.06 (could not coerce {value!r})"
+    return rate, f"user-fixed {rate}"
+
+
+def _as_sparse(matrix: Any) -> sp.csr_matrix:
+    """Return a CSR sparse counts matrix without densifying first."""
+    if sp.issparse(matrix):
+        return matrix.tocsr()
+    return sp.csr_matrix(np.asarray(matrix))
+
+
+def _score_atac_doublets_snapatac(atac, *, probability_threshold: float):
     """Use SnapATAC2's native doublet detector (`snap.pp.scrublet` + `filter_doublets`).
 
     Deviation from the approved design: the plan names AMULET (fragment-level
@@ -34,9 +59,12 @@ def _score_atac_doublets_snapatac(atac, *, probability_threshold: float = 0.5):
     """
     import snapatac2 as snap
 
-    # Scrublet needs a tile matrix or peak matrix; add tile matrix if not present.
+    # Scrublet needs a tile matrix or peak matrix; add tile matrix if not
+    # present. Using the SnapATAC2-default `bin_size=500` here keeps the
+    # doublet-scoring tile matrix consistent with S5's clustering tile
+    # matrix; see s5_atac_lsi.py.
     try:
-        snap.pp.add_tile_matrix(atac, bin_size=5000)
+        snap.pp.add_tile_matrix(atac, bin_size=500)
     except Exception:
         pass  # may already exist
     # SnapATAC2 2.8 requires either `select_features` to have been called, or
@@ -80,14 +108,25 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     flags = np.array([], dtype=bool)
     if has_rna:
         rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad")
-        counts = rna.layers.get("counts", rna.X).toarray() if hasattr(rna.X, "toarray") else np.asarray(rna.X)
-        if hasattr(rna.layers.get("counts", None), "toarray"):
-            counts = rna.layers["counts"].toarray()
-        expected_rate = plan["stages"]["s3_doublets"]["parameters"]["scrublet_expected_rate"]["value"]
+        # Scrublet accepts sparse counts; densifying is wasteful on large
+        # datasets and crashes on >100K cells. Always pass csr.
+        raw_counts = rna.layers["counts"] if "counts" in rna.layers else rna.X
+        counts = _as_sparse(raw_counts)
+        rate_param = plan["stages"]["s3_doublets"]["parameters"]["scrublet_expected_rate"]["value"]
+        expected_rate, rate_reason = _resolve_doublet_rate(rate_param, int(rna.n_obs))
+        _prov.set_param(params_path, "s3_doublets.scrublet_expected_rate_resolved",
+                        float(expected_rate),
+                        source="derived", confidence="high",
+                        rationale=(f"Resolved from plan value={rate_param!r}: {rate_reason}. "
+                                   "Tracks 10x's ~0.8%/1000 cells empirical doublet rate."),
+                        method={"name": "s3.resolve_doublet_rate",
+                                "code_ref": "executor/stages/s3_doublets.py"})
         try:
             sd = scr.Scrublet(counts, expected_doublet_rate=expected_rate, random_state=0)
             scores, flags = sd.scrub_doublets(verbose=False)
             if flags is None or not np.any(flags):
+                # Scrublet's auto-threshold occasionally fails (bimodality unclear).
+                # Fall back to a conservative score-based cutoff.
                 flags = scores > 0.2
         except Exception as e:
             log_event(run_dir, {"stage": "s3_doublets", "event": "scrublet_failed", "error": str(e)})
@@ -107,8 +146,17 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         atac_h5 = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
         atac = snap.read(str(atac_h5))
         atac_method = "snapatac2.pp.scrublet+filter_doublets"
+        atac_threshold = float(plan["stages"]["s3_doublets"]["parameters"]
+                                .get("atac_doublet_threshold", {}).get("value", 0.5))
+        _prov.set_param(params_path, "s3_doublets.atac_doublet_threshold",
+                        atac_threshold, source="recommended", confidence="medium",
+                        rationale=("SnapATAC2 scrublet doublet-probability cutoff "
+                                   "above which a barcode is flagged."),
+                        method={"name": "s3.atac_doublet_threshold",
+                                "code_ref": "executor/stages/s3_doublets.py"})
         try:
-            atac_scores, atac_flags = _score_atac_doublets_snapatac(atac)
+            atac_scores, atac_flags = _score_atac_doublets_snapatac(
+                atac, probability_threshold=atac_threshold)
             atac_bc = list(atac.obs_names)
         except Exception as e:
             log_event(run_dir, {"stage": "s3_doublets", "event": "atac_snap_doublet_failed",

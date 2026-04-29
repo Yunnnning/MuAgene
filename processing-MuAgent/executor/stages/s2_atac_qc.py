@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 
 from ..methods import mad_thresholds as _mad
+from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
 
@@ -77,10 +78,31 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     n_frag_values = _col_to_numpy(adata, "n_fragment")
     tss_values = _col_to_numpy(adata, "tsse")
 
+    # --- Nucleosome signal (per-cell) ------------------------------------
+    # Walk fragments.tsv.gz once, counting nucleosome-free (<147bp) vs
+    # mono-nucleosome (147..294bp) fragments per barcode. Signac's NS is
+    # mono / nfree. We restrict to S2's import-stage cell set to avoid
+    # touching the millions of empty-droplet barcodes.
+    cell_barcodes = list(adata.obs_names)
+    try:
+        ns_values = _io.nucleosome_signal_per_cell(fragments_path, cell_barcodes)
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "nuc_signal_failed",
+                            "error": str(e), "fallback": "all_zeros"})
+        ns_values = np.zeros(adata.n_obs, dtype=float)
+
+    # Dataset-level fragment-size distribution (cheap; for a sanity figure).
+    try:
+        snap.metrics.frag_size_distr(adata, max_recorded_size=1000)
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_failed",
+                            "error": str(e)})
+
     params = plan["stages"]["s2_atac_qc"]["parameters"]
     k_mad = params["n_fragments_k_mad"]["value"]
     n_frag_floor = params["n_fragments_floor"]["value"]
     tss_min = params["tss_enrichment_min"]["value"]
+    nuc_signal_max = float(params.get("nucleosome_signal_max", {}).get("value", 4.0))
 
     if n_frag_values.size:
         keep_floor = n_frag_values >= n_frag_floor
@@ -104,12 +126,28 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     _prov.set_param(params_path, "s2_atac_qc.tss_enrichment_min", float(tss_min),
                     source="recommended", confidence="high",
                     rationale="ENCODE tissue-acceptable minimum")
+    _prov.set_param(params_path, "s2_atac_qc.nucleosome_signal_max",
+                    float(nuc_signal_max), source="recommended", confidence="high",
+                    rationale=("Signac-style NS = mono_nucleosome / nucleosome_free; "
+                               "values above this flag poor nucleosome positioning."),
+                    method={"name": "io.nucleosome_signal_per_cell",
+                            "code_ref": "executor/io.py::nucleosome_signal_per_cell"})
+
+    # Persist per-cell metrics on the AnnData so downstream stages and the
+    # qc_summary can read them without re-scanning the fragments file.
+    try:
+        adata.obs["nucleosome_signal"] = ns_values
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "nuc_signal_obs_write_failed",
+                            "error": str(e)})
 
     keep = np.ones(adata.n_obs, dtype=bool)
     if n_frag_values.size:
         keep &= (n_frag_values >= f_lo) & (n_frag_values <= f_hi)
     if tss_values.size:
         keep &= tss_values >= tss_min
+    if ns_values.size and np.isfinite(ns_values).any():
+        keep &= ns_values <= nuc_signal_max
 
     keep_idx = np.nonzero(keep)[0].tolist()
     n_pre = int(adata.n_obs)
@@ -126,17 +164,57 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     if n_post == 0:
         raise ValueError(
             f"S2 ATAC QC removed all cells (n_pre={n_pre}, n_post=0). Thresholds used: "
-            f"n_fragments in [{f_lo:.1f}, {f_hi:.1f}], tss_enrichment >= {tss_min}. "
+            f"n_fragments in [{f_lo:.1f}, {f_hi:.1f}], tss_enrichment >= {tss_min}, "
+            f"nucleosome_signal <= {nuc_signal_max}. "
             "Revise one or more thresholds via `executor revise s2_atac_qc ...` "
             "before continuing; downstream stages cannot run on an empty ATAC cell set."
         )
 
-    # Persist summary
+    # Persist summary (+ per-cell ns range for the QC report)
+    ns_summary: dict[str, Any] = {}
+    if ns_values.size:
+        finite_ns = ns_values[np.isfinite(ns_values)]
+        if finite_ns.size:
+            ns_summary = {
+                "median": float(np.median(finite_ns)),
+                "p90":    float(np.quantile(finite_ns, 0.90)),
+                "max":    float(np.max(finite_ns)),
+            }
     (art / "qc_summary.json").write_text(json.dumps({
         "n_cells_pre": n_pre,
         "n_cells_post": n_post,
-        "thresholds": {"n_fragments": [float(f_lo), float(f_hi)], "tss_min": float(tss_min)},
+        "thresholds": {
+            "n_fragments": [float(f_lo), float(f_hi)],
+            "tss_min": float(tss_min),
+            "nucleosome_signal_max": float(nuc_signal_max),
+        },
+        "nucleosome_signal_summary": ns_summary,
     }, indent=2))
+
+    # Dataset-level fragment-size distribution figure — surfaces nucleosome
+    # periodicity (well-prepared ATAC libraries show clear ~150 / ~300 / ~450
+    # peaks). Cheap to render and very useful for human review.
+    try:
+        from .. import figures as _fig
+        from ..run_paths import RunPaths
+        figs_dir = RunPaths(run_dir).deliv_figures
+        figs_dir.mkdir(parents=True, exist_ok=True)
+        # SnapATAC2's `adata.uns` is a polars-backed PyElemCollection, not a
+        # plain dict — `.get()` and `in` may not behave like dict semantics.
+        # Try-by-key and fall through silently on any access error.
+        fsd = None
+        try:
+            fsd = np.asarray(adata.uns["frag_size_distr"])
+        except Exception:
+            fsd = None
+        if fsd is not None and fsd.size:
+            _fig.plot_fragment_size_distribution(
+                fsd, out_dir=figs_dir,
+                stem="s2_atac_qc_fragment_size_distribution",
+                title="ATAC fragment size distribution")
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_plot_failed",
+                            "error": str(e)})
 
     try:
         adata.close()

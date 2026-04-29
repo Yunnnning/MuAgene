@@ -154,9 +154,35 @@ def _show(stem: str) -> None:
 
 
 _CELL_QC_FIGS = """\
+# Ambient RNA correction (S1a) — shown only when the stage actually ran.
+_show("s1a_ambient_contamination_hist")
+_show("s1a_ambient_counts_before_after")
+
 # RNA QC plots (pre + post filter)
 _show("s1_rna_qc_violin_pre")
 _show("s1_rna_qc_violin_post")
+
+# ATAC fragment-size distribution (sanity check for nucleosome periodicity)
+_show("s2_atac_qc_fragment_size_distribution")
+"""
+
+
+_CELL_AMBIENT_INSPECT = """\
+# Ambient RNA contamination summary (per-cell rho).
+if "rna" in mdata.mod and "ambient_contamination" in mdata["rna"].obs.columns:
+    rho = mdata["rna"].obs["ambient_contamination"].to_numpy()
+    if rho.size:
+        print(f"Median contamination: {np.median(rho):.3f}")
+        print(f"P90 contamination:    {np.quantile(rho, 0.90):.3f}")
+        print(f"Cells with rho>0.20:  {int((rho > 0.20).sum())} / {rho.size}")
+    if "counts_raw" in mdata["rna"].layers:
+        pre = np.asarray(mdata["rna"].layers["counts_raw"].sum(axis=1)).ravel()
+        post = np.asarray(mdata["rna"].layers["counts"].sum(axis=1)).ravel()
+        print(f"Total counts pre:  {int(pre.sum()):,}")
+        print(f"Total counts post: {int(post.sum()):,} "
+              f"({100*(1 - post.sum()/max(pre.sum(),1)):.1f}% removed)")
+else:
+    print("(no ambient correction was applied; or stage was skipped)")
 """
 
 
@@ -235,9 +261,11 @@ def _cells(run_dir: str) -> list[dict[str, Any]]:
         _code(_CELL_INSPECT),
         _md("### Cluster sizes"),
         _code(_CELL_CLUSTER_SIZES),
+        _md("### Ambient RNA correction (S1a)"),
+        _code(_CELL_AMBIENT_INSPECT),
         _md("## 3. Reproduce user-facing plots"),
         _code(_CELL_SHOW_HELPER),
-        _md("### RNA QC (pre + post filter)"),
+        _md("### Ambient correction + RNA + ATAC QC figures"),
         _code(_CELL_QC_FIGS),
         _md("### UMAPs — computed from `processed.h5mu`"),
         _code(_CELL_UMAP_REPRO),

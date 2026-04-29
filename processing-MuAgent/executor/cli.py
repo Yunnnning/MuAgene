@@ -135,7 +135,7 @@ def status(config_path: str) -> None:
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
     stages = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
-              "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
+              "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
               "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
     for s in stages:
         proposed = paths.proposal(s).exists()
@@ -226,7 +226,7 @@ def run_pipeline(config_path: str, auto_approve: bool, no_context: bool, target:
         # in a single invocation; set PMA_AUTO_APPROVE=1 so propose rules don't
         # strip the approvals when they (re-)run.
         stages = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
-                  "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
+                  "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
                   "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
         for s in stages:
             approval.approve(run_dir, s, note="auto-approved")

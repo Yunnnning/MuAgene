@@ -16,7 +16,7 @@ pip-wheel-metadata/
 .pytest_cache/
 *.egg
 
-# Outputs and caches (common evaluation / pipeline artifacts)
+# Outputs and caches 
 cache/
 output/
 results/
@@ -29,3 +29,6 @@ results/
 
 # Per-run output dirs when created at repo root
 run_*/
+
+# Presentation materials
+*.pptx

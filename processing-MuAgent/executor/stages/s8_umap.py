@@ -30,6 +30,12 @@ def load_exported_atac_features(
     Any failure returns `(None, None)` — callers must treat this as
     "no feature-level ATAC representation available" and produce an honest
     empty .X (zero columns), not a fabricated 1-column placeholder.
+
+    Duplicate names are de-duplicated with a `-N` suffix so the resulting
+    `var_names` Index is unique. MuData refuses to build a clean string-typed
+    `varmap` when either modality has duplicate var_names, and `mdata.write()`
+    then crashes inside `write_vlen_string_array` while serialising `varmap`.
+    Deduping here keeps the fix local to the S8 consumer of S5's exports.
     """
     import scipy.sparse as sp
 
@@ -48,7 +54,14 @@ def load_exported_atac_features(
     names = names_path.read_text().splitlines()
     if len(names) != mat.shape[1]:
         return None, None
-    return mat, names
+
+    seen: dict[str, int] = {}
+    deduped: list[str] = []
+    for n in names:
+        c = seen.get(n, 0)
+        deduped.append(n if c == 0 else f"{n}-{c}")
+        seen[n] = c + 1
+    return mat, deduped
 
 
 def load_atac_feature_kind(kind_path: Path | str, *, default: str = "unknown_feature_matrix") -> str:

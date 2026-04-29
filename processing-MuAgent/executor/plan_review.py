@@ -57,15 +57,41 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         "certainty": "certain" if pairing.get("confidence") == "high" else "needs confirmation",
     })
 
-    # 4. Key QC strategy
+    # 4. Ambient RNA correction (S1a)
+    ambient_method = param("s1a_ambient", "method")
+    ambient_cap = param("s1a_ambient", "max_contamination")
+    rna_filtered_status = ingest.get("rna_filtered_status")
+    has_raw = ingest.get("has_raw_matrix", False)
+    if ambient_method.get("value") is not None:
+        method_label = ambient_method.get("value", "auto")
+        chosen_hint = (
+            f" → SoupX (raw + filtered both present)" if has_raw or rna_filtered_status == "raw" else
+            f" → DecontX (filtered only)"
+        ) if method_label == "auto" else ""
+        items.append({
+            "label": "Ambient RNA correction (S1a)",
+            "value": f"method={method_label}{chosen_hint}, cap={ambient_cap.get('value', '?')}",
+            "reason": (
+                f"rna_filtered_status={rna_filtered_status}, has_raw={has_raw}. "
+                "DecontX corrects from filtered counts; SoupX uses raw drops to "
+                "estimate the soup profile and is preferred when raw is available."
+            ),
+            "certainty": "certain" if method_label != "auto" else "needs confirmation",
+        })
+
+    # 5. Key QC strategy
     sample_type = field("sample_type").get("value", "unknown")
     pct_mt_ceil = param("s1_rna_qc", "pct_mt_ceiling")
+    pct_ribo_max = param("s1_rna_qc", "pct_ribo_max")
     tss_min = param("s2_atac_qc", "tss_enrichment_min")
+    nuc_max = param("s2_atac_qc", "nucleosome_signal_max")
     items.append({
         "label": "QC strategy",
         "value": (
-            f"RNA: MAD-based on total_counts/n_genes, pct_mt ceiling={pct_mt_ceil.get('value', '?')} | "
-            f"ATAC: TSS≥{tss_min.get('value', '?')}, MAD on log(n_fragments)"
+            f"RNA: MAD on total_counts/n_genes, pct_mt ceiling={pct_mt_ceil.get('value', '?')}, "
+            f"pct_ribo ceiling={pct_ribo_max.get('value', '?')} | "
+            f"ATAC: TSS≥{tss_min.get('value', '?')}, MAD on log(n_fragments), "
+            f"nucleosome_signal≤{nuc_max.get('value', '?')}"
         ),
         "reason": f"Sample type = {sample_type}; MAD thresholds adapt to the observed distribution.",
         "certainty": "certain",

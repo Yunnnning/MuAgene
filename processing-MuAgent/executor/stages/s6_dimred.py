@@ -1,14 +1,52 @@
-"""S6 — Dim reduction + neighbors (RNA PCA + neighbors; ATAC neighbors on LSI already present)."""
+"""S6 — Dim reduction + neighbors (RNA PCA + neighbors; ATAC neighbors on LSI already present).
+
+Standard scanpy preprocessing path (rev. 2026-04):
+    log-normalize → HVG → optional sc.pp.scale → PCA → neighbors
+
+`rna_scale` (plan param, default True) toggles the scaling step. `rna_n_pcs`
+defaults to `"auto"` and is resolved via a chord-distance knee on the
+cumulative explained-variance curve, capped at `rna_n_pcs_max`.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
 import anndata as ad
+import numpy as np
 import scanpy as sc
 
 from .. import provenance as _prov
 from ..log import log_event
+
+
+def _pick_pca_elbow(variance_ratio: np.ndarray, *, max_n: int) -> tuple[int, str]:
+    """Return the elbow `n_pcs` from the cumulative explained-variance curve.
+
+    Uses the chord-distance heuristic: the rank that is farthest from the
+    chord between (rank=1, cumvar[0]) and (rank=N, cumvar[-1]) is the knee.
+    Falls back to `min(max_n, len)` if the curve is too flat to admit a knee.
+    """
+    var = np.asarray(variance_ratio, dtype=float)
+    var = var[np.isfinite(var)]
+    if var.size <= 2:
+        return int(min(max_n, max(var.size, 1))), "fallback (too few PCs)"
+    cum = np.cumsum(var)
+    n = cum.size
+    x = np.arange(1, n + 1, dtype=float)
+    p1 = np.array([x[0], cum[0]])
+    p2 = np.array([x[-1], cum[-1]])
+    chord = p2 - p1
+    chord_norm = float(np.linalg.norm(chord))
+    if chord_norm == 0.0:
+        return int(min(max_n, n)), "fallback (degenerate chord)"
+    chord_unit = chord / chord_norm
+    rel = np.column_stack([x, cum]) - p1
+    proj = rel - np.outer(rel @ chord_unit, chord_unit)
+    distances = np.linalg.norm(proj, axis=1)
+    knee = int(np.argmax(distances)) + 1
+    knee = max(2, min(knee, max_n, n))
+    return knee, f"chord-distance knee at PC{knee} (max search n={n})"
 
 
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
@@ -22,25 +60,72 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     has_atac = branch in ("paired", "separate", "atac_only")
 
     s6_params = plan["stages"].get("s6_dimred", {}).get("parameters", {})
-    n_pcs = int(s6_params.get("rna_n_pcs", {}).get("value", 30))
+    n_pcs_param = s6_params.get("rna_n_pcs", {}).get("value", "auto")
+    n_pcs_max = int(s6_params.get("rna_n_pcs_max", {}).get("value", 50))
+    do_scale = bool(s6_params.get("rna_scale", {}).get("value", True))
     n_neighbors = int(s6_params.get("n_neighbors", {}).get("value", 15))
 
     # --- RNA ---
     if has_rna:
         a = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad")
+        # Optional sc.pp.scale before PCA (the scanpy-standard recipe). Works
+        # on the HVG-restricted matrix when available.
+        if do_scale:
+            try:
+                sc.pp.scale(a, max_value=10)
+            except Exception as e:
+                log_event(run_dir, {"stage": "s6_dimred", "event": "scale_failed",
+                                    "error": str(e)})
+
+        # Elbow-resolved n_pcs. Compute up to n_pcs_max then trim to the elbow.
+        n_seed = int(min(n_pcs_max, max(2, a.n_vars - 1)))
         if "highly_variable" in a.var:
-            sc.pp.pca(a, n_comps=n_pcs, use_highly_variable=True)
+            sc.pp.pca(a, n_comps=n_seed, use_highly_variable=True)
         else:
-            sc.pp.pca(a, n_comps=n_pcs)
+            sc.pp.pca(a, n_comps=n_seed)
+
+        if isinstance(n_pcs_param, str) and n_pcs_param.strip().lower() == "auto":
+            vr = np.asarray(a.uns.get("pca", {}).get("variance_ratio", []), dtype=float)
+            n_pcs, rationale = _pick_pca_elbow(vr, max_n=n_pcs_max)
+        else:
+            try:
+                n_pcs = int(n_pcs_param)
+            except (TypeError, ValueError):
+                n_pcs, rationale = _pick_pca_elbow(
+                    np.asarray(a.uns.get("pca", {}).get("variance_ratio", []), dtype=float),
+                    max_n=n_pcs_max)
+                rationale = f"fallback to elbow ({rationale}); plan value {n_pcs_param!r} invalid"
+            else:
+                rationale = f"plan-fixed n_pcs={n_pcs}"
+
+        # Trim PCA representation to the chosen n_pcs (keeps sc.pp.neighbors fast).
+        if "X_pca" in a.obsm and a.obsm["X_pca"].shape[1] > n_pcs:
+            a.obsm["X_pca"] = a.obsm["X_pca"][:, :n_pcs]
+            if "PCs" in a.varm and a.varm["PCs"].shape[1] > n_pcs:
+                a.varm["PCs"] = a.varm["PCs"][:, :n_pcs]
+            if isinstance(a.uns.get("pca"), dict):
+                a.uns["pca"]["variance_ratio"] = a.uns["pca"]["variance_ratio"][:n_pcs]
+                a.uns["pca"]["variance"] = a.uns["pca"].get("variance",
+                    np.array([]))[:n_pcs] if isinstance(a.uns["pca"].get("variance"), np.ndarray) else a.uns["pca"].get("variance")
+
         sc.pp.neighbors(a, n_neighbors=n_neighbors, n_pcs=n_pcs)
         a.write_h5ad(art / "rna_dimred.h5ad")
-        _prov.set_param(params_path, "s6_dimred.rna_n_pcs", n_pcs,
-                        source="default", confidence="medium",
-                        rationale="Plan default; elbow-based refinement skipped for MVP")
+        _prov.set_param(params_path, "s6_dimred.rna_n_pcs", int(n_pcs),
+                        source="derived", confidence="high",
+                        rationale=rationale,
+                        method={"name": "_pick_pca_elbow",
+                                "code_ref": "executor/stages/s6_dimred.py"})
+        _prov.set_param(params_path, "s6_dimred.rna_scale_applied", bool(do_scale),
+                        source="derived", confidence="high",
+                        rationale=("sc.pp.scale(max_value=10) applied" if do_scale
+                                   else "rna_scale=False; PCA on log-normalized but unscaled data"),
+                        method={"name": "scanpy.pp.scale",
+                                "code_ref": "executor/stages/s6_dimred.py"})
     else:
         # atac_only — produce an empty placeholder so the Snakemake output exists.
         import scipy.sparse as sp
         ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(art / "rna_dimred.h5ad")
+        n_pcs = 0
 
     # --- ATAC ---
     if has_atac:

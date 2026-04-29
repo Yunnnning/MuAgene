@@ -8,7 +8,7 @@ S5 performs two independent operations:
 
   (1) CLUSTERING LATENT: tile matrix → feature selection → spectral
       embedding → `adata.obsm['X_lsi']`. This is what S7/S8 use for clustering
-      and UMAP. The tile/LSI clustering path is preserved exactly.
+      and UMAP. 
 
   (2) FEATURE EXPORT: prefer a peak-by-cell matrix for downstream data
       integration. The preferred path is the Cell Ranger ARC h5 (fast shortcut
