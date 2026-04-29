@@ -1,13 +1,6 @@
 # processing-MuAgent
 
-Multiome (scRNA-seq + scATAC-seq) preprocessing subagent. Takes raw 10x Genomics
-multiome outputs and produces QC'd, dim-reduced, clustered, UMAP-visualised data
-**per modality**, then **stops**.
-
-## Hard stop (out of scope)
-
-No integration, no WNN, no label transfer, no cell annotation, no marker genes,
-no GRN. Those belong to downstream subagents.
+Multiome (scRNA-seq + scATAC-seq) preprocessing subagent. Takes filtered or raw 10x Genomics multiome outputs and performs QC, dimensionality reduction, clustering, UMAP-visualisation **per modality**, then **stops** before integration.
 
 ## Workflow
 
