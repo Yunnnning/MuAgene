@@ -15,12 +15,12 @@ run_dir: /Users/yunning/Desktop/MuAgene/example/output/run_example
 # SoupX to estimate the soup profile. When BOTH `rna_path` (filtered) and
 # `rna_raw_path` (raw) are supplied, S1a auto-selects SoupX. When only a
 # filtered matrix is supplied, S1a auto-selects DecontX.
-rna_path: /Users/yunning/Desktop/MuAgene/example/data/GSE268104_C57A_filtered_feature_bc_matrix_1of10.h5
+rna_path: /Users/yunning/Desktop/MuAgene/example/data/pbmc_3k_filtered_feature_bc_matrix.h5
 # rna_raw_path: /path/to/raw_feature_bc_matrix.h5
-atac_fragments_path: /Users/yunning/Desktop/MuAgene/example/data/GSE268104_C57A_atac_fragments_1of10.tsv.gz
+atac_fragments_path: /Users/yunning/Desktop/MuAgene/example/data/pbmc_3k_atac_fragments.tsv.gz
 
 # Genome assembly (REQUIRED; no default)
-genome_assembly: mm10
+genome_assembly: GRCh38
 
 # Study goal — guides the S3 doublet-removal policy recommendation.
 # One of: clustering_inference | rare_populations | <absent>
