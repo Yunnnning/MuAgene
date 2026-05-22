@@ -1,18 +1,7 @@
-"""Doublet overlap categorisation + branch-aware removal.
-
-Removal rule (no longer configurable):
-    - paired       : intersection — remove cells flagged by BOTH detectors.
-    - rna_only     : remove cells flagged by Scrublet (RNA).
-    - atac_only    : remove cells flagged by the ATAC scrublet detector.
-    - separate     : remove per-cell whatever detector flagged it (the two
-                     modalities live on disjoint barcode sets here, so
-                     intersection would be empty).
-
-The previous `union` policy and `study_goal`-driven recommendation have been
-removed. Raw per-cell scores + boolean flags from each detector are still
-preserved in `calls.parquet` for reproducibility.
-"""
+"""Doublet overlap categorisation + goal-based recommendation."""
 from __future__ import annotations
+
+from typing import Any
 
 import pandas as pd
 
@@ -26,30 +15,35 @@ def four_way_overlap(rna_flag: pd.Series, atac_flag: pd.Series) -> dict[str, int
     return {"rna_only": rna_only, "atac_only": atac_only, "both": both, "neither": neither}
 
 
-def combine_flags(rna_flag: pd.Series, atac_flag: pd.Series,
-                  workflow_branch: str) -> pd.Series:
-    """Return the boolean removal mask for the merged per-barcode table.
+def recommend_policy(study_goal: str | None) -> dict[str, Any]:
+    """study_goal: 'clustering_inference' | 'rare_populations' | None.
 
-    Inputs are already NaN-filled (False for missing modality) by the caller.
+    Default (clustering_inference / unspecified) → union (remove cells flagged
+    by EITHER detector). intersection only when study_goal=rare_populations.
     """
-    if workflow_branch == "paired":
+    g = (study_goal or "").strip().lower()
+    if g == "rare_populations":
+        return {
+            "recommendation": "intersection",
+            "rationale": "study_goal=rare_populations prioritises avoiding false removals; remove only cells flagged by BOTH detectors.",
+        }
+    if g == "clustering_inference" or not g:
+        return {
+            "recommendation": "union",
+            "rationale": (
+                "study_goal=clustering_inference (or unspecified fallback) prioritises minimizing "
+                "doublet contamination; remove cells flagged by EITHER detector."
+            ),
+        }
+    return {
+        "recommendation": "union",
+        "rationale": f"Unknown study_goal={study_goal!r}; default fallback is UNION.",
+    }
+
+
+def apply_policy(rna_flag: pd.Series, atac_flag: pd.Series, policy: str) -> pd.Series:
+    if policy == "union":
+        return rna_flag | atac_flag
+    if policy == "intersection":
         return rna_flag & atac_flag
-    # rna_only / atac_only / separate: cells live on disjoint barcode sets
-    # across modalities, so the right operation is "remove what was flagged by
-    # whichever detector saw this barcode" — equivalent to OR with all-False
-    # placeholders for the missing modality.
-    return rna_flag | atac_flag
-
-
-def removal_rule(workflow_branch: str) -> str:
-    """Human-readable description of the removal rule for a given branch.
-    Used in provenance and QC summary."""
-    if workflow_branch == "paired":
-        return ("intersection — remove only cells flagged by BOTH Scrublet (RNA) "
-                "and SnapATAC2 scrublet (ATAC); preserves modality-specific signal.")
-    if workflow_branch == "rna_only":
-        return "Scrublet only (RNA detector); single-modality run."
-    if workflow_branch == "atac_only":
-        return "SnapATAC2 scrublet only (ATAC detector); single-modality run."
-    return ("per-cell available detector (separate branch: RNA and ATAC live on "
-            "disjoint barcode sets so intersection is not meaningful).")
+    raise ValueError(f"policy must be 'union' or 'intersection', got {policy!r}")

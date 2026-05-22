@@ -25,11 +25,11 @@ Preprocessing stages:
   `mono / nucleosome_free`) + fragment-count MAD via SnapATAC2.
 - **S3 Doublets** — Scrublet (RNA, sparse-CSR input, adaptive
   `expected_doublet_rate ≈ 0.0008 × n_cells`) + SnapATAC2 scrublet (ATAC);
-  four-way overlap reported. Removal rule is **fixed by branch** (no
-  user-configurable union/intersection policy): on the **paired** branch only
-  cells flagged by **both** detectors are removed (intersection — preserves
-  modality-specific signal); on **rna_only**/**atac_only**/**separate** the
-  available detector's flag is applied directly. Raw per-detector calls are
+  four-way overlap summarised and goal-based removal-policy recommendation
+  (union / intersection). **Default is union** (cells flagged by either
+  detector removed) for `study_goal=clustering_inference` or unspecified;
+  intersection is recommended only when `study_goal=rare_populations`. The
+  user confirms the policy at the S3 checkpoint. Raw per-detector calls are
   preserved in `calls.parquet`. On the paired branch, S3 also performs the
   joint barcode intersection (see "Paired multiome" below) so downstream
   stages operate on the joint cell set; a sentinel `joint_barcodes.txt` is
@@ -56,7 +56,7 @@ passing both RNA and ATAC QC, with matching barcodes across modalities**.
 
 **Barcode Intersection:** In the paired workflow branch, barcode alignment is enforced in three steps to ensure that only cells passing both RNA and ATAC QC are included. First, during S0 ingest, RNA cells are filtered to those with barcodes present in the ATAC fragments, while the ATAC set is left unfiltered to maximize statistical power for ATAC QC. Next, after S1 and S2 QC and S3 doublet removal, a strict intersection of surviving RNA and ATAC barcodes is performed; the resulting joint set is written to both `rna_post_doublet.h5ad` and `atac_post_doublet.h5ad`, and exported as `joint_barcodes.txt` for downstream validation. Finally, at S8 assembly, the MuData writer re-checks that the RNA and ATAC barcodes are identical; if any mismatch arises due to cell losses in earlier stages, the intersection is recalculated and the event is logged to maintain consistency.
 
-**Doublet removal (intersection-only).** For paired runs, doublets are removed using the intersection of the two detectors: a cell is dropped only if it is flagged by **both** Scrublet (RNA) and SnapATAC2 scrublet (ATAC). This is the only supported rule for paired multiome — the previous `union` policy and `study_goal`-driven recommendation have been removed. Intersection trades a slightly higher residual-doublet rate for a much lower false-positive removal rate, which is the safer default when RNA and ATAC must remain barcode-aligned (a false-positive flag in one modality would otherwise discard an otherwise-clean joint cell). Per-detector scores and boolean flags are still preserved in `calls.parquet`, so a more aggressive cut can be applied retrospectively without re-running S3.
+**Doublet removal policy (union by default).** Doublet flagging runs independently per modality (Scrublet for RNA, SnapATAC2 scrublet for ATAC); the two flag sets are then reconciled at S3. The default is **union** — a cell is removed if flagged by *either* detector (`study_goal=clustering_inference` or unspecified). Switching `study_goal` to `rare_populations` recommends **intersection** instead (remove only cells flagged by *both* detectors), which trades a slightly higher residual-doublet rate for a much lower false-positive removal rate. The chosen policy is surfaced in `plan_review.md` and confirmed at the S3 checkpoint; per-detector scores and boolean flags are preserved in `calls.parquet`, so an alternative cut can be applied retrospectively without re-running S3.
 
 **Diagnostic vs final clustering.** RNA-only clustering (`leiden_rna`) and
 ATAC-only clustering (`leiden_atac`) at S7 are run independently per

@@ -95,9 +95,14 @@ def assemble_plan(run_dir: Path | str, *, workflow_branch: str, sample_type: str
                                               "Override with a float to force a fixed rate.", "high"),
                 "atac_doublet_threshold": p(0.5, "recommended",
                                               "SnapATAC2 scrublet doublet-probability threshold.", "medium"),
-                # Removal rule is fixed by branch (intersection on paired,
-                # available detector on single-modality / separate). No
-                # user-configurable union policy.
+                "removal_policy_recommendation": p(
+                    "union" if (study_goal or "").lower() != "rare_populations" else "intersection",
+                    "recommended",
+                    "Based on study_goal; user must confirm at S3 checkpoint.",
+                    "high",
+                ),
+                "study_goal": p(study_goal or "clustering_inference", "user" if study_goal else "default",
+                                 "From run.yaml or fallback.", "high" if study_goal else "medium"),
             }
         },
         "s4_rna_norm": {

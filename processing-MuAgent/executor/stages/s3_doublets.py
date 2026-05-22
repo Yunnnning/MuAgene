@@ -193,31 +193,27 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     merged["scrublet_is_doublet"] = merged["scrublet_is_doublet"].fillna(False).astype(bool)
     merged["atac_is_doublet"] = merged["atac_is_doublet"].fillna(False).astype(bool)
 
-    # Overlap + branch-aware removal rule. The choice is fixed by branch:
-    # paired -> intersection (both detectors); rna_only / atac_only / separate
-    # -> remove whatever was flagged by the available detector. The previous
-    # `union` policy and `study_goal`-based recommendation are gone.
+    # Overlap + policy
     overlap = _pol.four_way_overlap(merged["scrublet_is_doublet"], merged["atac_is_doublet"])
-    removed = _pol.combine_flags(merged["scrublet_is_doublet"],
-                                  merged["atac_is_doublet"], workflow_branch)
-    removal_rule = _pol.removal_rule(workflow_branch)
+    study_goal = plan["stages"]["s3_doublets"]["parameters"]["study_goal"]["value"]
+    policy = _pol.recommend_policy(study_goal)
+    chosen_policy = policy["recommendation"]
+    removed = _pol.apply_policy(merged["scrublet_is_doublet"], merged["atac_is_doublet"], chosen_policy)
+    merged["chosen_policy"] = chosen_policy
     merged["removed"] = removed
 
     merged.to_parquet(art / "calls.parquet")
     (art / "overlap_summary.json").write_text(json.dumps({
         "overlap": overlap,
-        "workflow_branch": workflow_branch,
-        "removal_rule": removal_rule,
+        "study_goal": study_goal,
+        "recommended_policy": chosen_policy,
+        "rationale": policy["rationale"],
         "n_removed": int(removed.sum()),
     }, indent=2))
 
-    _prov.set_param(params_path, "s3_doublets.removal_rule", removal_rule,
-                    source="fixed", confidence="high",
-                    rationale=("Intersection-only doublet removal for paired multiome; "
-                               "single-modality / separate branches fall back to the "
-                               "available detector. Policy is not user-configurable."),
-                    method={"name": "doublet_policy.combine_flags",
-                            "code_ref": "executor/methods/doublet_policy.py"})
+    _prov.set_param(params_path, "s3_doublets.removal_policy", chosen_policy,
+                    source="recommended", confidence="high",
+                    rationale=policy["rationale"])
     _prov.set_param(params_path, "s3_doublets.atac_method", atac_method,
                     source="derived", confidence="high",
                     rationale=("Plan named AMULET (fragment multi-allelic overlap). "
@@ -323,10 +319,10 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(atac_out)
 
     log_event(run_dir, {"stage": "s3_doublets", "event": "done",
-                         "overlap": overlap, "removal_rule": removal_rule,
+                         "overlap": overlap, "policy": chosen_policy,
                          "n_removed": int(removed.sum()),
                          "n_rna_post": n_rna_post,
                          "n_joint": n_joint,
                          "branch": workflow_branch})
-    return {"removal_rule": removal_rule, "overlap": overlap,
+    return {"policy": chosen_policy, "overlap": overlap,
             "n_removed": int(removed.sum()), "n_joint": n_joint}

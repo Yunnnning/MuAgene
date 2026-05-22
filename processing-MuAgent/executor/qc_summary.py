@@ -492,9 +492,8 @@ def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
                               (calls["atac_is_doublet"].fillna(False))).sum())
 
     overlap_summary = json.loads(overlap_path.read_text())
-    removal_rule = (overlap_summary.get("removal_rule")
-                    or overlap_summary.get("recommended_policy")
-                    or "unspecified")
+    policy = (overlap_summary.get("recommended_policy")
+              or overlap_summary.get("chosen_policy") or "unspecified")
 
     return (
         "## Doublets (S3)\n"
@@ -514,11 +513,11 @@ def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
         "\n"
         "### Removal\n"
         "\n"
-        f"- Rule: **{removal_rule}**\n"
+        f"- Policy: **{policy}**\n"
         f"- Removed from RNA (S3 RNA: {counts.get('rna_qc_post')} → {counts.get('rna_post_doublet')}): **{n_removed_rna if n_removed_rna is not None else 'n/a'}**\n"
         f"- Removed from ATAC (S3 ATAC: {counts.get('atac_qc_post')} → {counts.get('atac_post_doublet')}): **{n_removed_atac if n_removed_atac is not None else 'n/a'}**\n"
         f"- Distinct barcodes flagged across merged union set: **{n_distinct_flagged}** "
-        f"_(for reference; counts the per-cell flag union, regardless of the removal rule applied)_\n"
+        f"_(for reference; this is the count the raw `overlap_summary.json` reported as `n_removed` and conflated with per-modality counts)_\n"
     )
 
 
