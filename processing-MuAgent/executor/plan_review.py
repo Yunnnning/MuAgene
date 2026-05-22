@@ -97,31 +97,38 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         "certainty": "certain",
     })
 
-    # 5. Doublet policy — reconciliation is only meaningful when both detectors run.
-    # Single-modality branches have one detector; the S3 item is informational, not
-    # a checkpoint gate.
+    # 5. Doublet removal rule — fixed by branch, no user choice.
+    #    paired   -> intersection (both detectors must flag)
+    #    rna_only -> Scrublet flag
+    #    atac_only-> SnapATAC2 scrublet flag
+    #    separate -> per-cell available detector flag
     branch = plan.get("workflow_branch", "paired")
-    policy = param("s3_doublets", "removal_policy_recommendation")
-    goal = param("s3_doublets", "study_goal")
-    if branch in ("paired", "separate"):
+    if branch == "paired":
         items.append({
-            "label": "Doublet removal policy",
-            "value": f"{policy.get('value', '?')} (reconciling Scrublet RNA + ATAC detector; raw calls preserved)",
-            "reason": f"study_goal={goal.get('value', '?')}; four-way overlap recorded; user confirms reconciliation at S3.",
-            "certainty": "needs confirmation",
+            "label": "Doublet removal rule",
+            "value": "intersection — cells flagged by BOTH Scrublet (RNA) and SnapATAC2 (ATAC); raw calls preserved",
+            "reason": "Paired multiome: intersection is the only policy. Preserves modality-specific signal; per-detector scores still recorded in calls.parquet.",
+            "certainty": "certain",
+        })
+    elif branch == "separate":
+        items.append({
+            "label": "Doublet removal rule",
+            "value": "per-cell available detector (RNA and ATAC live on disjoint barcodes); raw calls preserved",
+            "reason": "Separate branch: intersection is not meaningful since modalities share no barcodes.",
+            "certainty": "certain",
         })
     elif branch == "rna_only":
         items.append({
-            "label": "Doublet removal policy",
-            "value": "auto-applied (Scrublet only; raw calls preserved)",
-            "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
+            "label": "Doublet removal rule",
+            "value": "Scrublet only (RNA detector); raw calls preserved",
+            "reason": "Single-modality branch — no reconciliation possible.",
             "certainty": "certain",
         })
     elif branch == "atac_only":
         items.append({
-            "label": "Doublet removal policy",
-            "value": "auto-applied (ATAC detector only; raw calls preserved)",
-            "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
+            "label": "Doublet removal rule",
+            "value": "SnapATAC2 scrublet only (ATAC detector); raw calls preserved",
+            "reason": "Single-modality branch — no reconciliation possible.",
             "certainty": "certain",
         })
 

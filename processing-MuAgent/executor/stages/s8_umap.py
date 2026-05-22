@@ -197,8 +197,20 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
 
     # --- Write branch-specific final output -----------------------------
     if workflow_branch == "paired":
-        common = sorted(set(rna.obs_names) & set(atac_adata.obs_names))
-        if common:
+        # S3 intersects RNA/ATAC barcodes on the paired branch, so by here the
+        # two modalities should already be aligned. Defensive subset stays as a
+        # safety net (e.g. if S5/S6/S7 ever drop cells) and is logged when it
+        # actually filters anything.
+        rna_bcs = set(rna.obs_names)
+        atac_bcs = set(atac_adata.obs_names)
+        if rna_bcs != atac_bcs:
+            common = sorted(rna_bcs & atac_bcs)
+            log_event(run_dir, {"stage": "s8_umap", "event": "barcode_realignment",
+                                 "note": ("RNA/ATAC barcodes diverged between S3 intersection "
+                                          "and S8 — falling back to intersection at assembly."),
+                                 "n_rna_pre": len(rna_bcs),
+                                 "n_atac_pre": len(atac_bcs),
+                                 "n_common": len(common)})
             rna = rna[common].copy()
             atac_adata = atac_adata[common].copy()
         import mudata as mu

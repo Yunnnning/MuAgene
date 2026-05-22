@@ -7,7 +7,9 @@ Audit-driven rewrite — reporting-only changes, no pipeline-logic edits:
        "not evaluated" is reported separately and no longer conflated with
        "not flagged".
     4. Per-modality doublet removal counts (computed from post-doublet h5ads).
-    5. S8 paired-intersection loss shown in the "Final retained" section.
+    5. Paired-intersection happens at S3 (not S8); n_cells_joint is surfaced
+       in the flow table and "Final retained" section. S8 assembly is a safety
+       no-op intersection.
     6. Baselines relabelled from ambiguous "Cells before filtering" to
        stage-aware phrasing (e.g. "Cells entering this stage").
     7. Thresholds rounded to 2 decimal places; integer-typed values are
@@ -94,6 +96,7 @@ def _stage_counts(run_dir: Path) -> dict[str, Any]:
         "atac_after_snap_import": None,
         "rna_qc_post": None, "atac_qc_post": None,
         "rna_post_doublet": None, "atac_post_doublet": None,
+        "n_cells_joint": None,
         "rna_final": None, "atac_final": None,
     }
 
@@ -162,6 +165,15 @@ def _stage_counts(run_dir: Path) -> dict[str, Any]:
         except Exception:
             pass
 
+    # S3 paired-intersection sentinel — present on the paired branch only.
+    joint_path = A / "s3_doublets" / "joint_barcodes.txt"
+    if joint_path.exists():
+        try:
+            text = joint_path.read_text()
+            counts["n_cells_joint"] = sum(1 for line in text.splitlines() if line.strip())
+        except Exception:
+            pass
+
     # S8 final
     processed = A / "s8_umap" / "processed.h5mu"
     rna_h5ad_final = A / "s8_umap" / "rna_processed.h5ad"
@@ -205,6 +217,7 @@ def _flow_section(counts: dict[str, Any]) -> str:
         (counts["atac_post_doublet"] - counts["atac_final"])
         if (counts["atac_post_doublet"] is not None and counts["atac_final"] is not None) else None
     )
+    joint = counts.get("n_cells_joint")
 
     rows = [
         ["1. raw (Cell Ranger / fragments)", fmt(rna_raw), fmt(atac_raw), "— / —"],
@@ -222,13 +235,17 @@ def _flow_section(counts: dict[str, Any]) -> str:
         ["5. after S1 RNA QC  /  S2 ATAC QC",
          fmt(counts["rna_qc_post"]), fmt(counts["atac_qc_post"]),
          "explicit QC filters (RNA: MAD on counts/genes/mt + ribo ceiling; ATAC: TSS + n_frag + nucleosome_signal)"],
-        ["6. after S3 doublet removal",
+        ["6. after S3 doublet removal + paired intersection",
          fmt(counts["rna_post_doublet"]), fmt(counts["atac_post_doublet"]),
-         "union / intersection policy, applied per modality"],
-        ["7. after S8 paired-intersection (final)",
+         (f"paired: union/intersection doublet policy then RNA∩ATAC ⇒ n_joint={fmt(joint)}"
+          if joint is not None
+          else "union/intersection doublet policy, applied per modality")],
+        ["7. after S4–S8 (final)",
          fmt(counts["rna_final"]), fmt(counts["atac_final"]),
-         f"RNA lost {fmt(rna_inter)}, ATAC lost {fmt(atac_inter)} at pairing"
-         if rna_inter is not None else "paired MuData intersection"],
+         (f"paired: S8 assembly is a no-op intersection; RNA lost {fmt(rna_inter)}, "
+          f"ATAC lost {fmt(atac_inter)} downstream of S3"
+          if joint is not None
+          else "per-modality final outputs (no joint object on this branch)")],
     ]
     return (
         "## Cell-count flow across stages\n\n"
@@ -475,8 +492,9 @@ def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
                               (calls["atac_is_doublet"].fillna(False))).sum())
 
     overlap_summary = json.loads(overlap_path.read_text())
-    policy = (overlap_summary.get("recommended_policy")
-              or overlap_summary.get("chosen_policy") or "unspecified")
+    removal_rule = (overlap_summary.get("removal_rule")
+                    or overlap_summary.get("recommended_policy")
+                    or "unspecified")
 
     return (
         "## Doublets (S3)\n"
@@ -496,11 +514,11 @@ def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
         "\n"
         "### Removal\n"
         "\n"
-        f"- Policy: **{policy}**\n"
+        f"- Rule: **{removal_rule}**\n"
         f"- Removed from RNA (S3 RNA: {counts.get('rna_qc_post')} → {counts.get('rna_post_doublet')}): **{n_removed_rna if n_removed_rna is not None else 'n/a'}**\n"
         f"- Removed from ATAC (S3 ATAC: {counts.get('atac_qc_post')} → {counts.get('atac_post_doublet')}): **{n_removed_atac if n_removed_atac is not None else 'n/a'}**\n"
         f"- Distinct barcodes flagged across merged union set: **{n_distinct_flagged}** "
-        f"_(for reference; this is the count the raw `overlap_summary.json` reported as `n_removed` and conflated with per-modality counts)_\n"
+        f"_(for reference; counts the per-cell flag union, regardless of the removal rule applied)_\n"
     )
 
 
@@ -546,30 +564,32 @@ def _final_section(run_dir: Path, counts: dict[str, Any]) -> str:
     )
     match_str = "yes (barcodes aligned)" if matched else "no"
 
-    # Paired-intersection delta
+    # Drop from S3 (post-doublet, post-intersection) to S8 (final).
     rna_lost = (rna_pd - rna_final) if (rna_pd is not None and rna_final is not None) else None
     atac_lost = (atac_pd - atac_final) if (atac_pd is not None and atac_final is not None) else None
+    joint = counts.get("n_cells_joint")
 
     return (
         "## Final retained dataset (S8)\n"
         "\n"
         f"- Output: **{branch}**\n"
         "\n"
-        "### Paired-intersection step (S8)\n"
+        "### Joint cell set (S3 paired intersection)\n"
         "\n"
-        f"- RNA entering S8 (post-doublet):  **{rna_pd if rna_pd is not None else 'n/a'}**\n"
-        f"- ATAC entering S8 (post-doublet): **{atac_pd if atac_pd is not None else 'n/a'}**\n"
-        f"- Cells dropped at pairing intersection: RNA **{rna_lost if rna_lost is not None else 'n/a'}**, "
+        f"- Joint barcodes after S3 intersection: **{joint if joint is not None else 'n/a (non-paired branch)'}**\n"
+        f"- RNA entering downstream stages:  **{rna_pd if rna_pd is not None else 'n/a'}**\n"
+        f"- ATAC entering downstream stages: **{atac_pd if atac_pd is not None else 'n/a'}**\n"
+        f"- Cells dropped between S3 and final assembly: RNA **{rna_lost if rna_lost is not None else 'n/a'}**, "
         f"ATAC **{atac_lost if atac_lost is not None else 'n/a'}** "
-        "(barcodes present in one modality's post-doublet object but not the other)\n"
+        "(should be zero on paired branch — S8 assembly is a safety no-op).\n"
         "\n"
         "### Final counts\n"
         "\n"
         f"- RNA cells:  **{rna_final if rna_final is not None else 'n/a'}**\n"
         f"- ATAC cells: **{atac_final if atac_final is not None else 'n/a'}**\n"
         f"- Modalities matched: **{match_str}**\n"
-        f"- RNA clusters (leiden_rna):   **{rna_k if rna_k is not None else 'n/a'}**\n"
-        f"- ATAC clusters (leiden_atac): **{atac_k if atac_k is not None else 'n/a'}**\n"
+        f"- RNA clusters (leiden_rna):   **{rna_k if rna_k is not None else 'n/a'}** _(diagnostic, per-modality)_\n"
+        f"- ATAC clusters (leiden_atac): **{atac_k if atac_k is not None else 'n/a'}** _(diagnostic, per-modality)_\n"
     )
 
 

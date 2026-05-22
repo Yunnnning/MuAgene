@@ -193,27 +193,31 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     merged["scrublet_is_doublet"] = merged["scrublet_is_doublet"].fillna(False).astype(bool)
     merged["atac_is_doublet"] = merged["atac_is_doublet"].fillna(False).astype(bool)
 
-    # Overlap + policy
+    # Overlap + branch-aware removal rule. The choice is fixed by branch:
+    # paired -> intersection (both detectors); rna_only / atac_only / separate
+    # -> remove whatever was flagged by the available detector. The previous
+    # `union` policy and `study_goal`-based recommendation are gone.
     overlap = _pol.four_way_overlap(merged["scrublet_is_doublet"], merged["atac_is_doublet"])
-    study_goal = plan["stages"]["s3_doublets"]["parameters"]["study_goal"]["value"]
-    policy = _pol.recommend_policy(study_goal)
-    chosen_policy = policy["recommendation"]
-    removed = _pol.apply_policy(merged["scrublet_is_doublet"], merged["atac_is_doublet"], chosen_policy)
-    merged["chosen_policy"] = chosen_policy
+    removed = _pol.combine_flags(merged["scrublet_is_doublet"],
+                                  merged["atac_is_doublet"], workflow_branch)
+    removal_rule = _pol.removal_rule(workflow_branch)
     merged["removed"] = removed
 
     merged.to_parquet(art / "calls.parquet")
     (art / "overlap_summary.json").write_text(json.dumps({
         "overlap": overlap,
-        "study_goal": study_goal,
-        "recommended_policy": chosen_policy,
-        "rationale": policy["rationale"],
+        "workflow_branch": workflow_branch,
+        "removal_rule": removal_rule,
         "n_removed": int(removed.sum()),
     }, indent=2))
 
-    _prov.set_param(params_path, "s3_doublets.removal_policy", chosen_policy,
-                    source="recommended", confidence="high",
-                    rationale=policy["rationale"])
+    _prov.set_param(params_path, "s3_doublets.removal_rule", removal_rule,
+                    source="fixed", confidence="high",
+                    rationale=("Intersection-only doublet removal for paired multiome; "
+                               "single-modality / separate branches fall back to the "
+                               "available detector. Policy is not user-configurable."),
+                    method={"name": "doublet_policy.combine_flags",
+                            "code_ref": "executor/methods/doublet_policy.py"})
     _prov.set_param(params_path, "s3_doublets.atac_method", atac_method,
                     source="derived", confidence="high",
                     rationale=("Plan named AMULET (fragment multi-allelic overlap). "
@@ -229,13 +233,48 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                     method={"name": "doublet_policy.four_way_overlap",
                             "code_ref": "executor/methods/doublet_policy.py"})
 
+    # Compute per-modality survivor sets after doublet removal.
+    rm_bc = set(merged.loc[merged["removed"], "barcode"])
+    rna_survivors = (set(rna.obs_names) - rm_bc) if (has_rna and rna is not None) else set()
+    atac_survivors = (set(atac_bc) - rm_bc) if (has_atac and atac is not None) else set()
+
+    # Paired branch: intersect survivor sets so S4..S8 see matched barcodes.
+    # Per-modality clusterings (S7) remain diagnostic but are computed on the
+    # joint cell set. The final MuData at S8 is guaranteed to be aligned.
+    n_dropped_rna_at_join = 0
+    n_dropped_atac_at_join = 0
+    n_joint: int | None = None
+    if workflow_branch == "paired":
+        joint_bc = rna_survivors & atac_survivors
+        n_dropped_rna_at_join = len(rna_survivors) - len(joint_bc)
+        n_dropped_atac_at_join = len(atac_survivors) - len(joint_bc)
+        rna_survivors = joint_bc
+        atac_survivors = joint_bc
+        n_joint = len(joint_bc)
+        log_event(run_dir, {"stage": "s3_doublets", "event": "paired_intersection",
+                             "n_joint": n_joint,
+                             "n_dropped_rna_at_join": n_dropped_rna_at_join,
+                             "n_dropped_atac_at_join": n_dropped_atac_at_join})
+        _prov.set_param(params_path, "s3_doublets.paired_intersection",
+                        {"n_joint": int(n_joint),
+                         "n_dropped_rna_at_join": int(n_dropped_rna_at_join),
+                         "n_dropped_atac_at_join": int(n_dropped_atac_at_join)},
+                        source="derived", confidence="high",
+                        rationale=("Paired branch: RNA and ATAC barcodes intersected after "
+                                   "doublet removal so downstream stages (S4-S8) operate on the "
+                                   "joint cell set. Cells in only one modality's post-doublet "
+                                   "set are dropped here rather than at S8 assembly."),
+                        method={"name": "s3.paired_intersection",
+                                "code_ref": "executor/stages/s3_doublets.py"})
+        # Also surface a sentinel barcode list so other tools can assert against it.
+        (art / "joint_barcodes.txt").write_text("\n".join(sorted(joint_bc)) + ("\n" if joint_bc else ""))
+
     # Apply removal to RNA (+ write filtered h5ad). Always produce the rna_post
     # sentinel (empty for atac_only) so the declared Snakemake output exists.
-    rm_bc = set(merged.loc[merged["removed"], "barcode"])
     rna_out = art / "rna_post_doublet.h5ad"
     n_rna_post = 0
     if has_rna and rna is not None:
-        keep_rna = ~rna.obs_names.isin(rm_bc)
+        keep_rna = rna.obs_names.isin(rna_survivors)
         rna_f = rna[keep_rna].copy()
         rna_f.write_h5ad(rna_out)
         n_rna_post = int(rna_f.n_obs)
@@ -246,10 +285,10 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         import scipy.sparse as sp
         ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(rna_out)
 
-    # ATAC: subset via SnapATAC2 to non-removed cells (only if ATAC path ran).
+    # ATAC: subset via SnapATAC2 to surviving cells (only if ATAC path ran).
     atac_out = art / "atac_post_doublet.h5ad"
     if has_atac and atac is not None:
-        atac_keep_idx = [i for i, bc in enumerate(atac_bc) if bc not in rm_bc]
+        atac_keep_idx = [i for i, bc in enumerate(atac_bc) if bc in atac_survivors]
         if atac_keep_idx:
             atac_f = atac.subset(obs_indices=atac_keep_idx,
                                   out=str(atac_out), inplace=False)
@@ -260,13 +299,18 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                 atac_f.close()
             except Exception:
                 pass
-        else:
-            # No cells to remove — copy input to expected output path
+        elif workflow_branch != "paired" and len(atac_survivors) == len(atac_bc):
+            # No cells filtered (non-paired, no doublets removed) — copy input.
             import shutil
             atac.close()
             atac = None
             atac_in = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
             shutil.copy(atac_in, atac_out)
+        else:
+            # Empty survivor set (extreme edge: zero joint cells). Write a tiny
+            # placeholder so the declared Snakemake output exists.
+            import scipy.sparse as sp
+            ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(atac_out)
         if atac is not None:
             try:
                 atac.close()
@@ -279,8 +323,10 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(atac_out)
 
     log_event(run_dir, {"stage": "s3_doublets", "event": "done",
-                         "overlap": overlap, "policy": chosen_policy,
+                         "overlap": overlap, "removal_rule": removal_rule,
                          "n_removed": int(removed.sum()),
                          "n_rna_post": n_rna_post,
+                         "n_joint": n_joint,
                          "branch": workflow_branch})
-    return {"policy": chosen_policy, "overlap": overlap, "n_removed": int(removed.sum())}
+    return {"removal_rule": removal_rule, "overlap": overlap,
+            "n_removed": int(removed.sum()), "n_joint": n_joint}

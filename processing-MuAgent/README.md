@@ -25,8 +25,15 @@ Preprocessing stages:
   `mono / nucleosome_free`) + fragment-count MAD via SnapATAC2.
 - **S3 Doublets** — Scrublet (RNA, sparse-CSR input, adaptive
   `expected_doublet_rate ≈ 0.0008 × n_cells`) + SnapATAC2 scrublet (ATAC);
-  four-way overlap summarised and goal-based removal-policy recommendation
-  (union / intersection). Raw calls preserved.
+  four-way overlap reported. Removal rule is **fixed by branch** (no
+  user-configurable union/intersection policy): on the **paired** branch only
+  cells flagged by **both** detectors are removed (intersection — preserves
+  modality-specific signal); on **rna_only**/**atac_only**/**separate** the
+  available detector's flag is applied directly. Raw per-detector calls are
+  preserved in `calls.parquet`. On the paired branch, S3 also performs the
+  joint barcode intersection (see "Paired multiome" below) so downstream
+  stages operate on the joint cell set; a sentinel `joint_barcodes.txt` is
+  written alongside the post-doublet h5ads.
 - **S4 RNA norm + HVG** — log-normalize (target_sum=1e4) + HVG (`seurat_v3` on counts).
 - **S5 ATAC TF-IDF + LSI and Peak Matrix Export** — Performs TF-IDF normalization and spectral embedding (LSI) on the SnapATAC2 tile matrix (`bin_size=500`, unified with S3). In parallel, the stage attempts to export a feature (cell-by-feature) matrix for ATAC using the following approach:
   1. **Peak Matrix:** If available, loads the peak matrix directly from Cell Ranger ARC (10x) multiome `.h5` files ("arc_h5" mode). If ARC peak matrix is unavailable, generates peaks from fragments using SnapATAC2’s MACS3 integration, then constructs a peak-by-cell matrix ("macs3_from_fragments" mode).
@@ -36,7 +43,38 @@ Preprocessing stages:
   For ATAC: cells are embedded using SnapATAC2’s LSI (from previous stage), and neighbor graphs are computed directly on the LSI representation.
 - **S7 Clustering** — Leiden resolution sweep with per-modality grid, stable-region knee picker; RNA tilt=higher, ATAC tilt=lower.
 - **S8 UMAP** — per-modality UMAP; paired → `processed.h5mu`, separate → two `.h5ad`.
+  On the paired branch S8 expects RNA and ATAC barcodes to already match
+  (S3 enforces this); the final assembly contains a defensive re-intersection
+  that is logged when (and only when) it actually filters anything.
 - **manifest** — `run_manifest.json` (handoff contract v1.0.0).
+
+## Paired multiome
+
+The paired branch (single Cell Ranger ARC `.h5` or matched RNA matrix +
+ATAC fragments) guarantees that **the final object contains only cells
+passing both RNA and ATAC QC, with matching barcodes across modalities**.
+
+**Barcode Intersection:** In the paired workflow branch, barcode alignment is enforced in three steps to ensure that only cells passing both RNA and ATAC QC are included. First, during S0 ingest, RNA cells are filtered to those with barcodes present in the ATAC fragments, while the ATAC set is left unfiltered to maximize statistical power for ATAC QC. Next, after S1 and S2 QC and S3 doublet removal, a strict intersection of surviving RNA and ATAC barcodes is performed; the resulting joint set is written to both `rna_post_doublet.h5ad` and `atac_post_doublet.h5ad`, and exported as `joint_barcodes.txt` for downstream validation. Finally, at S8 assembly, the MuData writer re-checks that the RNA and ATAC barcodes are identical; if any mismatch arises due to cell losses in earlier stages, the intersection is recalculated and the event is logged to maintain consistency.
+
+**Doublet removal (intersection-only).** For paired runs, doublets are removed using the intersection of the two detectors: a cell is dropped only if it is flagged by **both** Scrublet (RNA) and SnapATAC2 scrublet (ATAC). This is the only supported rule for paired multiome — the previous `union` policy and `study_goal`-driven recommendation have been removed. Intersection trades a slightly higher residual-doublet rate for a much lower false-positive removal rate, which is the safer default when RNA and ATAC must remain barcode-aligned (a false-positive flag in one modality would otherwise discard an otherwise-clean joint cell). Per-detector scores and boolean flags are still preserved in `calls.parquet`, so a more aggressive cut can be applied retrospectively without re-running S3.
+
+**Diagnostic vs final clustering.** RNA-only clustering (`leiden_rna`) and
+ATAC-only clustering (`leiden_atac`) at S7 are run independently per
+modality and may yield different numbers of clusters — they are
+**diagnostic**, not the final joint clustering. Both are computed on the
+same joint cell set defined at S3, so labels can be cross-tabulated
+directly. Joint clustering (e.g. WNN / MOFA+) is out of scope for this
+preprocessing stage.
+
+**Where to look in artifacts:**
+
+- `internal/artifacts/s3_doublets/joint_barcodes.txt` — sentinel joint set
+  (paired branch only).
+- `internal/parameters.yaml` key `s3_doublets.paired_intersection` —
+  `n_joint`, `n_dropped_rna_at_join`, `n_dropped_atac_at_join`.
+- `deliverables/post_run/qc_summary.md` flow table — row "6. after S3
+  doublet removal + paired intersection" shows the joint count; row 7
+  shows the per-stage delta to the final object.
 
 ## Execution engine
 
