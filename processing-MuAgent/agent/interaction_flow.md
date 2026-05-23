@@ -177,6 +177,86 @@ Approve, revise, or abort?"
 
 ---
 
+## Running on HPC (PBS Pro or SLURM)
+
+The four-step flow above is unchanged on a cluster. Only the underlying execution
+model differs: heavy `_execute` rules dispatch to scheduler jobs, while every
+`*_propose` rule, the planning stages (`p1_context`, `p2_plan`, `plan_review`),
+`s0_ingest`, and `manifest` are declared `localrules` and run on the orchestrator
+host (login node in interactive mode; the head-job in headless mode).
+
+### Three phases
+
+1. **Planning (Phase A)** — on the login node, inside a `tmux`/`screen` session:
+   Steps 1–3 above plus `s0_ingest`. S0 is local because it can raise a
+   pairing-detection conflict that needs interactive resolution before any
+   cluster job is dispatched. The user reviews `pre_run` deliverables here
+   (`plan_review.md`, `context_summary.md`).
+
+   ```bash
+   # Inside tmux on the login node:
+   processing-muagent init --config config/run.yaml
+   processing-muagent run --config $CFG --target s0_ingest_execute
+   ```
+
+2. **Main preprocessing (Phase B)** — submit the unattended head-job.
+   `s3_doublets` defaults to the union policy locked in at `plan_review`; the
+   head-job runs S1a → S6 → S7_propose then stops because
+   `s7_clustering.approved` is missing. The exit hook emails `$PMA_NOTIFY_EMAIL`
+   if set.
+
+   ```bash
+   processing-muagent submit --config $CFG --executor pbs \
+       --auto-approve --auto-approve-except s7_clustering
+   ```
+
+3. **Resolution review + finish (Phase C)** — open the static review HTML at
+   `<run_dir>/deliverables/post_run/notebooks/resolution_review.html`
+   (no Jupyter needed). Approve or revise, then submit a small finishing job
+   that runs `s7_clustering_execute` → `s8_umap` → `manifest`.
+
+   ```bash
+   # Approve:
+   processing-muagent approve s7_clustering --config $CFG
+   # OR revise:
+   processing-muagent revise s7_clustering s7_clustering.rna.resolution=1.2 --config $CFG
+
+   processing-muagent submit --config $CFG --executor pbs
+   ```
+
+### How Claude surfaces things during the HPC flow
+
+- **At Step 1–4 of the interactive flow**, behaviour is identical to local mode.
+- **When the user runs `submit`**, surface the printed PBS/SLURM job id and remind
+  them they can poll with `processing-muagent status --watch --config $CFG`.
+- **When the email arrives (or `status --watch` shows `s7_clustering
+  awaiting_approval`)**, surface the path to `resolution_review.html` (the
+  primary review artifact) AND `resolution_review.ipynb` (for power users who
+  want to re-cluster at custom resolutions interactively). Paste the contents
+  of `resolution_summary.md` verbatim, plus the proposal's `review_artifacts`
+  block.
+- **On approve/revise**, run the appropriate CLI as today, then `submit` again
+  (or `run --executor pbs` if the user prefers foreground in a tmux).
+
+### Site setup (one time)
+
+```bash
+# Imperial RDS (PBS Pro):
+export PMA_PBS_QUEUE=v1_throughput72         # or your allocation's queue
+export PMA_PBS_PROJECT=<your project code>   # if your queue needs -P
+export PMA_NOTIFY_EMAIL=<you@example.com>
+
+# Generic SLURM site:
+export PMA_SLURM_PARTITION=cpu
+export PMA_SLURM_ACCOUNT=<your account>
+export PMA_NOTIFY_EMAIL=<you@example.com>
+
+# Optional: scale memory + walltime for large datasets (default 1).
+export PMA_RESOURCES_SCALE=2                  # ~30k-cell, =4 for ~100k-cell
+```
+
+---
+
 ## When things go wrong
 
 - **S0 raises "declared=... conflicts with detected=..."** — the user's `executor declare-branch` doesn't match what S0 detected. Relay the raised message. Ask the user to either correct the declaration (re-run Step 2 from `executor declare-branch`) or correct the config (edit paths and re-run from Step 2).

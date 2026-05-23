@@ -13,6 +13,10 @@ rule s7_clustering_propose:
         sweep    = str(INTERNAL / "artifacts" / "s7_clustering" / "sweep.parquet"),
         # resolution_summary.md is user-facing → deliverables/summary/
         summary  = str(POST_RUN / "summary" / "resolution_summary.md"),
+        # Review notebook + static HTML deliverables (built statically from the
+        # sweep artifacts; safe to declare as outputs since they are always written).
+        notebook = str(POST_RUN / "notebooks" / "resolution_review.ipynb"),
+        html     = str(POST_RUN / "notebooks" / "resolution_review.html"),
     params:
         run_dir = str(RUN_DIR),
     run:
@@ -20,14 +24,23 @@ rule s7_clustering_propose:
         import yaml
         from pathlib import Path
         from executor import approval, provenance
-        from executor.stages import s7_clustering
+        from executor.stages import s7_clustering, s7_notebook
         plan = json.loads(Path(input.plan).read_text())
         result = s7_clustering.propose(params.run_dir, plan)
+        # Build the resolution-review notebook + static HTML; this is the primary
+        # deliverable users open during the S7 pause in headless / HPC runs.
+        s7_notebook.build_and_render(params.run_dir)
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s7_clustering",
-            "action": "resolution sweep complete; review resolution_summary.md and approve, "
-                      "or revise s7_clustering.rna.resolution / s7_clustering.atac.resolution",
+            "action": "resolution sweep complete; review resolution_review.html (or .ipynb), "
+                      "then approve or revise s7_clustering.rna.resolution / "
+                      "s7_clustering.atac.resolution",
             "recommended": result,
+            "review_artifacts": {
+                "html": str(Path(output.html).resolve()),
+                "notebook": str(Path(output.notebook).resolve()),
+                "markdown": str(Path(output.summary).resolve()),
+            },
         }))
         approval.mark_awaiting(params.run_dir, "s7_clustering")
 
@@ -46,6 +59,10 @@ rule s7_clustering_execute:
         rna_clustered = str(INTERNAL / "artifacts" / "s7_clustering" / "rna_clustered.h5ad"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s7_clustering"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s7_clustering", attempt),
+        runtime=RUNTIME["s7_clustering"],
     run:
         import json
         from pathlib import Path

@@ -39,6 +39,10 @@ rule s1a_ambient_execute:
         h5ad = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s1a_ambient"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s1a_ambient", attempt),
+        runtime=RUNTIME["s1a_ambient"],
     run:
         import json
         from pathlib import Path

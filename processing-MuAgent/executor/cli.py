@@ -5,18 +5,25 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import click
 import yaml
 
-from . import approval, context as _ctx, plan_review as _pr, provenance
+from . import approval, context as _ctx, hpc, plan_review as _pr, provenance
 from .log import log_event
 from .run_paths import RunPaths
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent  # processing-MuAgent/
 SNAKEFILE = PACKAGE_DIR / "workflow" / "Snakefile"
+
+EXECUTOR_CHOICE = click.Choice(["local", "pbs", "slurm"])
+
+STAGES = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
+          "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
+          "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
 
 
 def _resolve_run_dir(config_path: Path | str) -> Path:
@@ -58,11 +65,14 @@ def init(config_path: str) -> None:
 @main.command()
 @click.argument("stage")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-def propose(stage: str, config_path: str) -> None:
+@click.option("--executor", type=EXECUTOR_CHOICE, default="local",
+              help="Execution backend: local (default), pbs, or slurm.")
+def propose(stage: str, config_path: str, executor: str) -> None:
     """Run the <stage>_propose rule."""
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
-    _snakemake(["--configfile", str(paths.run_yaml), f"{stage}_propose"], run_dir)
+    _snakemake(["--configfile", str(paths.run_yaml), f"{stage}_propose"],
+               run_dir, executor=executor)
 
 
 @main.command()
@@ -128,16 +138,9 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
     click.echo(f"Revised {key} = {value_parsed!r}; {stage} is awaiting_approval.")
 
 
-@main.command()
-@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-def status(config_path: str) -> None:
-    """Print per-stage state."""
-    run_dir = _resolve_run_dir(config_path)
-    paths = RunPaths(run_dir)
-    stages = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
-              "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-              "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
-    for s in stages:
+def _stage_states(paths: RunPaths) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for s in STAGES:
         proposed = paths.proposal(s).exists()
         awaiting = paths.awaiting_sentinel(s).exists()
         approved = paths.approved_sentinel(s).exists()
@@ -149,7 +152,45 @@ def status(config_path: str) -> None:
             state = "proposed"
         else:
             state = "pending"
-        click.echo(f"  {s:20s}  {state}")
+        out.append((s, state))
+    return out
+
+
+@main.command()
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+@click.option("--watch", is_flag=True,
+              help="Poll until a checkpoint needs approval or manifest completes.")
+@click.option("--interval", type=float, default=15.0,
+              help="Poll interval in seconds when --watch is set.")
+def status(config_path: str, watch: bool, interval: float) -> None:
+    """Print per-stage state. With --watch, polls until something changes."""
+    run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
+
+    def _print(states: list[tuple[str, str]]) -> None:
+        for s, st in states:
+            click.echo(f"  {s:20s}  {st}")
+
+    if not watch:
+        _print(_stage_states(paths))
+        return
+
+    last: list[tuple[str, str]] | None = None
+    while True:
+        states = _stage_states(paths)
+        if states != last:
+            click.echo(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+            _print(states)
+            last = states
+        # Stop if any stage is awaiting approval (user must act) or manifest exists.
+        if any(st == "awaiting_approval" for _, st in states):
+            click.echo("\n→ a stage is awaiting approval; review and run "
+                       "`processing-muagent approve <stage>`.")
+            return
+        if paths.run_manifest_json.exists():
+            click.echo("\n→ run_manifest.json present; pipeline complete.")
+            return
+        time.sleep(max(2.0, interval))
 
 
 @main.command(name="plan-review")
@@ -191,10 +232,22 @@ def resolution_compare_cmd(config_path: str, rna_pair: str, atac_pair: str) -> N
 @main.command(name="run")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--auto-approve", is_flag=True, help="Auto-approve every checkpoint (noninteractive).")
+@click.option("--auto-approve-except", "auto_except", multiple=True,
+              help="With --auto-approve, do NOT pre-seed the given stage(s). Repeatable. "
+                   "Example: --auto-approve-except s7_clustering")
 @click.option("--no-context", is_flag=True, help="Explicit user choice to proceed without biological context; fields marked status=missing.")
 @click.option("--target", default="all")
-def run_pipeline(config_path: str, auto_approve: bool, no_context: bool, target: str) -> None:
-    """Run the full DAG. With --auto-approve, checkpoints are unblocked automatically."""
+@click.option("--executor", type=EXECUTOR_CHOICE, default="local",
+              help="Execution backend: local (default), pbs, or slurm. "
+                   "When pbs/slurm, snakemake stays in the foreground on this host "
+                   "and dispatches per-rule cluster jobs.")
+def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, ...],
+                 no_context: bool, target: str, executor: str) -> None:
+    """Run the full DAG. With --auto-approve, checkpoints are unblocked automatically.
+
+    Use --auto-approve-except <stage> to keep specific gates honoured (e.g. the
+    S7 clustering-resolution review in headless HPC mode).
+    """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
 
@@ -222,33 +275,108 @@ def run_pipeline(config_path: str, auto_approve: bool, no_context: bool, target:
                    "fields will be marked status=missing.", err=True)
 
     if auto_approve:
-        # Pre-seed all approval sentinels so snakemake can run the DAG end-to-end
-        # in a single invocation; set PMA_AUTO_APPROVE=1 so propose rules don't
-        # strip the approvals when they (re-)run.
-        stages = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
-                  "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-                  "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
-        for s in stages:
+        # Pre-seed approval sentinels so snakemake can run the DAG end-to-end in a
+        # single invocation; --auto-approve-except keeps the listed stages gated.
+        kept = set(auto_except)
+        for s in STAGES:
+            if s in kept:
+                continue
             approval.approve(run_dir, s, note="auto-approved")
         os.environ["PMA_AUTO_APPROVE"] = "1"
-        _snakemake(["--configfile", str(paths.run_yaml), "all"], run_dir)
+        if kept:
+            click.echo(f"Auto-approved all stages except: {sorted(kept)}. "
+                       "Snakemake will stop at those gates.")
+        _snakemake(["--configfile", str(paths.run_yaml), "all"],
+                   run_dir, executor=executor)
     else:
-        _snakemake(["--configfile", str(paths.run_yaml), target], run_dir)
+        _snakemake(["--configfile", str(paths.run_yaml), target],
+                   run_dir, executor=executor)
 
 
-def _snakemake(args: list[str], run_dir: Path) -> None:
-    """Invoke snakemake. NOTE: --configfile has nargs=+, so targets must NOT appear
-    directly after it. We put targets first, then options at the end.
+@main.command()
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+@click.option("--executor", type=EXECUTOR_CHOICE, required=True,
+              help="Scheduler to submit the head-job to (pbs or slurm). "
+                   "Use --executor local with `run` instead for foreground runs.")
+@click.option("--target", default="all",
+              help="Snakemake target the head-job will run (default: all).")
+@click.option("--auto-approve", is_flag=True,
+              help="Pre-seed all checkpoint sentinels; head-job runs unattended end-to-end.")
+@click.option("--auto-approve-except", "auto_except", multiple=True,
+              help="With --auto-approve, keep these gates honoured. Repeatable.")
+@click.option("--output", "output_log", type=click.Path(), default=None,
+              help="Scheduler output-log path for the head-job (optional).")
+def submit(config_path: str, executor: str, target: str,
+           auto_approve: bool, auto_except: tuple[str, ...],
+           output_log: str | None) -> None:
+    """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
+
+    The head-job runs on a compute node, activates the project conda env, and
+    invokes snakemake with the cluster profile. snakemake then submits per-stage
+    child jobs. The head-job exits when the DAG completes or stops at a missing
+    approval gate; it emails $PMA_NOTIFY_EMAIL on exit if set.
+
+    Typical headless workflow on HPC:
+
+        # Run planning interactively (Phase A), then submit the heavy middle:
+        processing-muagent submit --config $CFG --executor pbs \\
+                --auto-approve --auto-approve-except s7_clustering
+
+        # After the email arrives, review resolution_review.html, approve, resume:
+        processing-muagent approve s7_clustering --config $CFG
+        processing-muagent submit --config $CFG --executor pbs
+    """
+    if executor == "local":
+        raise click.UsageError("--executor local is for `run`, not `submit`. "
+                               "Use pbs or slurm here.")
+    run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
+
+    if auto_approve:
+        kept = set(auto_except)
+        for s in STAGES:
+            if s in kept:
+                continue
+            approval.approve(run_dir, s, note="auto-approved (submit)")
+        if kept:
+            click.echo(f"Auto-approved all stages except: {sorted(kept)}.")
+
+    out_path = Path(output_log) if output_log else None
+    job_id = hpc.submit_head_job(executor, paths.run_yaml, target=target,
+                                  output_log=out_path)
+    log_event(run_dir, {"stage": "submit", "event": "head_job_submitted",
+                        "executor": executor, "target": target,
+                        "job_id": job_id, "auto_approve": auto_approve,
+                        "kept_gates": sorted(set(auto_except))})
+    click.echo(f"Submitted {executor} head-job: {job_id}")
+    click.echo(f"  config:  {paths.run_yaml}")
+    click.echo(f"  target:  {target}")
+    if os.environ.get("PMA_NOTIFY_EMAIL"):
+        click.echo(f"  notify:  {os.environ['PMA_NOTIFY_EMAIL']}")
+    click.echo("\nPoll progress with: processing-muagent status --watch "
+               f"--config {paths.run_yaml}")
+
+
+def _snakemake(args: list[str], run_dir: Path, *, executor: str = "local") -> None:
+    """Invoke snakemake.
+
+    Local mode runs snakemake with --cores 1 for reproducibility. Cluster modes
+    (pbs/slurm) attach the appropriate Snakemake profile so each non-local rule
+    is dispatched as a scheduler job; planning/propose/manifest rules remain
+    local per the `localrules:` directive in the Snakefile.
+
     Expected args shape from callers: ["--configfile", <path>, <target>].
     """
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(PACKAGE_DIR))
-    # Single-thread for reproducibility (UMAP / numba).
+    # Single-thread for reproducibility (UMAP / numba) — unchanged on local;
+    # cluster jobs inherit these unless the user overrides in their shell.
     env.setdefault("NUMBA_NUM_THREADS", "1")
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("PYTHONHASHSEED", "0")
     if os.environ.get("PMA_AUTO_APPROVE"):
         env["PMA_AUTO_APPROVE"] = os.environ["PMA_AUTO_APPROVE"]
+
     configfile_path = None
     targets: list[str] = []
     rest: list[str] = []
@@ -260,12 +388,25 @@ def _snakemake(args: list[str], run_dir: Path) -> None:
             rest.append(a)
         else:
             targets.append(a)
+
     cmd = [sys.executable, "-m", "snakemake", "-s", str(SNAKEFILE),
-           "--cores", "1", "--rerun-incomplete", *targets, *rest]
+           "--rerun-incomplete", *targets, *rest]
+    if executor == "local":
+        cmd += ["--cores", "1"]
+    else:
+        profile = hpc.profile_path(executor)
+        cmd += ["--profile", str(profile), "--jobs", "8"]
+        # SLURM site-specific defaults from env vars.
+        if executor == "slurm":
+            if env.get("PMA_SLURM_PARTITION"):
+                cmd += ["--default-resources", f"slurm_partition={env['PMA_SLURM_PARTITION']}"]
+            if env.get("PMA_SLURM_ACCOUNT"):
+                cmd += ["--default-resources", f"slurm_account={env['PMA_SLURM_ACCOUNT']}"]
+
     if configfile_path:
         cmd += ["--configfile", configfile_path]
     click.echo(f"$ {' '.join(cmd)}")
-    r = subprocess.run(cmd, env=env)
+    r = subprocess.run(cmd, env=env, cwd=str(PACKAGE_DIR))
     if r.returncode != 0:
         raise click.ClickException(f"snakemake exited with {r.returncode}")
 

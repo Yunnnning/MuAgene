@@ -40,6 +40,10 @@ rule s8_umap_execute:
         sentinel = str(INTERNAL / "artifacts" / "s8_umap" / "s8_done.txt"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s8_umap"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s8_umap", attempt),
+        runtime=RUNTIME["s8_umap"],
     run:
         import json
         from pathlib import Path

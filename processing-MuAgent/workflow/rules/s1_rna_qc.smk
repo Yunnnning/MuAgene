@@ -30,6 +30,10 @@ rule s1_rna_qc_execute:
         h5ad = str(INTERNAL / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s1_rna_qc"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s1_rna_qc", attempt),
+        runtime=RUNTIME["s1_rna_qc"],
     run:
         import json
         from pathlib import Path

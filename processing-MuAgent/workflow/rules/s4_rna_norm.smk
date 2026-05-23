@@ -27,6 +27,10 @@ rule s4_rna_norm_execute:
         h5ad = str(INTERNAL / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s4_rna_norm"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s4_rna_norm", attempt),
+        runtime=RUNTIME["s4_rna_norm"],
     run:
         import json
         from pathlib import Path

@@ -1,0 +1,51 @@
+# Canonical conda env for processing-MuAgent — mirrors the working `grn` env
+# used during development. In v1 the runner wrapper activates the existing
+# `grn` env directly (set PMA_CONDA_ENV to override the name); this file is
+# the durable spec for re-creating it on a fresh site.
+#
+# Recreate:
+#   micromamba env create -n grn -f workflow/envs/processing.yaml
+#   micromamba activate grn
+#   pip install -e .              # processing-muagent itself
+#
+# Notes:
+# - Snakemake + scheduler executor plugins live here so the runner wrapper
+#   doesn't need a separate snakemake env.
+# - nbconvert + papermill are included for the S7 resolution-review notebook
+#   deliverable.
+# - The optional R deps for S1a ambient correction (celda, SoupX) are NOT
+#   listed here; install them separately if you want SoupX/DecontX correction.
+#   S1a degrades to pass-through if R is absent.
+name: grn
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10,<3.13
+  - pip
+  - scanpy>=1.10
+  - anndata>=0.10
+  - mudata>=0.2
+  - muon>=0.1
+  - snapatac2>=2.6
+  - leidenalg>=0.10
+  - umap-learn>=0.5
+  - numpy>=1.24
+  - scipy>=1.11
+  - pandas>=2.0
+  - pyarrow>=14
+  - pyyaml>=6
+  - requests>=2.31
+  - click>=8.1
+  - jinja2>=3.1
+  - matplotlib>=3.7
+  - scikit-learn>=1.3
+  - nbconvert>=7
+  - jupyter_client
+  - ipykernel
+  - pip:
+      - scrublet>=0.2
+      - snakemake>=7.32
+      - snakemake-executor-plugin-cluster-generic
+      - snakemake-executor-plugin-slurm
+      - papermill

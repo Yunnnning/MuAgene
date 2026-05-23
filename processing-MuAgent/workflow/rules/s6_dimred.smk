@@ -38,6 +38,10 @@ rule s6_dimred_execute:
         rna_h5ad = str(INTERNAL / "artifacts" / "s6_dimred" / "rna_dimred.h5ad"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s6_dimred"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s6_dimred", attempt),
+        runtime=RUNTIME["s6_dimred"],
     run:
         import json
         from pathlib import Path

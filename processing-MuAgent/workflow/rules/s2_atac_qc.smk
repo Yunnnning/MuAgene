@@ -43,6 +43,10 @@ rule s2_atac_qc_execute:
         h5ad = str(INTERNAL / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s2_atac_qc"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s2_atac_qc", attempt),
+        runtime=RUNTIME["s2_atac_qc"],
     run:
         import json
         from pathlib import Path

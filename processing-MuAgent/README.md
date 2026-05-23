@@ -153,18 +153,112 @@ for STAGE in s0_ingest s1a_ambient s1_rna_qc s2_atac_qc \
 done
 ```
 
+## Running on HPC (PBS Pro or SLURM)
+
+For large datasets the workflow runs in three phases. **Planning** (`p1_context`,
+`p2_plan`, `plan_review`, `s0_ingest`) stays on the login node so any pairing-
+detection conflict surfaces interactively before any cluster job is dispatched.
+The **main preprocessing middle** (S1a–S7 propose) runs as a scheduler head-job.
+Then a brief **resolution review + finish** completes S7_execute → S8 → manifest.
+
+### One-time setup
+
+```bash
+# Imperial RDS (PBS Pro):
+export PMA_PBS_QUEUE=v1_throughput72            # your allocation's queue
+export PMA_PBS_PROJECT=<your project code>      # if your queue needs -P
+export PMA_NOTIFY_EMAIL=<you@example.com>
+
+# Generic SLURM site:
+export PMA_SLURM_PARTITION=cpu
+export PMA_SLURM_ACCOUNT=<your account>
+
+# Optional — scale per-rule mem and walltime for larger cohorts (default 1):
+export PMA_RESOURCES_SCALE=2
+```
+
+Activate the project conda env (`grn` by default; set `PMA_CONDA_ENV` to override).
+
+### Phase A — planning (login node, inside `tmux`)
+
+```bash
+tmux new -s pma
+processing-muagent init --config config/run.yaml
+CFG=<run_dir>/deliverables/pre_run/config/run.yaml
+processing-muagent run --config $CFG --target s0_ingest_execute
+# Walk through plan_review approval / branch declaration as in the local flow.
+```
+
+### Phase B — submit the unattended head-job
+
+```bash
+processing-muagent submit --config $CFG --executor pbs \
+    --auto-approve --auto-approve-except s7_clustering
+```
+
+`--auto-approve-except s7_clustering` keeps the clustering-resolution gate
+honoured. The head-job stops at `s7_clustering` propose and emails
+`$PMA_NOTIFY_EMAIL` (if set). Or watch from a terminal:
+
+```bash
+processing-muagent status --watch --config $CFG
+```
+
+### Phase C — review + finish
+
+Open in any browser:
+
+```
+<run_dir>/deliverables/post_run/notebooks/resolution_review.html
+```
+
+The accompanying `resolution_review.ipynb` is for power users who want to
+re-cluster at custom resolutions interactively. Approve or revise:
+
+```bash
+processing-muagent approve s7_clustering --config $CFG
+# OR revise a resolution:
+processing-muagent revise s7_clustering s7_clustering.rna.resolution=1.2 --config $CFG
+
+processing-muagent submit --config $CFG --executor pbs
+```
+
+### Foreground cluster mode (alternative to `submit`)
+
+If you'd rather keep snakemake in your tmux session (lowest-latency approvals,
+no head-job queue time):
+
+```bash
+processing-muagent run --config $CFG --executor pbs
+```
+
+Snakemake stays attached to the terminal and dispatches per-rule cluster jobs;
+it exits cleanly when it hits an unapproved gate. Re-invoke after each approval.
+
+### Per-stage resources
+
+Edit `workflow/resources.smk` if you need to override mem/walltime/cpus. The
+table is the single source of truth for both PBS and SLURM profiles. OOM-killed
+jobs are retried once at 2× memory (`restart-times: 1`).
+
 ## Repository layout
 
 ```
 processing-MuAgent/
 ├── config/              # example run configurations
 ├── executor/            # Python implementation (stages, methods, CLI, helpers)
-│   ├── stages/          # per-stage scripts S0..S8
-│   └── methods/         # named-method helpers (MAD thresholds, resolution sweep, doublet policy)
+│   ├── stages/          # per-stage scripts S0..S8 (+ s7_notebook deliverable builder)
+│   ├── methods/         # named-method helpers (MAD thresholds, resolution sweep, doublet policy)
+│   └── hpc.py           # PBS/SLURM head-job submission helpers
 ├── workflow/            # Snakemake orchestration
-│   ├── Snakefile
+│   ├── Snakefile        # localrules: declared for planning + propose + manifest
+│   ├── resources.smk    # per-stage mem/runtime/cpus (single source of truth)
 │   ├── rules/           # per-stage propose/execute rule pairs + manifest
-│   └── envs/            # (reserved) per-rule conda env YAMLs — see envs/README.md
+│   ├── envs/            # conda env (workflow/envs/processing.yaml mirrors `grn`)
+│   └── profiles/
+│       ├── pbs/         # PBS Pro snakemake profile (qsub wrapper)
+│       └── slurm/       # SLURM snakemake profile
+├── scripts/             # launch_runner.sh + head-job templates (runner.{pbs,slurm})
 └── tests/               # (empty placeholder) unit tests are planned, see the approved design
 ```
 

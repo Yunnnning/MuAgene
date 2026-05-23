@@ -28,6 +28,10 @@ rule s5_atac_lsi_execute:
         summary = str(INTERNAL / "artifacts" / "s5_atac_lsi" / "lsi_summary.json"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s5_atac_lsi"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s5_atac_lsi", attempt),
+        runtime=RUNTIME["s5_atac_lsi"],
     run:
         import json
         from pathlib import Path

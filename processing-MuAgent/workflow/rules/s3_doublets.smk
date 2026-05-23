@@ -43,6 +43,10 @@ rule s3_doublets_execute:
         calls     = str(INTERNAL / "artifacts" / "s3_doublets" / "calls.parquet"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s3_doublets"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s3_doublets", attempt),
+        runtime=RUNTIME["s3_doublets"],
     run:
         import json
         from pathlib import Path

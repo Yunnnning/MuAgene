@@ -35,6 +35,8 @@ STAGES = [
 ]
 
 
+include: "resources.smk"
+
 include: "rules/p1_context.smk"
 include: "rules/p2_plan.smk"
 include: "rules/plan_review.smk"
@@ -49,6 +51,30 @@ include: "rules/s6_dimred.smk"
 include: "rules/s7_clustering.smk"
 include: "rules/s8_umap.smk"
 include: "rules/manifest.smk"
+
+
+# Rules that always run on the orchestrator host (login node or runner head-job),
+# never submitted as cluster jobs. These are:
+#   - all *_propose rules (cheap I/O + sentinel-writing)
+#   - planning + ingest execute rules (P1/P2/plan_review/S0; light, and S0
+#     pairing-detection can raise a checkpoint-grade conflict that must be
+#     resolved interactively before any compute job is dispatched)
+#   - manifest (assembly of summaries + handoff JSON)
+localrules:
+    p1_context_propose, p1_context_execute,
+    p2_plan_propose, p2_plan_execute,
+    plan_review_propose,
+    s0_ingest_propose, s0_ingest_execute,
+    s1a_ambient_propose,
+    s1_rna_qc_propose,
+    s2_atac_qc_propose,
+    s3_doublets_propose,
+    s4_rna_norm_propose,
+    s5_atac_lsi_propose,
+    s6_dimred_propose,
+    s7_clustering_propose,
+    s8_umap_propose,
+    manifest,
 
 
 rule all:
