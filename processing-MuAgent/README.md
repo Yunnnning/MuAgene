@@ -46,17 +46,11 @@ Preprocessing stages:
   + `pct_counts_ribo` ceiling, computed on the decontaminated counts from S1a.
 - **S2 ATAC QC** — TSS enrichment + per-cell nucleosome signal (Signac-style
   `mono / nucleosome_free`) + fragment-count MAD via SnapATAC2.
-- **S3 Doublets** — Scrublet (RNA, sparse-CSR input, adaptive
-  `expected_doublet_rate ≈ 0.0008 × n_cells`) + SnapATAC2 scrublet (ATAC);
-  four-way overlap summarised and goal-based removal-policy recommendation
-  (union / intersection). **Default is union** (cells flagged by either
-  detector removed) for `study_goal=clustering_inference` or unspecified;
-  intersection is recommended only when `study_goal=rare_populations`. The
-  user confirms the policy at the S3 checkpoint. Raw per-detector calls are
-  preserved in `calls.parquet`. On the paired branch, S3 also performs the
-  joint barcode intersection (see "Paired multiome" below) so downstream
-  stages operate on the joint cell set; a sentinel `joint_barcodes.txt` is
-  written alongside the post-doublet h5ads.
+- **S3 Doublets** — For separate RNA and ATAC processing, doublet detection is performed independently per modality:
+  - **RNA:** Uses Scrublet (sparse-CSR input, with `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%) to call doublets on the RNA cell set.
+  - **ATAC:** Uses SnapATAC2 scrublet for doublet detection on the ATAC cell set (thresholds configurable in the preprocessing plan).
+  The removal-policy recommendation is **always independent** when `workflow_branch=separate`, following standard scRNA-seq/scATAC-seq conventions. The per-modality doublet calls are saved in dedicated `calls.parquet` files for RNA and ATAC, respectively. The user reviews these results at the S3 checkpoint before proceeding.
+  On the paired branch, S3 also performs the joint barcode intersection and multi-way removal-policy recommendation (see "Paired multiome" below); a sentinel `joint_barcodes.txt` is written alongside the post-doublet h5ads.
 - **S4 RNA norm + HVG** — log-normalize (target_sum=1e4) + HVG (`seurat_v3` on counts).
 - **S5 ATAC TF-IDF + LSI and Peak Matrix Export** — Performs TF-IDF normalization and spectral embedding (LSI) on the SnapATAC2 tile matrix (`bin_size=500`, unified with S3). In parallel, the stage attempts to export a feature (cell-by-feature) matrix for ATAC using the following priority order:
   0. **User-supplied peaks:** if `atac_peaks_path` is set in `run.yaml`, S5 builds the peak-by-cell matrix from those intervals via SnapATAC2's `make_peak_matrix` ("user_peaks" mode). Highest priority — user intent wins.

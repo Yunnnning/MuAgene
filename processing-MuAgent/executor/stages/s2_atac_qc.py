@@ -81,6 +81,27 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             f"Available assemblies: {available}."
         )
 
+    # Clip fragments to declared chromosome bounds before SnapATAC2 import.
+    # Some aligners produce fragments that extend past a chromosome end
+    # (aligner treats end as open interval); SnapATAC2's Rust backend panics on
+    # these. Filter is idempotent: skipped if the _cbf file already exists.
+    cbf_path = art / "atac_fragments_cbf.tsv.gz"
+    try:
+        fragments_path = str(_io.filter_fragments_to_chrom_bounds(
+            fragments_path, dict(genome_ref.chrom_sizes), cbf_path,
+        ))
+        _prov.set_param(params_path, "s2_atac_qc.chrom_bound_filter",
+                        str(cbf_path),
+                        source="derived", confidence="high",
+                        rationale=("Fragments with end > chromosome length removed before "
+                                   "SnapATAC2 import. Typically <2% of fragments; artifacts of "
+                                   "aligners treating chromosome ends as open intervals."),
+                        method={"name": "io.filter_fragments_to_chrom_bounds",
+                                "code_ref": "executor/io.py::filter_fragments_to_chrom_bounds"})
+    except Exception as _e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "chrom_bound_filter_failed",
+                             "error": str(_e), "falling_back_to": "unfiltered"})
+
     # Import fragments into a fresh SnapATAC2-backed h5ad
     h5_out = art / "atac_snap.h5ad"
     adata = snap.pp.import_fragments(

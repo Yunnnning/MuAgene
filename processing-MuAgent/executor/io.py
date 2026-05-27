@@ -473,6 +473,62 @@ def _tabix_list_chromosomes(path: Path) -> list[str] | None:
         return None
 
 
+def filter_fragments_to_chrom_bounds(
+    in_path: Path | str,
+    chrom_sizes: dict[str, int],
+    out_path: Path | str | None = None,
+) -> Path:
+    """Remove fragments whose end position exceeds the chromosome length.
+
+    Fragments falling outside declared chromosome bounds cause SnapATAC2's Rust
+    backend to panic. This function produces a clean bgzipped+tabix-indexed file
+    with those fragments dropped (typically <1-2% of all fragments; artifacts of
+    the aligner treating chromosome ends as open intervals).
+
+    The output file is written to `out_path` (defaults to a `_cbf.tsv.gz` sibling
+    of `in_path`). Idempotent: returns immediately if both output and .tbi exist.
+    """
+    in_path = Path(in_path)
+    if out_path is None:
+        stem = in_path.name
+        for ext in (".gz", ".tsv", ".bed", ".txt"):
+            if stem.endswith(ext):
+                stem = stem[: -len(ext)]
+        out_path = in_path.parent / (stem + "_cbf.tsv.gz")
+    out_path = Path(out_path)
+    tbi = Path(str(out_path) + ".tbi")
+    if out_path.exists() and tbi.exists():
+        return out_path
+
+    for tool in ("bgzip", "tabix"):
+        if not shutil.which(tool):
+            raise RuntimeError(f"{tool} not found on PATH.")
+
+    # Build inline awk sizes dict — no temp file needed.
+    sizes_str = "; ".join(f'sizes["{c}"]={s}' for c, s in chrom_sizes.items())
+    awk_prog = (
+        f'BEGIN{{ OFS="\\t"; {sizes_str} }}'
+        ' { if (!($1 in sizes) || (int($3) <= sizes[$1])) print }'
+    )
+
+    zcat = subprocess.Popen(["zcat", str(in_path)], stdout=subprocess.PIPE)
+    awk = subprocess.Popen(["awk", awk_prog], stdin=zcat.stdout, stdout=subprocess.PIPE)
+    with open(out_path, "wb") as fh:
+        bgzip = subprocess.Popen(["bgzip", "-c"], stdin=awk.stdout, stdout=fh)
+    for p_obj in (zcat, awk):
+        if p_obj.stdout:
+            p_obj.stdout.close()
+    bgzip.wait(); awk.wait(); zcat.wait()
+    for name, proc in [("zcat", zcat), ("awk", awk), ("bgzip", bgzip)]:
+        if proc.returncode not in (0, None):
+            raise RuntimeError(f"filter_fragments_to_chrom_bounds: {name} exited {proc.returncode}")
+
+    result = subprocess.run(["tabix", "-p", "bed", str(out_path)], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"tabix indexing failed:\n{result.stderr}")
+    return out_path
+
+
 def validate_fragments(path: Path | str, peek_lines: int = 2000) -> dict[str, Any]:
     """Validate structure of fragments.tsv.gz. Returns diagnostics + chromosome set.
 
