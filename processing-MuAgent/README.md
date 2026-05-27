@@ -13,16 +13,32 @@ Pre-preprocessing phases (run before any QC):
 
 Preprocessing stages:
 
-- **S0 Ingest** — Accepts both Cell Ranger **filtered** and **raw** matrices. Format 
-  autodetect (10x h5 / MEX / h5ad / custom), fragments validation (+ tbi), and a
-  **diagnostics-driven pairing decision**: detection (direct or suffix-normalized
-  barcode overlap) is advisory; user `declare-branch paired` + optional
-  `barcode_translation_path` / `cell_metadata_path` are consulted via a ladder
-  before committing the workflow branch. When the ladder cannot establish
+- **S0 Ingest** — Accepts both Cell Ranger **filtered** and **raw** matrices. Format
+  autodetect for RNA and ATAC inputs (see table below), fragments validation
+  (+ tbi), and a **diagnostics-driven pairing decision**: detection (direct or
+  suffix-normalized barcode overlap) is advisory; user `declare-branch paired` +
+  optional `barcode_translation_path` / `cell_metadata_path` are consulted via a
+  ladder before committing the workflow branch. When the ladder cannot establish
   cell-level pairing, S0 auto-downgrades `paired → separate` with the reason
   surfaced in `validation_report.json`. No barcode pre-intersection at S0 — S3
   is the sole enforcement point for the paired branch. Metadata handling
   (minimal reconstruction when absent) is unchanged.
+
+  **Supported RNA input formats (`rna_path`):**
+
+  | Format tag | File pattern | Notes |
+  |------------|-------------|-------|
+  | `10x_h5` | `*.h5` | Cell Ranger (ARC) HDF5; GEX features filtered automatically |
+  | `10x_mex` | directory | 10x MEX bundle with `matrix.mtx[.gz]` + `barcodes.tsv[.gz]` |
+  | `h5ad` | `*.h5ad` | AnnData; `.X` must contain raw integer counts |
+  | `dense_txt` | `*.txt.gz`, `*.tsv.gz` | Dense genes × cells tab-delimited matrix (common GEO supplementary format). Row 0 = cell-barcode header; rows 1+ = gene symbol + counts. Loaded in 500-gene chunks to bound peak RAM. |
+
+  **Supported ATAC input formats (`atac_fragments_path`):**
+
+  | Format tag | File pattern | Notes |
+  |------------|-------------|-------|
+  | `fragments_tsv` | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present |
+  | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings in the source are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 - **S1a Ambient RNA correction** — DecontX (filtered counts only) or SoupX
   (raw + filtered) auto-dispatched from `s0` outputs. Pass-through when R / Bioconductor 
   is unavailable.
@@ -142,9 +158,17 @@ At minimum set:
 
 ```yaml
 run_dir:               /path/to/your/output/run_01   # where all outputs will be created
-rna_path:              /path/to/filtered_feature_bc_matrix.h5
-atac_fragments_path:   /path/to/atac_fragments.tsv.gz
 genome_assembly:       GRCh38   # or mm10
+
+# --- RNA input (any one of the supported formats) -------------------------
+rna_path:              /path/to/filtered_feature_bc_matrix.h5      # 10x h5
+# rna_path:            /path/to/filtered_feature_bc_matrix/         # 10x MEX dir
+# rna_path:            /path/to/counts.h5ad                         # AnnData
+# rna_path:            /path/to/raw_count_matrix.txt.gz             # dense genes×cells GEO matrix
+
+# --- ATAC input (any one of the supported formats) ------------------------
+atac_fragments_path:   /path/to/atac_fragments.tsv.gz   # standard 5-col bgzip+tabix
+# atac_fragments_path: /path/to/fragments.bed.gz         # 4-col BED → auto-converted by S0
 
 # --- Optional paired-multiome inputs (all default to unset / None) --------
 # 2-column TSV (rna_barcode, atac_barcode) mapping cell pairs across whitelists.

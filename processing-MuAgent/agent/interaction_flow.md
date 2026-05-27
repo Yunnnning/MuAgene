@@ -27,8 +27,8 @@ Before you answer, one other thing I'll need: a run directory — a writable fol
 Mandatory approval points depend on the branch:
 
 - All branches: (1) biological context, (2) the full preprocessing plan, (3) clustering resolution.
-- `paired` / `separate` only: (4) doublet-policy reconciliation at S3 — how to combine the RNA and ATAC detector calls.
-- `rna_only` / `atac_only`: S3 runs with the single-detector recommended policy; no reconciliation to confirm, so no pause there unless you ask for stage-by-stage review.
+- `paired` only: (4) doublet-policy reconciliation at S3 — how to combine the RNA and ATAC detector calls.
+- `separate` / `rna_only` / `atac_only`: S3 runs automatically — each modality's doublets are filtered by its own detector with no cross-modal reconciliation; no pause unless you ask for per-stage review.
 
 Which analysis, and where should I write the run?"
 
@@ -148,7 +148,7 @@ The full 8-item `plan_review.md` content, verbatim. Do not paraphrase values. If
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3.
-- **`s3_doublets`** (`paired` / `separate` only): Scrublet + ATAC detector overlap table; user confirms reconciliation policy (union vs intersection). For `rna_only` / `atac_only`, auto-approve silently — no reconciliation to confirm — unless the user explicitly asked for per-stage review.
+- **`s3_doublets`** (`paired` only): Scrublet + ATAC detector overlap table; user confirms reconciliation policy (union vs intersection). For `separate` / `rna_only` / `atac_only`, auto-approve silently — each modality's doublets are removed independently with no cross-modal policy to confirm — unless the user explicitly asked for per-stage review.
 - **`s7_clustering`** (all branches): resolution sweep results; user confirms per-modality resolution or revises.
 
 (For other stages, auto-approve silently unless the user asked for per-stage review.)
@@ -206,7 +206,8 @@ host (login node in interactive mode; the head-job in headless mode).
    ```
 
 2. **Main preprocessing (Phase B)** — submit the unattended head-job.
-   `s3_doublets` defaults to the union policy locked in at `plan_review`; the
+   For `paired` branches, `s3_doublets` uses the policy locked in at `plan_review`; for
+   `separate`, doublets are removed independently per modality (no user pause). The
    head-job runs S1a → S6 → S7_propose then stops because
    `s7_clustering.approved` is missing. The exit hook emails `$PMA_NOTIFY_EMAIL`
    if set.

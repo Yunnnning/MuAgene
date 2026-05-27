@@ -178,104 +178,157 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             atac_bc = list(atac.obs_names) if hasattr(atac, "obs_names") else []
             atac_method = "log_fragment_zscore_fallback"
 
-    # Build a unified per-barcode table (branch-aware — missing modality drops out).
-    rna_df = pd.DataFrame({
-        "barcode": rna.obs_names.to_numpy() if rna is not None else np.array([], dtype=object),
-        "scrublet_score": scores,
-        "scrublet_is_doublet": flags.astype(bool) if flags.size else flags,
-    })
-    atac_df = pd.DataFrame({
-        "barcode": atac_bc,
-        "atac_doublet_score": atac_scores,
-        "atac_is_doublet": atac_flags.astype(bool) if atac_flags.size else atac_flags,
-    })
-    merged = rna_df.merge(atac_df, on="barcode", how="outer")
-    merged["scrublet_is_doublet"] = merged["scrublet_is_doublet"].fillna(False).astype(bool)
-    merged["atac_is_doublet"] = merged["atac_is_doublet"].fillna(False).astype(bool)
-
-    # Overlap + policy
-    overlap = _pol.four_way_overlap(merged["scrublet_is_doublet"], merged["atac_is_doublet"])
-    study_goal = plan["stages"]["s3_doublets"]["parameters"]["study_goal"]["value"]
-    policy = _pol.recommend_policy(study_goal)
-    chosen_policy = policy["recommendation"]
-    removed = _pol.apply_policy(merged["scrublet_is_doublet"], merged["atac_is_doublet"], chosen_policy)
-    merged["chosen_policy"] = chosen_policy
-    merged["removed"] = removed
-
-    merged.to_parquet(art / "calls.parquet")
-    (art / "overlap_summary.json").write_text(json.dumps({
-        "overlap": overlap,
-        "study_goal": study_goal,
-        "recommended_policy": chosen_policy,
-        "rationale": policy["rationale"],
-        "n_removed": int(removed.sum()),
-    }, indent=2))
-
-    _prov.set_param(params_path, "s3_doublets.removal_policy", chosen_policy,
-                    source="recommended", confidence="high",
-                    rationale=policy["rationale"])
-    _prov.set_param(params_path, "s3_doublets.atac_method", atac_method,
-                    source="derived", confidence="high",
-                    rationale=("Plan named AMULET (fragment multi-allelic overlap). "
-                               "Current environment uses SnapATAC2's native scrublet + "
-                               "filter_doublets instead (Scrublet adapted to ATAC tile "
-                               "matrix). Deviation explicitly recorded; raw scores + flags "
-                               "preserved in calls.parquet."),
-                    method={"name": atac_method,
-                            "code_ref": "executor/stages/s3_doublets.py::_score_atac_doublets_snapatac"})
-    _prov.set_param(params_path, "s3_doublets.overlap", overlap,
-                    source="derived", confidence="high",
-                    rationale=(f"Four-way overlap of Scrublet (RNA) vs {atac_method} (ATAC)"),
-                    method={"name": "doublet_policy.four_way_overlap",
-                            "code_ref": "executor/methods/doublet_policy.py"})
-
-    # Compute per-modality survivor sets after doublet removal.
-    rm_bc = set(merged.loc[merged["removed"], "barcode"])
-    rna_survivors = (set(rna.obs_names) - rm_bc) if (has_rna and rna is not None) else set()
-    atac_survivors = (set(atac_bc) - rm_bc) if (has_atac and atac is not None) else set()
-
-    # Paired branch: intersect survivor sets so S4..S8 see matched barcodes.
-    # Per-modality clusterings (S7) remain diagnostic but are computed on the
-    # joint cell set. The final MuData at S8 is guaranteed to be aligned.
+    # ---- Branch: per-modality independent (separate) vs unified policy ----
     n_dropped_rna_at_join = 0
     n_dropped_atac_at_join = 0
     n_joint: int | None = None
-    if workflow_branch == "paired":
-        joint_bc = rna_survivors & atac_survivors
-        if not joint_bc:
-            raise ValueError(
-                "S3: paired-branch joint barcode intersection is empty after QC + "
-                f"doublet removal (n_rna_survivors={len(rna_survivors)}, "
-                f"n_atac_survivors={len(atac_survivors)}). Check that S0 established "
-                "real cell-level pairing (look at `ingest.pairing_decision.method` in "
-                "parameters.yaml) — if it did, your S1/S2 QC thresholds may have "
-                "filtered away the shared cells; revise via `executor revise s1_rna_qc "
-                "...` or `executor revise s2_atac_qc ...`. If S0 did NOT establish "
-                "pairing (method=pairing.translation_table required when whitelists "
-                "differ), supply `barcode_translation_path` in run.yaml and rerun S0."
-            )
-        n_dropped_rna_at_join = len(rna_survivors) - len(joint_bc)
-        n_dropped_atac_at_join = len(atac_survivors) - len(joint_bc)
-        rna_survivors = joint_bc
-        atac_survivors = joint_bc
-        n_joint = len(joint_bc)
-        log_event(run_dir, {"stage": "s3_doublets", "event": "paired_intersection",
-                             "n_joint": n_joint,
-                             "n_dropped_rna_at_join": n_dropped_rna_at_join,
-                             "n_dropped_atac_at_join": n_dropped_atac_at_join})
-        _prov.set_param(params_path, "s3_doublets.paired_intersection",
-                        {"n_joint": int(n_joint),
-                         "n_dropped_rna_at_join": int(n_dropped_rna_at_join),
-                         "n_dropped_atac_at_join": int(n_dropped_atac_at_join)},
+
+    if workflow_branch == "separate":
+        # Independent per-modality removal.
+        # RNA and ATAC are from independent samples with disjoint barcodes;
+        # cross-modal union/intersection policies are undefined here.
+        rna_df = pd.DataFrame({
+            "barcode": rna.obs_names.to_numpy() if rna is not None else np.array([], dtype=object),
+            "scrublet_score": scores,
+            "scrublet_is_doublet": flags.astype(bool) if flags.size else flags,
+            "removed": flags.astype(bool) if flags.size else flags,
+        })
+        atac_df = pd.DataFrame({
+            "barcode": atac_bc,
+            "atac_doublet_score": atac_scores,
+            "atac_is_doublet": atac_flags.astype(bool) if atac_flags.size else atac_flags,
+            "removed": atac_flags.astype(bool) if atac_flags.size else atac_flags,
+        })
+        n_rna_removed = int(rna_df["removed"].sum()) if has_rna else 0
+        n_atac_removed = int(atac_df["removed"].sum()) if has_atac else 0
+        n_removed = n_rna_removed + n_atac_removed
+        chosen_policy = "independent"
+        overlap = None
+
+        # calls.parquet: concat both modalities; fill cross-modal columns with NaN.
+        combined = pd.concat([
+            rna_df.assign(atac_doublet_score=float("nan"), atac_is_doublet=False,
+                          chosen_policy=chosen_policy),
+            atac_df.assign(scrublet_score=float("nan"), scrublet_is_doublet=False,
+                           chosen_policy=chosen_policy),
+        ], ignore_index=True)
+        combined.to_parquet(art / "calls.parquet")
+        (art / "overlap_summary.json").write_text(json.dumps({
+            "branch": "separate",
+            "policy": "independent",
+            "rationale": ("separate branch: modalities are independent samples with disjoint "
+                          "barcodes; each modality's doublets are removed by its own detector."),
+            "n_rna_removed": n_rna_removed,
+            "n_atac_removed": n_atac_removed,
+        }, indent=2))
+
+        _prov.set_param(params_path, "s3_doublets.removal_policy", "independent",
                         source="derived", confidence="high",
-                        rationale=("Paired branch: RNA and ATAC barcodes intersected after "
-                                   "doublet removal so downstream stages (S4-S8) operate on the "
-                                   "joint cell set. Cells in only one modality's post-doublet "
-                                   "set are dropped here rather than at S8 assembly."),
-                        method={"name": "s3.paired_intersection",
-                                "code_ref": "executor/stages/s3_doublets.py"})
-        # Also surface a sentinel barcode list so other tools can assert against it.
-        (art / "joint_barcodes.txt").write_text("\n".join(sorted(joint_bc)) + ("\n" if joint_bc else ""))
+                        rationale=("separate branch: modalities are from independent samples "
+                                   "with disjoint barcodes. Each modality's doublets are removed "
+                                   "by its own detector (Scrublet for RNA, SnapATAC2 for ATAC). "
+                                   "Cross-modal reconciliation (union/intersection) does not apply."))
+
+        rm_rna = set(rna_df.loc[rna_df["removed"], "barcode"])
+        rm_atac = set(atac_df.loc[atac_df["removed"], "barcode"])
+        rna_survivors = (set(rna.obs_names) - rm_rna) if (has_rna and rna is not None) else set()
+        atac_survivors = (set(atac_bc) - rm_atac) if (has_atac and atac_bc) else set()
+
+    else:
+        # paired / rna_only / atac_only — unified per-barcode table + cross-modal policy.
+        rna_df = pd.DataFrame({
+            "barcode": rna.obs_names.to_numpy() if rna is not None else np.array([], dtype=object),
+            "scrublet_score": scores,
+            "scrublet_is_doublet": flags.astype(bool) if flags.size else flags,
+        })
+        atac_df = pd.DataFrame({
+            "barcode": atac_bc,
+            "atac_doublet_score": atac_scores,
+            "atac_is_doublet": atac_flags.astype(bool) if atac_flags.size else atac_flags,
+        })
+        merged = rna_df.merge(atac_df, on="barcode", how="outer")
+        merged["scrublet_is_doublet"] = merged["scrublet_is_doublet"].fillna(False).astype(bool)
+        merged["atac_is_doublet"] = merged["atac_is_doublet"].fillna(False).astype(bool)
+
+        overlap = _pol.four_way_overlap(merged["scrublet_is_doublet"], merged["atac_is_doublet"])
+        study_goal = plan["stages"]["s3_doublets"]["parameters"]["study_goal"]["value"]
+        policy = _pol.recommend_policy(study_goal)
+        chosen_policy = policy["recommendation"]
+        removed = _pol.apply_policy(merged["scrublet_is_doublet"], merged["atac_is_doublet"], chosen_policy)
+        merged["chosen_policy"] = chosen_policy
+        merged["removed"] = removed
+        n_removed = int(removed.sum())
+
+        merged.to_parquet(art / "calls.parquet")
+        (art / "overlap_summary.json").write_text(json.dumps({
+            "overlap": overlap,
+            "study_goal": study_goal,
+            "recommended_policy": chosen_policy,
+            "rationale": policy["rationale"],
+            "n_removed": n_removed,
+        }, indent=2))
+
+        _prov.set_param(params_path, "s3_doublets.removal_policy", chosen_policy,
+                        source="recommended", confidence="high",
+                        rationale=policy["rationale"])
+        _prov.set_param(params_path, "s3_doublets.overlap", overlap,
+                        source="derived", confidence="high",
+                        rationale=(f"Four-way overlap of Scrublet (RNA) vs {atac_method} (ATAC)"),
+                        method={"name": "doublet_policy.four_way_overlap",
+                                "code_ref": "executor/methods/doublet_policy.py"})
+
+        rm_bc = set(merged.loc[merged["removed"], "barcode"])
+        rna_survivors = (set(rna.obs_names) - rm_bc) if (has_rna and rna is not None) else set()
+        atac_survivors = (set(atac_bc) - rm_bc) if (has_atac and atac is not None) else set()
+
+        # Paired branch: intersect survivor sets so S4..S8 see matched barcodes.
+        if workflow_branch == "paired":
+            joint_bc = rna_survivors & atac_survivors
+            if not joint_bc:
+                raise ValueError(
+                    "S3: paired-branch joint barcode intersection is empty after QC + "
+                    f"doublet removal (n_rna_survivors={len(rna_survivors)}, "
+                    f"n_atac_survivors={len(atac_survivors)}). Check that S0 established "
+                    "real cell-level pairing (look at `ingest.pairing_decision.method` in "
+                    "parameters.yaml) — if it did, your S1/S2 QC thresholds may have "
+                    "filtered away the shared cells; revise via `executor revise s1_rna_qc "
+                    "...` or `executor revise s2_atac_qc ...`. If S0 did NOT establish "
+                    "pairing (method=pairing.translation_table required when whitelists "
+                    "differ), supply `barcode_translation_path` in run.yaml and rerun S0."
+                )
+            n_dropped_rna_at_join = len(rna_survivors) - len(joint_bc)
+            n_dropped_atac_at_join = len(atac_survivors) - len(joint_bc)
+            rna_survivors = joint_bc
+            atac_survivors = joint_bc
+            n_joint = len(joint_bc)
+            log_event(run_dir, {"stage": "s3_doublets", "event": "paired_intersection",
+                                 "n_joint": n_joint,
+                                 "n_dropped_rna_at_join": n_dropped_rna_at_join,
+                                 "n_dropped_atac_at_join": n_dropped_atac_at_join})
+            _prov.set_param(params_path, "s3_doublets.paired_intersection",
+                            {"n_joint": int(n_joint),
+                             "n_dropped_rna_at_join": int(n_dropped_rna_at_join),
+                             "n_dropped_atac_at_join": int(n_dropped_atac_at_join)},
+                            source="derived", confidence="high",
+                            rationale=("Paired branch: RNA and ATAC barcodes intersected after "
+                                       "doublet removal so downstream stages (S4-S8) operate on the "
+                                       "joint cell set. Cells in only one modality's post-doublet "
+                                       "set are dropped here rather than at S8 assembly."),
+                            method={"name": "s3.paired_intersection",
+                                    "code_ref": "executor/stages/s3_doublets.py"})
+            (art / "joint_barcodes.txt").write_text("\n".join(sorted(joint_bc)) + ("\n" if joint_bc else ""))
+
+    # Record ATAC detection method whenever ATAC ran (branch-independent).
+    if has_atac:
+        _prov.set_param(params_path, "s3_doublets.atac_method", atac_method,
+                        source="derived", confidence="high",
+                        rationale=("Plan named AMULET (fragment multi-allelic overlap). "
+                                   "Current environment uses SnapATAC2's native scrublet + "
+                                   "filter_doublets instead (Scrublet adapted to ATAC tile "
+                                   "matrix). Deviation explicitly recorded; raw scores + flags "
+                                   "preserved in calls.parquet."),
+                        method={"name": atac_method,
+                                "code_ref": "executor/stages/s3_doublets.py::_score_atac_doublets_snapatac"})
 
     # Apply removal to RNA (+ write filtered h5ad). Always produce the rna_post
     # sentinel (empty for atac_only) so the declared Snakemake output exists.
@@ -332,9 +385,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
 
     log_event(run_dir, {"stage": "s3_doublets", "event": "done",
                          "overlap": overlap, "policy": chosen_policy,
-                         "n_removed": int(removed.sum()),
+                         "n_removed": n_removed,
                          "n_rna_post": n_rna_post,
                          "n_joint": n_joint,
                          "branch": workflow_branch})
     return {"policy": chosen_policy, "overlap": overlap,
-            "n_removed": int(removed.sum()), "n_joint": n_joint}
+            "n_removed": n_removed, "n_joint": n_joint}

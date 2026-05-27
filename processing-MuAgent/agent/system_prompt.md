@@ -32,8 +32,8 @@ P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
 - Mandatory pauses are branch-aware:
   - All branches: `p1_context`, `plan_review`, `s7_clustering`.
-  - `paired` / `separate` only: additionally `s3_doublets` — user confirms how to reconcile the RNA and ATAC detector calls.
-  - `rna_only` / `atac_only`: S3 is single-detector; auto-approved with the recommended policy (no reconciliation to confirm) unless the user explicitly asked for stage-by-stage review.
+  - `paired` only: additionally `s3_doublets` — user confirms how to reconcile the RNA and ATAC detector calls.
+  - `separate` / `rna_only` / `atac_only`: S3 is auto-approved — each modality's doublets are filtered by its own detector with no cross-modal reconciliation to confirm — unless the user explicitly asked for stage-by-stage review.
 - All other stages may be auto-approved unless the user overrides.
 
 For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out of the plan and DAG automatically; you never schedule them.

@@ -1,7 +1,9 @@
 """RNA/ATAC input format autodetection and loading.
 
-Supported RNA formats: 10x HDF5 (.h5), 10x MEX dir, AnnData (.h5ad), custom.
-ATAC: fragments.tsv.gz (+ .tbi required), optional peak matrix / h5ad.
+Supported RNA formats: 10x HDF5 (.h5), 10x MEX dir, AnnData (.h5ad),
+dense tab-delimited text matrix (.txt.gz / .tsv.gz, genes × cells layout).
+ATAC: fragments.tsv.gz (+ .tbi required); 4-column BED.gz is auto-converted
+to a standard 5-column bgzipped fragments file via convert_bed4_to_fragments().
 
 Raw-vs-filtered status is detected via barcode count: 10x raw matrices contain
 the full whitelist (~6.7M barcodes); filtered/cell-called matrices contain
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,7 +21,9 @@ from typing import Any
 import anndata as ad
 import h5py
 import numpy as np
+import pandas as pd
 import scanpy as sc
+import scipy.sparse as sp
 
 
 # Above this barcode count the matrix is treated as a raw (cell-not-called)
@@ -29,6 +34,48 @@ RAW_BARCODE_THRESHOLD = 200_000
 # ---------------------------------------------------------------------------
 # RNA format autodetect
 # ---------------------------------------------------------------------------
+
+def _is_dense_txt(p: Path) -> bool:
+    """Peek at a .txt.gz / .tsv.gz to decide if it is a dense count matrix.
+
+    Layout: row 0 is a header (column names = cell barcodes or gene symbols);
+    rows 1+ are data rows with a string index in col 0 and numeric values in
+    the remaining columns. We skip the first non-comment line (header) and
+    check that the next few data rows have ≥2 non-negative integer fields.
+    Only peeks at the first 50 columns per row and 5 data rows to stay O(1).
+    """
+    opener = gzip.open if str(p).endswith(".gz") else open
+    with opener(p, "rt") as fh:
+        n_data = 0
+        header_seen = False
+        for raw in fh:
+            line = raw.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            if not header_seen:
+                parts = line.split("\t")
+                if len(parts) < 3:
+                    return False
+                header_seen = True
+                continue
+            # Data rows: col 0 = gene/cell label, cols 1+ = numeric counts
+            parts = line.split("\t")
+            if len(parts) < 3:
+                return False
+            sample = parts[1:51]
+            try:
+                vals = [float(v) for v in sample if v != ""]
+            except ValueError:
+                return False
+            if not vals:
+                return False
+            if not all(v >= 0 and float(v) == int(v) for v in vals):
+                return False
+            n_data += 1
+            if n_data >= 5:
+                break
+    return header_seen and n_data > 0
+
 
 def detect_rna_format(path: Path | str) -> str:
     p = Path(path)
@@ -51,6 +98,10 @@ def detect_rna_format(path: Path | str) -> str:
         except Exception:
             pass
         raise ValueError(f"{p}: .h5 file lacks 10x Cell Ranger /matrix group")
+    # Dense tab-delimited text matrix (genes × cells, common GEO format)
+    if p.name.endswith(".txt.gz") or p.name.endswith(".tsv.gz"):
+        if _is_dense_txt(p):
+            return "dense_txt"
     raise ValueError(f"Cannot autodetect RNA format for {p}")
 
 
@@ -70,7 +121,57 @@ def load_rna(path: Path | str, fmt: str | None = None) -> ad.AnnData:
         return a
     if fmt == "h5ad":
         return ad.read_h5ad(str(path))
+    if fmt == "dense_txt":
+        return _load_rna_dense_txt(path)
     raise ValueError(f"Unknown RNA format {fmt!r}")
+
+
+def _load_rna_dense_txt(path: Path | str, chunk_genes: int = 500) -> ad.AnnData:
+    """Load a genes × cells dense tab-delimited count matrix into AnnData.
+
+    Layout (standard GEO supplementary format):
+      - Row 0:  header → cell barcodes (col 0 is the corner cell, ignored)
+      - Rows 1+: gene symbol (col 0) + integer counts per cell
+
+    Memory strategy: reads `chunk_genes` gene-rows at a time with pandas and
+    converts each chunk to sparse before stacking. Peak RAM is bounded to
+    ~chunk_genes × n_cells × 4 bytes regardless of matrix size.
+
+    After loading: obs = cells, var = genes (standard AnnData orientation).
+    """
+    p = Path(path)
+    compression = "gzip" if str(p).endswith(".gz") else None
+
+    chunks: list[sp.csr_matrix] = []
+    gene_symbols: list[str] = []
+    cell_barcodes: list[str] | None = None
+
+    reader = pd.read_csv(
+        p,
+        sep="\t",
+        index_col=0,
+        compression=compression,
+        chunksize=chunk_genes,
+    )
+    for chunk_df in reader:
+        if cell_barcodes is None:
+            cell_barcodes = list(chunk_df.columns)
+        gene_symbols.extend(chunk_df.index.tolist())
+        chunks.append(sp.csr_matrix(chunk_df.values.astype(np.float32)))
+
+    if cell_barcodes is None:
+        raise ValueError(f"No data rows found in {p}")
+
+    # Stack genes × cells, then transpose to cells × genes
+    X = sp.vstack(chunks).T.tocsr()
+
+    adata = ad.AnnData(
+        X=X,
+        obs=pd.DataFrame(index=cell_barcodes),
+        var=pd.DataFrame(index=gene_symbols),
+    )
+    adata.var_names_make_unique()
+    return adata
 
 
 def detect_peaks_in_10x_h5(path: Path | str) -> bool:
@@ -227,6 +328,130 @@ def call_cells_from_raw(adata: ad.AnnData, *, min_counts_floor: int = 100) -> tu
     diag["n_dropped"] = int((~keep).sum())
     diag["min_counts_floor"] = int(min_counts_floor)
     return adata[keep].copy(), diag
+
+
+# ---------------------------------------------------------------------------
+# ATAC format detection and BED4 → fragments.tsv.gz conversion
+# ---------------------------------------------------------------------------
+
+def detect_atac_format(path: Path | str) -> str:
+    """Return "fragments_tsv" or "bed4" for an ATAC input path.
+
+    "fragments_tsv" — standard 5-column bgzipped fragments file (may or may
+        not have a .tbi yet; validate_fragments() enforces that).
+    "bed4" — 4-column BED (chrom, start, end, barcode), gzip-compressed.
+        convert_bed4_to_fragments() must be called before validate_fragments().
+    """
+    p = Path(path)
+    # Peek at first data line to count fields
+    opener = gzip.open if p.name.endswith(".gz") else open
+    with opener(p, "rt") as fh:
+        for raw in fh:
+            line = raw.rstrip("\r\n")
+            if not line or line.startswith("#"):
+                continue
+            n_cols = len(line.split("\t"))
+            if n_cols >= 5:
+                return "fragments_tsv"
+            if n_cols == 4:
+                return "bed4"
+            raise ValueError(
+                f"ATAC file {p} has {n_cols} tab-separated columns; "
+                "expected 4 (BED4) or ≥5 (fragments.tsv.gz)."
+            )
+    raise ValueError(f"ATAC file {p} appears empty or contains only comments.")
+
+
+def convert_bed4_to_fragments(
+    bed4_path: Path | str,
+    out_path: Path | str | None = None,
+    *,
+    sort_tmp_dir: Path | str | None = None,
+) -> Path:
+    """Convert a 4-column BED.gz into a standard 5-column bgzipped fragments file.
+
+    The source file is never modified. A derived file is written next to it
+    (or at *out_path* if supplied). The pipeline uses shell subprocesses
+    (zcat → awk → sort → bgzip → tabix) so memory is O(sort buffer) rather
+    than O(n_fragments).
+
+    The awk step strips Windows CR characters that may be embedded in the last
+    BED field when the source was created on Windows.
+
+    Requires bgzip and tabix (htslib) on PATH.
+
+    Parameters
+    ----------
+    bed4_path   : source 4-column BED, gzip-compressed.
+    out_path    : destination .tsv.gz. Defaults to ``<stem>.tsv.gz`` next to source.
+    sort_tmp_dir: directory for sort's external merge (default: same dir as output).
+
+    Returns
+    -------
+    Path to the written .tsv.gz (bgzipped + tabix-indexed).
+    """
+    bed4_path = Path(bed4_path)
+    if out_path is None:
+        stem = bed4_path.name
+        for ext in (".gz", ".bed", ".tsv", ".txt"):
+            if stem.endswith(ext):
+                stem = stem[: -len(ext)]
+        out_path = bed4_path.parent / (stem + ".tsv.gz")
+    out_path = Path(out_path)
+
+    tbi = Path(str(out_path) + ".tbi")
+    if out_path.exists() and tbi.exists():
+        return out_path
+
+    for tool in ("bgzip", "tabix"):
+        if not shutil.which(tool):
+            raise RuntimeError(
+                f"{tool} not found on PATH. "
+                "Install htslib (conda install -c bioconda htslib) and retry."
+            )
+
+    tmp_dir = Path(sort_tmp_dir) if sort_tmp_dir else out_path.parent
+
+    sort_flags = ["-k1,1V", "-k2,2n"]
+    if subprocess.run(["sort", "-k1,1V", "/dev/null"], capture_output=True).returncode != 0:
+        sort_flags = ["-k1,1", "-k2,2n"]
+
+    zcat = subprocess.Popen(["zcat", str(bed4_path)], stdout=subprocess.PIPE)
+    awk = subprocess.Popen(
+        # gsub strips Windows CR that may be embedded in the last BED field
+        ["awk", "BEGIN{OFS=\"\\t\"} !/^#/{gsub(/\\r/,\"\"); print $1,$2,$3,$4,1}"],
+        stdin=zcat.stdout, stdout=subprocess.PIPE,
+    )
+    sort_proc = subprocess.Popen(
+        ["sort", f"--temporary-directory={tmp_dir}"] + sort_flags,
+        stdin=awk.stdout, stdout=subprocess.PIPE,
+    )
+    with open(out_path, "wb") as out_fh:
+        bgzip_proc = subprocess.Popen(
+            ["bgzip", "-c"], stdin=sort_proc.stdout, stdout=out_fh,
+        )
+
+    for p_obj in (zcat, awk, sort_proc):
+        if p_obj.stdout:
+            p_obj.stdout.close()
+
+    bgzip_proc.wait()
+    sort_proc.wait()
+    awk.wait()
+    zcat.wait()
+
+    for name, proc in [("zcat", zcat), ("awk", awk), ("sort", sort_proc), ("bgzip", bgzip_proc)]:
+        if proc.returncode not in (0, None):
+            raise RuntimeError(f"convert_bed4_to_fragments: {name} exited {proc.returncode}")
+
+    result = subprocess.run(
+        ["tabix", "-p", "bed", str(out_path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"tabix indexing failed:\n{result.stderr}")
+
+    return out_path
 
 
 # ---------------------------------------------------------------------------

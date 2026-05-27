@@ -133,6 +133,22 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "S0: `genome_assembly` is required for ATAC inputs; refusing to default."
             )
+        atac_fmt = _io.detect_atac_format(atac_frag_path)
+        if atac_fmt == "bed4":
+            # Auto-convert 4-column BED to standard 5-column bgzipped fragments.
+            # The derived file is written next to the source; the source is unchanged.
+            atac_frag_path = _io.convert_bed4_to_fragments(atac_frag_path)
+            _prov.set_param(params_path, "ingest.atac_format_original", "bed4",
+                            source="derived", confidence="high",
+                            rationale="4-column BED detected; converted to 5-column fragments.tsv.gz",
+                            method={"name": "io.convert_bed4_to_fragments",
+                                    "code_ref": "executor/io.py::convert_bed4_to_fragments"})
+            _prov.set_param(params_path, "ingest.atac_fragments_derived_path",
+                            str(atac_frag_path),
+                            source="derived", confidence="high",
+                            rationale="Path to converted fragments.tsv.gz used downstream.",
+                            method={"name": "io.convert_bed4_to_fragments",
+                                    "code_ref": "executor/io.py::convert_bed4_to_fragments"})
         frag_info = _io.validate_fragments(atac_frag_path)
         ok, msg = _io.cross_check_genome(set(frag_info["chromosomes"]), genome_assembly)
         if not ok:

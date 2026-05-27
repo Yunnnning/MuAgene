@@ -96,9 +96,13 @@ def assemble_plan(run_dir: Path | str, *, workflow_branch: str, sample_type: str
                 "atac_doublet_threshold": p(0.5, "recommended",
                                               "SnapATAC2 scrublet doublet-probability threshold.", "medium"),
                 "removal_policy_recommendation": p(
-                    "union" if (study_goal or "").lower() != "rare_populations" else "intersection",
-                    "recommended",
-                    "Based on study_goal; user must confirm at S3 checkpoint.",
+                    "independent" if workflow_branch == "separate" else (
+                        "union" if (study_goal or "").lower() != "rare_populations" else "intersection"
+                    ),
+                    "derived" if workflow_branch == "separate" else "recommended",
+                    ("separate branch: each modality's doublets removed independently; "
+                     "no cross-modal reconciliation." if workflow_branch == "separate" else
+                     "Based on study_goal; user must confirm at S3 checkpoint."),
                     "high",
                 ),
                 "study_goal": p(study_goal or "clustering_inference", "user" if study_goal else "default",

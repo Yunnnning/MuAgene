@@ -104,12 +104,20 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     branch = plan.get("workflow_branch", "paired")
     policy = param("s3_doublets", "removal_policy_recommendation")
     goal = param("s3_doublets", "study_goal")
-    if branch in ("paired", "separate"):
+    if branch == "paired":
         items.append({
             "label": "Doublet removal policy",
             "value": f"{policy.get('value', '?')} (reconciling Scrublet RNA + ATAC detector; raw calls preserved)",
             "reason": f"study_goal={goal.get('value', '?')}; four-way overlap recorded; user confirms reconciliation at S3.",
             "certainty": "needs confirmation",
+        })
+    elif branch == "separate":
+        items.append({
+            "label": "Doublet removal policy",
+            "value": "independent (per-modality; Scrublet for RNA, SnapATAC2 for ATAC; raw calls preserved)",
+            "reason": ("separate branch: modalities are independent samples with disjoint barcodes; "
+                       "each modality's doublets removed by its own detector; no cross-modal reconciliation."),
+            "certainty": "certain",
         })
     elif branch == "rna_only":
         items.append({
