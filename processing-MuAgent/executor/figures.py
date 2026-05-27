@@ -156,16 +156,22 @@ def plot_fragment_size_distribution(distr: np.ndarray, *, out_dir: Path | str,
     x = np.arange(1, body.size + 1)
     ax.fill_between(x, 0, body, alpha=0.55, color="#1f77b4", linewidth=0)
     ax.plot(x, body, color="#1f4f8b", linewidth=1.0)
-    for vline, label in [(147, "nucleosome-free / mono"),
-                         (294, "mono / di"),
-                         (441, "di / tri")]:
+    x_right = min(1000, body.size)
+    ax.set_xlim(left=0, right=x_right)
+    y_top = ax.get_ylim()[1]
+    for vline in (147, 294, 441):
         if vline < body.size:
             ax.axvline(vline, color="firebrick", linestyle=":", linewidth=0.9, alpha=0.6)
-            ax.text(vline, ax.get_ylim()[1] * 0.95, f" {label}",
-                    fontsize=FONT_SIZE - 3, color="firebrick", verticalalignment="top")
+    for x0, x1, label in [(1, 147, "nucleosome-free"),
+                          (147, 294, "mono"),
+                          (294, 441, "di"),
+                          (441, x_right, "tri")]:
+        xc = (x0 + x1) / 2
+        if xc < x_right:
+            ax.text(xc, y_top * 0.97, label, ha="center", va="top",
+                    fontsize=FONT_SIZE - 3, color="firebrick")
     ax.set_xlabel("fragment length (bp)")
     ax.set_ylabel("fragment count")
-    ax.set_xlim(left=0, right=min(1000, body.size))
     ax.set_title(title)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

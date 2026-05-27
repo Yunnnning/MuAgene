@@ -106,19 +106,33 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     rna = None
     scores = np.array([], dtype=float)
     flags = np.array([], dtype=bool)
+    _SCRUBLET_HVG_CAP = 3000  # max genes passed to Scrublet; HVG-filter above this
     if has_rna:
         rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad")
-        # Scrublet accepts sparse counts; densifying is wasteful on large
-        # datasets and crashes on >100K cells. Always pass csr.
         raw_counts = rna.layers["counts"] if "counts" in rna.layers else rna.X
         counts = _as_sparse(raw_counts)
+        # Scrublet doubles the matrix for simulated doublets: limit gene count to avoid
+        # OOM on large datasets. Identify HVGs on the count matrix when n_vars > cap.
+        n_hvg_used = counts.shape[1]
+        if counts.shape[1] > _SCRUBLET_HVG_CAP:
+            import scanpy as sc
+            tmp = ad.AnnData(X=counts.copy())
+            sc.pp.normalize_total(tmp, target_sum=1e4)
+            sc.pp.log1p(tmp)
+            sc.pp.highly_variable_genes(tmp, n_top_genes=_SCRUBLET_HVG_CAP, flavor="seurat",
+                                        inplace=True)
+            hvg_mask = tmp.var["highly_variable"].values
+            counts = counts[:, hvg_mask]
+            n_hvg_used = int(hvg_mask.sum())
+            del tmp
         rate_param = plan["stages"]["s3_doublets"]["parameters"]["scrublet_expected_rate"]["value"]
         expected_rate, rate_reason = _resolve_doublet_rate(rate_param, int(rna.n_obs))
         _prov.set_param(params_path, "s3_doublets.scrublet_expected_rate_resolved",
                         float(expected_rate),
                         source="derived", confidence="high",
                         rationale=(f"Resolved from plan value={rate_param!r}: {rate_reason}. "
-                                   "Tracks 10x's ~0.8%/1000 cells empirical doublet rate."),
+                                   "Tracks 10x's ~0.8%/1000 cells empirical doublet rate. "
+                                   f"Scrublet run on top {n_hvg_used} HVGs."),
                         method={"name": "s3.resolve_doublet_rate",
                                 "code_ref": "executor/stages/s3_doublets.py"})
         try:
@@ -227,7 +241,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                         rationale=("separate branch: modalities are from independent samples "
                                    "with disjoint barcodes. Each modality's doublets are removed "
                                    "by its own detector (Scrublet for RNA, SnapATAC2 for ATAC). "
-                                   "Cross-modal reconciliation (union/intersection) does not apply."))
+                                   "Cross-modal reconciliation (union/intersection) does not apply."),
+                        method={"name": "s3.independent_per_modality",
+                                "code_ref": "executor/stages/s3_doublets.py"})
 
         rm_rna = set(rna_df.loc[rna_df["removed"], "barcode"])
         rm_atac = set(atac_df.loc[atac_df["removed"], "barcode"])

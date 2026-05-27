@@ -19,10 +19,11 @@ rule s4_rna_norm_propose:
 
 rule s4_rna_norm_execute:
     input:
-        proposal         = str(INTERNAL / "proposals" / "s4_rna_norm.yaml"),
-        approved         = str(INTERNAL / "checkpoints" / "s4_rna_norm.approved"),
-        plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
-        plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
+        proposal           = str(INTERNAL / "proposals" / "s4_rna_norm.yaml"),
+        approved           = str(INTERNAL / "checkpoints" / "s4_rna_norm.approved"),
+        plan               = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
+        plan_review_done   = str(INTERNAL / "checkpoints" / "plan_review.approved"),
+        qc_review_done     = str(INTERNAL / "checkpoints" / "post_qc_review.approved"),
     output:
         h5ad = str(INTERNAL / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad"),
     params:

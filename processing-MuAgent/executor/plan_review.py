@@ -84,14 +84,15 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     pct_mt_ceil = param("s1_rna_qc", "pct_mt_ceiling")
     pct_ribo_max = param("s1_rna_qc", "pct_ribo_max")
     tss_min = param("s2_atac_qc", "tss_enrichment_min")
+    tss_max = param("s2_atac_qc", "tss_enrichment_max")
     nuc_max = param("s2_atac_qc", "nucleosome_signal_max")
     items.append({
         "label": "QC strategy",
         "value": (
             f"RNA: MAD on total_counts/n_genes, pct_mt ceiling={pct_mt_ceil.get('value', '?')}, "
             f"pct_ribo ceiling={pct_ribo_max.get('value', '?')} | "
-            f"ATAC: TSS≥{tss_min.get('value', '?')}, MAD on log(n_fragments), "
-            f"nucleosome_signal≤{nuc_max.get('value', '?')}"
+            f"ATAC: TSS in ({tss_min.get('value', '?')}, {tss_max.get('value', '?')}), "
+            f"MAD on log(n_fragments), nucleosome_signal<{nuc_max.get('value', '?')}"
         ),
         "reason": f"Sample type = {sample_type}; MAD thresholds adapt to the observed distribution.",
         "certainty": "certain",

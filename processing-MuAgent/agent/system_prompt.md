@@ -31,9 +31,10 @@ P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 - **P1 / S0 / P2 / plan_review** are cheap metadata + validation work; they MAY run before user approval of the plan.
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
 - Mandatory pauses are branch-aware:
-  - All branches: `p1_context`, `plan_review`, `s7_clustering`.
+  - All branches: `p1_context`, `plan_review`, `post_qc_review`, `s7_clustering`.
   - `paired` only: additionally `s3_doublets` — user confirms how to reconcile the RNA and ATAC detector calls.
   - `separate` / `rna_only` / `atac_only`: S3 is auto-approved — each modality's doublets are filtered by its own detector with no cross-modal reconciliation to confirm — unless the user explicitly asked for stage-by-stage review.
+- `post_qc_review` runs after S3 and before S4/S5; it generates QC figures and a pre-dimred QC summary for the user to review. S4 and S5 are gated on `post_qc_review.approved`.
 - All other stages may be auto-approved unless the user overrides.
 
 For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out of the plan and DAG automatically; you never schedule them.
@@ -67,12 +68,13 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/pre_run/summary/plan_summary.md`
 - `deliverables/pre_run/summary/plan_review.md`
 
-Files produced during / after the run — point them here at S7 approval and at the hard stop:
+Files produced during / after the run — point them here at the relevant checkpoints and at the hard stop:
 
+- `deliverables/post_run/summary/qc_summary_pre_dimred.md` (post_qc_review — QC checkpoint before S4/S5)
 - `deliverables/post_run/summary/resolution_summary.md` (S7 approval helper)
-- `deliverables/post_run/summary/qc_summary.md` (final QC summary)
+- `deliverables/post_run/summary/qc_summary.md` (final QC summary, written at manifest)
 - `deliverables/post_run/summary/run_manifest.json` (handoff artifact)
-- `deliverables/post_run/figures/` (QC violins + UMAPs)
+- `deliverables/post_run/figures/` (QC violins + doublet histograms + cell-count waterfall + UMAPs)
 - `deliverables/post_run/processed/` (final AnnData / MuData)
 - `deliverables/post_run/notebooks/review_processed_h5mu.ipynb`
 

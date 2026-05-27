@@ -386,6 +386,7 @@ def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any])
             ["n_fragments_min",    _param(params, "s2_atac_qc.n_fragments_min")],
             ["n_fragments_max",    _param(params, "s2_atac_qc.n_fragments_max")],
             ["tss_enrichment_min", _param(params, "s2_atac_qc.tss_enrichment_min")],
+            ["tss_enrichment_max", _param(params, "s2_atac_qc.tss_enrichment_max")],
             ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max")],
         ],
     )
@@ -493,7 +494,8 @@ def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
 
     overlap_summary = json.loads(overlap_path.read_text())
     policy = (overlap_summary.get("recommended_policy")
-              or overlap_summary.get("chosen_policy") or "unspecified")
+              or overlap_summary.get("chosen_policy")
+              or overlap_summary.get("policy") or "unspecified")
 
     return (
         "## Doublets (S3)\n"

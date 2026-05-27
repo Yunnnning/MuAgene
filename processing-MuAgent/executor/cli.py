@@ -22,8 +22,9 @@ SNAKEFILE = PACKAGE_DIR / "workflow" / "Snakefile"
 EXECUTOR_CHOICE = click.Choice(["local", "pbs", "slurm"])
 
 STAGES = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
-          "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-          "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
+          "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
+          "post_qc_review",
+          "s4_rna_norm", "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
 
 
 def _resolve_run_dir(config_path: Path | str) -> Path:

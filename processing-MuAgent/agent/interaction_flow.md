@@ -26,8 +26,8 @@ Before you answer, one other thing I'll need: a run directory — a writable fol
 
 Mandatory approval points depend on the branch:
 
-- All branches: (1) biological context, (2) the full preprocessing plan, (3) clustering resolution.
-- `paired` only: (4) doublet-policy reconciliation at S3 — how to combine the RNA and ATAC detector calls.
+- All branches: (1) biological context, (2) the full preprocessing plan, (3) **QC review** (after S3, before dimensionality reduction), (4) clustering resolution.
+- `paired` only: (5) doublet-policy reconciliation at S3 — how to combine the RNA and ATAC detector calls.
 - `separate` / `rna_only` / `atac_only`: S3 runs automatically — each modality's doublets are filtered by its own detector with no cross-modal reconciliation; no pause unless you ask for per-stage review.
 
 Which analysis, and where should I write the run?"
@@ -149,6 +149,7 @@ The full 8-item `plan_review.md` content, verbatim. Do not paraphrase values. If
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3.
 - **`s3_doublets`** (`paired` only): Scrublet + ATAC detector overlap table; user confirms reconciliation policy (union vs intersection). For `separate` / `rna_only` / `atac_only`, auto-approve silently — each modality's doublets are removed independently with no cross-modal policy to confirm — unless the user explicitly asked for per-stage review.
+- **`post_qc_review`** (all branches): mandatory QC checkpoint between S3 and S4/S5. The stage generates QC figures (doublet-score histograms, cell-count waterfall) and writes `qc_summary_pre_dimred.md` summarising all S1–S3 results. Point the user at `deliverables/post_run/summary/qc_summary_pre_dimred.md` and `deliverables/post_run/figures/`. Only approve after the user confirms QC is acceptable; they may revise S1/S2 thresholds via `executor revise` if the numbers look wrong.
 - **`s7_clustering`** (all branches): resolution sweep results; user confirms per-modality resolution or revises.
 
 (For other stages, auto-approve silently unless the user asked for per-stage review.)
@@ -205,19 +206,28 @@ host (login node in interactive mode; the head-job in headless mode).
    processing-muagent run --config $CFG --target s0_ingest_execute
    ```
 
-2. **Main preprocessing (Phase B)** — submit the unattended head-job.
-   For `paired` branches, `s3_doublets` uses the policy locked in at `plan_review`; for
-   `separate`, doublets are removed independently per modality (no user pause). The
-   head-job runs S1a → S6 → S7_propose then stops because
-   `s7_clustering.approved` is missing. The exit hook emails `$PMA_NOTIFY_EMAIL`
-   if set.
+2. **Main preprocessing Phase B** — submit the head-job. Runs S1a → S3, then
+   `post_qc_review_propose` writes figures + QC summary and stops.
 
    ```bash
+   processing-muagent submit --config $CFG --executor pbs \
+       --auto-approve --auto-approve-except post_qc_review --auto-approve-except s7_clustering
+   ```
+
+3. **QC review (Phase C)** — review `deliverables/post_run/summary/qc_summary_pre_dimred.md`
+   and `deliverables/post_run/figures/`. If QC looks acceptable, approve; otherwise revise
+   thresholds first.
+
+   ```bash
+   # Optionally revise, e.g.:
+   processing-muagent revise s2_atac_qc s2_atac_qc.tss_enrichment_min=1.5 --config $CFG
+   # Then approve and resume:
+   processing-muagent approve post_qc_review --config $CFG
    processing-muagent submit --config $CFG --executor pbs \
        --auto-approve --auto-approve-except s7_clustering
    ```
 
-3. **Resolution review + finish (Phase C)** — open the static review HTML at
+4. **Resolution review + finish (Phase D)** — open the static review HTML at
    `<run_dir>/deliverables/post_run/notebooks/resolution_review.html`
    (no Jupyter needed). Approve or revise, then submit a small finishing job
    that runs `s7_clustering_execute` → `s8_umap` → `manifest`.

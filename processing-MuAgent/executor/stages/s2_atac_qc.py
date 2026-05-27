@@ -1,8 +1,9 @@
 """S2 — ATAC QC via SnapATAC2.
 
-Imports fragments into a SnapATAC2-backed AnnData and applies two per-cell filters:
+Imports fragments into a SnapATAC2-backed AnnData and applies per-cell filters:
   - n_fragments (MAD bounds on log-scale, after an absolute floor)
-  - TSS enrichment minimum
+  - TSS enrichment (min and max)
+  - nucleosome signal (max)
 
 Note: tile-matrix construction is NOT part of S2. It happens later in S5 alongside
 the LSI/spectral step. S2 only computes QC metrics and subsets cells.
@@ -19,6 +20,17 @@ from ..methods import mad_thresholds as _mad
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
+
+
+def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any = None) -> Any:
+    """parameters.yaml wins over plan (so `executor revise` takes effect on re-run)."""
+    v = _prov.get_value(params_path, f"s2_atac_qc.{name}", None)
+    if v is not None:
+        return v
+    entry = plan_params.get(name, {})
+    if isinstance(entry, dict) and "value" in entry:
+        return entry["value"]
+    return default
 
 
 def _col_to_numpy(adata, key: str) -> np.ndarray:
@@ -140,11 +152,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_failed",
                             "error": str(e)})
 
-    params = plan["stages"]["s2_atac_qc"]["parameters"]
-    k_mad = params["n_fragments_k_mad"]["value"]
-    n_frag_floor = params["n_fragments_floor"]["value"]
-    tss_min = params["tss_enrichment_min"]["value"]
-    nuc_signal_max = float(params.get("nucleosome_signal_max", {}).get("value", 4.0))
+    plan_params = plan["stages"]["s2_atac_qc"]["parameters"]
+    k_mad = _resolve_param(params_path, plan_params, "n_fragments_k_mad", 5.0)
+    n_frag_floor = _resolve_param(params_path, plan_params, "n_fragments_floor", 500)
+    tss_min = float(_resolve_param(params_path, plan_params, "tss_enrichment_min", 1.5))
+    tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", 50.0))
+    nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 2.0))
 
     if n_frag_values.size:
         keep_floor = n_frag_values >= n_frag_floor
@@ -167,7 +180,10 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                             "code_ref": "executor/methods/mad_thresholds.py"})
     _prov.set_param(params_path, "s2_atac_qc.tss_enrichment_min", float(tss_min),
                     source="recommended", confidence="high",
-                    rationale="ENCODE tissue-acceptable minimum")
+                    rationale="Minimum TSS enrichment for retained cells")
+    _prov.set_param(params_path, "s2_atac_qc.tss_enrichment_max", float(tss_max),
+                    source="recommended", confidence="high",
+                    rationale="Maximum TSS enrichment; very high values often indicate artifacts")
     _prov.set_param(params_path, "s2_atac_qc.nucleosome_signal_max",
                     float(nuc_signal_max), source="recommended", confidence="high",
                     rationale=("Signac-style NS = mono_nucleosome / nucleosome_free; "
@@ -187,9 +203,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     if n_frag_values.size:
         keep &= (n_frag_values >= f_lo) & (n_frag_values <= f_hi)
     if tss_values.size:
-        keep &= tss_values >= tss_min
+        keep &= (tss_values > tss_min) & (tss_values < tss_max)
     if ns_values.size and np.isfinite(ns_values).any():
-        keep &= ns_values <= nuc_signal_max
+        keep &= ns_values < nuc_signal_max
 
     keep_idx = np.nonzero(keep)[0].tolist()
     n_pre = int(adata.n_obs)
@@ -206,8 +222,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     if n_post == 0:
         raise ValueError(
             f"S2 ATAC QC removed all cells (n_pre={n_pre}, n_post=0). Thresholds used: "
-            f"n_fragments in [{f_lo:.1f}, {f_hi:.1f}], tss_enrichment >= {tss_min}, "
-            f"nucleosome_signal <= {nuc_signal_max}. "
+            f"n_fragments in [{f_lo:.1f}, {f_hi:.1f}], tss_enrichment in ({tss_min}, {tss_max}), "
+            f"nucleosome_signal < {nuc_signal_max}. "
             "Revise one or more thresholds via `executor revise s2_atac_qc ...` "
             "before continuing; downstream stages cannot run on an empty ATAC cell set."
         )
@@ -228,6 +244,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         "thresholds": {
             "n_fragments": [float(f_lo), float(f_hi)],
             "tss_min": float(tss_min),
+            "tss_max": float(tss_max),
             "nucleosome_signal_max": float(nuc_signal_max),
         },
         "nucleosome_signal_summary": ns_summary,
@@ -270,5 +287,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     log_event(run_dir, {"stage": "s2_atac_qc", "event": "done",
                          "n_cells_pre": n_pre, "n_cells_post": n_post,
                          "thresholds": {"n_fragments": [float(f_lo), float(f_hi)],
-                                          "tss_min": float(tss_min)}})
+                                          "tss_min": float(tss_min),
+                                          "tss_max": float(tss_max),
+                                          "nucleosome_signal_max": float(nuc_signal_max)}})
     return {"n_cells_pre": n_pre, "n_cells_post": n_post}

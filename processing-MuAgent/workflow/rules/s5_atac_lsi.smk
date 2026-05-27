@@ -20,10 +20,11 @@ rule s5_atac_lsi_propose:
 
 rule s5_atac_lsi_execute:
     input:
-        proposal         = str(INTERNAL / "proposals" / "s5_atac_lsi.yaml"),
-        approved         = str(INTERNAL / "checkpoints" / "s5_atac_lsi.approved"),
-        plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
-        plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
+        proposal           = str(INTERNAL / "proposals" / "s5_atac_lsi.yaml"),
+        approved           = str(INTERNAL / "checkpoints" / "s5_atac_lsi.approved"),
+        plan               = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
+        plan_review_done   = str(INTERNAL / "checkpoints" / "plan_review.approved"),
+        qc_review_done     = str(INTERNAL / "checkpoints" / "post_qc_review.approved"),
     output:
         summary = str(INTERNAL / "artifacts" / "s5_atac_lsi" / "lsi_summary.json"),
     params:

@@ -1,8 +1,8 @@
 """Top-level Snakefile for processing-MuAgent.
 
 Rule DAG: p1_context -> p2_plan -> plan_review -> s0_ingest -> s1a_ambient ->
-          s1_rna_qc -> s2_atac_qc -> s3_doublets -> s4_rna_norm -> s5_atac_lsi ->
-          s6_dimred -> s7_clustering -> s8_umap -> manifest
+          s1_rna_qc -> s2_atac_qc -> s3_doublets -> post_qc_review ->
+          s4_rna_norm -> s5_atac_lsi -> s6_dimred -> s7_clustering -> s8_umap -> manifest
 
 Each stage has a _propose / _execute pair (see rules/*.smk); the execute rule
 depends on checkpoints/<stage>.approved written by `processing-muagent approve <stage>`.
@@ -31,6 +31,7 @@ POST_RUN = DELIVERABLES / "post_run"
 STAGES = [
     "p1_context", "p2_plan", "plan_review",
     "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
+    "post_qc_review",
     "s4_rna_norm", "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap",
 ]
 
@@ -45,6 +46,7 @@ include: "rules/s1a_ambient.smk"
 include: "rules/s1_rna_qc.smk"
 include: "rules/s2_atac_qc.smk"
 include: "rules/s3_doublets.smk"
+include: "rules/post_qc_review.smk"
 include: "rules/s4_rna_norm.smk"
 include: "rules/s5_atac_lsi.smk"
 include: "rules/s6_dimred.smk"
@@ -69,6 +71,7 @@ localrules:
     s1_rna_qc_propose,
     s2_atac_qc_propose,
     s3_doublets_propose,
+    post_qc_review_propose,
     s4_rna_norm_propose,
     s5_atac_lsi_propose,
     s6_dimred_propose,

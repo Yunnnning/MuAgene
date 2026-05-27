@@ -157,6 +157,11 @@ class RunPaths:
         return self.deliv_post_summary / "resolution_summary.md"
 
     @property
+    def qc_summary_pre_dimred_md(self) -> Path:
+        """post_run/summary/qc_summary_pre_dimred.md — early QC review before S4/S5."""
+        return self.deliv_post_summary / "qc_summary_pre_dimred.md"
+
+    @property
     def qc_summary_md(self) -> Path:
         return self.deliv_post_summary / "qc_summary.md"
 

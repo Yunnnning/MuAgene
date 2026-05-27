@@ -79,12 +79,16 @@ def assemble_plan(run_dir: Path | str, *, workflow_branch: str, sample_type: str
         },
         "s2_atac_qc": {
             "parameters": {
-                "tss_enrichment_min": p(2.0, "recommended", "ENCODE tissue-acceptable minimum.", "high"),
+                "tss_enrichment_min": p(1.5, "recommended",
+                                        "Minimum TSS enrichment; cells at or below are removed.", "high"),
+                "tss_enrichment_max": p(50.0, "recommended",
+                                         "Maximum TSS enrichment; very high values often indicate artifacts.",
+                                         "medium"),
                 "n_fragments_k_mad": p(5.0, "default", "Symmetric MAD on log fragments per cell.", "high"),
                 "n_fragments_floor": p(500, "recommended", "Minimum fragments for a real cell.", "medium"),
-                "nucleosome_signal_max": p(4.0, "recommended",
+                "nucleosome_signal_max": p(2.0, "recommended",
                                             "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
-                                            "ratio). High values flag poor nucleosome positioning.", "medium"),
+                                            "ratio). Cells at or above are removed.", "medium"),
             }
         },
         "s3_doublets": {

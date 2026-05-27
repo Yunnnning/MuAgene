@@ -68,21 +68,29 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # --- RNA ---
     if has_rna:
         a = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad")
-        # Optional sc.pp.scale before PCA (the scanpy-standard recipe). Works
-        # on the HVG-restricted matrix when available.
+
+        # Subset to HVGs before scaling/PCA to avoid densifying the full matrix.
+        # sc.pp.scale with zero_center=True (default) creates a dense copy;
+        # operating on the HVG subset (typically 2K genes) keeps peak memory low.
+        if "highly_variable" in a.var:
+            a_pca = a[:, a.var["highly_variable"]].copy()
+        else:
+            a_pca = a
+
         if do_scale:
             try:
-                sc.pp.scale(a, max_value=10)
+                sc.pp.scale(a_pca, max_value=10)
             except Exception as e:
                 log_event(run_dir, {"stage": "s6_dimred", "event": "scale_failed",
                                     "error": str(e)})
 
         # Elbow-resolved n_pcs. Compute up to n_pcs_max then trim to the elbow.
-        n_seed = int(min(n_pcs_max, max(2, a.n_vars - 1)))
-        if "highly_variable" in a.var:
-            sc.pp.pca(a, n_comps=n_seed, use_highly_variable=True)
-        else:
-            sc.pp.pca(a, n_comps=n_seed)
+        n_seed = int(min(n_pcs_max, max(2, a_pca.n_vars - 1)))
+        sc.pp.pca(a_pca, n_comps=n_seed)
+
+        # Copy PCA results back to the full object (neighbors uses obsm["X_pca"]).
+        a.obsm["X_pca"] = a_pca.obsm["X_pca"]
+        a.uns["pca"] = a_pca.uns.get("pca", {})
 
         if isinstance(n_pcs_param, str) and n_pcs_param.strip().lower() == "auto":
             vr = np.asarray(a.uns.get("pca", {}).get("variance_ratio", []), dtype=float)
