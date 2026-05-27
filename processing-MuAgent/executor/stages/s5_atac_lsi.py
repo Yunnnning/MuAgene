@@ -109,50 +109,111 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     n_obs_expected = int(adata.n_obs)
     peak_X = None
     peak_names: list[str] | None = None
-    peak_source = ""   # "arc_h5" | "macs3_from_fragments" | "tile_matrix_fallback"
+    peak_source = ""   # "user_peaks" | "arc_h5" | "macs3_from_fragments" | "tile_matrix_fallback"
     peak_source_h5: str | None = None
     macs3_failures: list[str] = []
 
-    # ---- Priority 1: Cell Ranger ARC h5 peak matrix ---------------------
+    # ---- Priority 0: user-supplied peaks BED ----------------------------
+    # When the user provides `atac_peaks_path` in run.yaml, S5 trusts it and
+    # builds the peak-by-cell matrix from those intervals via SnapATAC2's
+    # `make_peak_matrix`. The LSI/spectral clustering latent above is unchanged.
     try:
-        import json as _json
-        s0_report = _json.loads(
-            (run_dir / "internal" / "artifacts" / "s0_ingest" / "validation_report.json").read_text()
-        )
-        if s0_report.get("single_file_multiome"):
-            import yaml as _yaml
-            from ..run_paths import RunPaths as _RunPaths
-            cfg = _yaml.safe_load(_RunPaths(run_dir).run_yaml.read_text()) or {}
-            rna_path = cfg.get("rna_path")
-            if rna_path:
-                from .. import io as _io
-                peak_ad = _io.load_atac_from_10x_h5(rna_path)
-                peak_bc_set = set(peak_ad.obs_names)
-                missing = [bc for bc in s5_barcodes if bc not in peak_bc_set]
-                if missing:
-                    raise RuntimeError(
-                        f"{len(missing)} of {len(s5_barcodes)} S5 barcodes not found "
-                        "in 10x ARC peak matrix; refusing misaligned export."
-                    )
-                peak_ad = peak_ad[s5_barcodes].copy()
-                X = peak_ad.X
-                if not sp.issparse(X):
-                    X = sp.csr_matrix(X)
-                X = X.tocsr()
-                if X.shape[0] != n_obs_expected or X.shape[1] <= 0:
-                    raise RuntimeError(
-                        f"peak matrix shape {X.shape} invalid for n_obs={n_obs_expected}."
-                    )
-                names = [str(v) for v in list(peak_ad.var_names)]
-                if len(names) != X.shape[1]:
-                    raise RuntimeError(
-                        f"peak var_names length {len(names)} != ncols {X.shape[1]}."
-                    )
-                peak_X, peak_names = X, names
-                peak_source, peak_source_h5 = "arc_h5", str(rna_path)
+        import yaml as _yaml
+        from ..run_paths import RunPaths as _RunPaths
+        cfg = _yaml.safe_load(_RunPaths(run_dir).run_yaml.read_text()) or {}
+        user_peaks = cfg.get("atac_peaks_path")
+        if user_peaks:
+            user_peaks_path = Path(user_peaks)
+            if not user_peaks_path.exists():
+                raise RuntimeError(f"atac_peaks_path={user_peaks} not found on disk.")
+            peak_h5 = art / "peak_matrix_user.h5ad"
+            if peak_h5.exists():
+                peak_h5.unlink()
+            pm_out = snap.pp.make_peak_matrix(
+                adata, peak_file=str(user_peaks_path), inplace=False, file=str(peak_h5),
+            )
+            peak_ad = pm_out if pm_out is not None else snap.read(str(peak_h5))
+
+            peak_obs_names = [str(v) for v in list(peak_ad.obs_names)]
+            peak_bc_set = set(peak_obs_names)
+            missing = [bc for bc in s5_barcodes if bc not in peak_bc_set]
+            if missing:
+                raise RuntimeError(
+                    f"user peaks matrix missing {len(missing)} of {len(s5_barcodes)} "
+                    "S5 barcodes; refusing misaligned export."
+                )
+            if peak_obs_names != s5_barcodes:
+                bc_to_idx = {bc: i for i, bc in enumerate(peak_obs_names)}
+                order = [bc_to_idx[bc] for bc in s5_barcodes]
+            else:
+                order = list(range(len(peak_obs_names)))
+            X = peak_ad.X[:]
+            if not sp.issparse(X):
+                X = sp.csr_matrix(X)
+            X = X.tocsr()
+            if order != list(range(len(peak_obs_names))):
+                X = X[order, :]
+            if X.shape[0] != n_obs_expected or X.shape[1] <= 0:
+                raise RuntimeError(
+                    f"user peaks matrix shape {X.shape} invalid for n_obs={n_obs_expected}."
+                )
+            names = [str(v) for v in list(peak_ad.var_names)]
+            if len(names) != X.shape[1]:
+                raise RuntimeError(
+                    f"user peaks var_names length {len(names)} != ncols {X.shape[1]}."
+                )
+            peak_X, peak_names = X, names
+            peak_source = "user_peaks"
+            peak_source_h5 = str(user_peaks_path)
+            try:
+                peak_ad.close()
+            except Exception:
+                pass
     except Exception as e:
         log_event(run_dir, {"stage": "s5_atac_lsi",
-                             "event": "arc_peak_path_skipped", "reason": str(e)})
+                             "event": "user_peaks_path_skipped", "reason": str(e)})
+
+    # ---- Priority 1: Cell Ranger ARC h5 peak matrix ---------------------
+    if peak_X is None:
+        try:
+            import json as _json
+            s0_report = _json.loads(
+                (run_dir / "internal" / "artifacts" / "s0_ingest" / "validation_report.json").read_text()
+            )
+            if s0_report.get("single_file_multiome"):
+                import yaml as _yaml
+                from ..run_paths import RunPaths as _RunPaths
+                cfg = _yaml.safe_load(_RunPaths(run_dir).run_yaml.read_text()) or {}
+                rna_path = cfg.get("rna_path")
+                if rna_path:
+                    from .. import io as _io
+                    peak_ad = _io.load_atac_from_10x_h5(rna_path)
+                    peak_bc_set = set(peak_ad.obs_names)
+                    missing = [bc for bc in s5_barcodes if bc not in peak_bc_set]
+                    if missing:
+                        raise RuntimeError(
+                            f"{len(missing)} of {len(s5_barcodes)} S5 barcodes not found "
+                            "in 10x ARC peak matrix; refusing misaligned export."
+                        )
+                    peak_ad = peak_ad[s5_barcodes].copy()
+                    X = peak_ad.X
+                    if not sp.issparse(X):
+                        X = sp.csr_matrix(X)
+                    X = X.tocsr()
+                    if X.shape[0] != n_obs_expected or X.shape[1] <= 0:
+                        raise RuntimeError(
+                            f"peak matrix shape {X.shape} invalid for n_obs={n_obs_expected}."
+                        )
+                    names = [str(v) for v in list(peak_ad.var_names)]
+                    if len(names) != X.shape[1]:
+                        raise RuntimeError(
+                            f"peak var_names length {len(names)} != ncols {X.shape[1]}."
+                        )
+                    peak_X, peak_names = X, names
+                    peak_source, peak_source_h5 = "arc_h5", str(rna_path)
+        except Exception as e:
+            log_event(run_dir, {"stage": "s5_atac_lsi",
+                                 "event": "arc_peak_path_skipped", "reason": str(e)})
 
     # ---- Priority 2: MACS3 peak calling from fragments ------------------
     if peak_X is None:

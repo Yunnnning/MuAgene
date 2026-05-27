@@ -242,6 +242,18 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     n_joint: int | None = None
     if workflow_branch == "paired":
         joint_bc = rna_survivors & atac_survivors
+        if not joint_bc:
+            raise ValueError(
+                "S3: paired-branch joint barcode intersection is empty after QC + "
+                f"doublet removal (n_rna_survivors={len(rna_survivors)}, "
+                f"n_atac_survivors={len(atac_survivors)}). Check that S0 established "
+                "real cell-level pairing (look at `ingest.pairing_decision.method` in "
+                "parameters.yaml) — if it did, your S1/S2 QC thresholds may have "
+                "filtered away the shared cells; revise via `executor revise s1_rna_qc "
+                "...` or `executor revise s2_atac_qc ...`. If S0 did NOT establish "
+                "pairing (method=pairing.translation_table required when whitelists "
+                "differ), supply `barcode_translation_path` in run.yaml and rerun S0."
+            )
         n_dropped_rna_at_join = len(rna_survivors) - len(joint_bc)
         n_dropped_atac_at_join = len(atac_survivors) - len(joint_bc)
         rna_survivors = joint_bc

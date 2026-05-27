@@ -195,24 +195,70 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         if atac_lsi is not None:
             atac_adata.obsm["X_lsi"] = atac_lsi
 
+    # --- Optional generic per-cell metadata join (any branch) -----------
+    # User-supplied `cell_metadata_path` (TSV with a `barcode` column + arbitrary
+    # extra columns) is left-joined into the modality .obs frames just before the
+    # final write. Cells without a metadata row keep NaN. This is intentionally
+    # generic — it is NOT HTO demultiplexing; the upstream pipeline must already
+    # have demultiplexed if a sample_id column is expected.
+    import yaml as _yaml
+    cfg = _yaml.safe_load(paths.run_yaml.read_text()) or {}
+    cell_metadata_path = cfg.get("cell_metadata_path")
+    if cell_metadata_path:
+        mpath = Path(cell_metadata_path)
+        if mpath.exists():
+            try:
+                import pandas as _pd
+                meta_df = _pd.read_csv(mpath, sep="\t", dtype=str, keep_default_na=False)
+                cols_l = {c.lower(): c for c in meta_df.columns}
+                bc_col = cols_l.get("barcode") or meta_df.columns[0]
+                meta_df = meta_df.set_index(bc_col)
+                if rna is not None:
+                    rna.obs = rna.obs.join(meta_df, how="left")
+                if atac_adata is not None:
+                    atac_adata.obs = atac_adata.obs.join(meta_df, how="left")
+                log_event(run_dir, {"stage": "s8_umap",
+                                     "event": "cell_metadata_joined",
+                                     "path": str(mpath),
+                                     "n_columns_added": int(meta_df.shape[1])})
+            except Exception as e:
+                log_event(run_dir, {"stage": "s8_umap",
+                                     "event": "cell_metadata_join_failed",
+                                     "path": str(mpath), "error": str(e)})
+        else:
+            log_event(run_dir, {"stage": "s8_umap",
+                                 "event": "cell_metadata_path_missing",
+                                 "path": str(mpath)})
+
     # --- Write branch-specific final output -----------------------------
     if workflow_branch == "paired":
         # S3 intersects RNA/ATAC barcodes on the paired branch, so by here the
-        # two modalities should already be aligned. Defensive subset stays as a
-        # safety net (e.g. if S5/S6/S7 ever drop cells) and is logged when it
-        # actually filters anything.
+        # two modalities should already be aligned. The defensive check below
+        # runs BEFORE MuData assembly so a divergence never reaches mdata.write,
+        # and an empty intersection is a hard error with explicit context.
         rna_bcs = set(rna.obs_names)
         atac_bcs = set(atac_adata.obs_names)
+        common = rna_bcs & atac_bcs
+        if not common:
+            raise ValueError(
+                f"S8: paired output requires shared barcodes between RNA "
+                f"(n={len(rna_bcs)}) and ATAC (n={len(atac_bcs)}), but the "
+                "intersection is empty. This typically means S3's joint-barcode "
+                "intersection was skipped (committed branch != 'paired') or that "
+                "subsequent stages (S4..S7) dropped cells asymmetrically. Inspect "
+                "`ingest.pairing_decision` in parameters.yaml and the s3_doublets "
+                "calls.parquet / joint_barcodes.txt to diagnose."
+            )
         if rna_bcs != atac_bcs:
-            common = sorted(rna_bcs & atac_bcs)
+            common_sorted = sorted(common)
             log_event(run_dir, {"stage": "s8_umap", "event": "barcode_realignment",
                                  "note": ("RNA/ATAC barcodes diverged between S3 intersection "
                                           "and S8 — falling back to intersection at assembly."),
                                  "n_rna_pre": len(rna_bcs),
                                  "n_atac_pre": len(atac_bcs),
-                                 "n_common": len(common)})
-            rna = rna[common].copy()
-            atac_adata = atac_adata[common].copy()
+                                 "n_common": len(common_sorted)})
+            rna = rna[common_sorted].copy()
+            atac_adata = atac_adata[common_sorted].copy()
         import mudata as mu
         mdata = mu.MuData({"rna": rna, "atac": atac_adata})
         mdata.write(str(paths.processed_h5mu))

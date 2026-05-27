@@ -1,5 +1,6 @@
 # Local example data / demo runs (root `example/` folder)
 example/
+data/
 
 # Snakemake working directory
 .snakemake/

@@ -18,10 +18,17 @@ rule s0_ingest_propose:
             source="user", confidence="high",
             rationale="Supplied by user in run.yaml",
         )
+        _propose_keys = ("rna_path", "rna_raw_path", "atac_fragments_path",
+                          "genome_assembly", "metadata_path",
+                          "barcode_translation_path", "atac_peaks_path",
+                          "cell_metadata_path")
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s0_ingest",
-            "inputs": {k: config[k] for k in ("rna_path", "atac_fragments_path", "genome_assembly") if k in config},
-            "action": "validate formats, detect pairing, handle metadata, hash inputs",
+            "inputs": {k: config[k] for k in _propose_keys if k in config},
+            "action": ("validate formats, detect pairing via the diagnostics ladder "
+                        "(direct overlap -> suffix-normalized -> translation table -> "
+                        "auto-downgrade to 'separate'), persist optional translation parquet "
+                        "for S2, handle metadata, hash inputs"),
         }))
         approval.mark_awaiting(params.run_dir, "s0_ingest")
 

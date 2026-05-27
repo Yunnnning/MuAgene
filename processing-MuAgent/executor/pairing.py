@@ -26,7 +26,9 @@ def _normalize(bc: str) -> list[str]:
 class PairingResult:
     status: str           # paired | separate | ambiguous | rna_only | atac_only
     confidence: str       # high | medium | low
-    method: str           # which strategy fired
+    method: str           # pairing.{exact_barcode_match|prefix_suffix_normalized|
+                          #           translation_table|single_file_multiome|
+                          #           rna_only_input|atac_only_input|ambiguous_overlap|no_match}
     overlap: float        # |intersection|/|union| (0.0 for single-modality inputs)
     n_rna: int
     n_atac: int
@@ -151,4 +153,51 @@ def detect_pairing(
         n_rna=n_rna,
         n_atac=n_atac,
         n_shared=len(shared),
+    )
+
+
+def pairing_via_translation(
+    rna_barcodes: set[str],
+    atac_barcodes: set[str],
+    translation: dict[str, str],
+) -> PairingResult:
+    """Re-check pairing after rewriting ATAC barcodes into RNA-space via a translation table.
+
+    `translation` maps ATAC barcode -> RNA barcode (one-to-one cell pairing).
+    Unmapped ATAC barcodes are excluded from the comparison; the unmapped
+    count is recorded in `assumptions` so S0 can record coverage in
+    `validation_report.json`.
+
+    Status is `paired` when the *translated* overlap reaches ≥0.99 of the
+    union (matching the threshold used by `pairing.exact_barcode_match`);
+    otherwise `separate` is returned with the actual overlap. Callers
+    decide whether to fall through to the next ladder rung.
+    """
+    n_rna = len(rna_barcodes)
+    n_atac_raw = len(atac_barcodes)
+    translated: set[str] = set()
+    n_unmapped = 0
+    for bc in atac_barcodes:
+        rna = translation.get(bc)
+        if rna is None:
+            n_unmapped += 1
+        else:
+            translated.add(rna)
+    shared = rna_barcodes & translated
+    union = rna_barcodes | translated
+    overlap = len(shared) / max(len(union), 1)
+    status = "paired" if overlap >= 0.99 else "separate"
+    return PairingResult(
+        status=status,
+        confidence="high" if status == "paired" else "medium",
+        method="pairing.translation_table",
+        overlap=overlap,
+        n_rna=n_rna,
+        n_atac=n_atac_raw,
+        n_shared=len(shared),
+        normalization=f"atac->rna via user-supplied translation table ({len(translation)} pairs)",
+        assumptions=[
+            f"{n_unmapped} of {n_atac_raw} ATAC barcodes had no translation entry "
+            "(dropped from the comparison)."
+        ],
     )

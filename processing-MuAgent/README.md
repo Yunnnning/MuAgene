@@ -14,8 +14,15 @@ Pre-preprocessing phases (run before any QC):
 Preprocessing stages:
 
 - **S0 Ingest** — Accepts both Cell Ranger **filtered** and **raw** matrices. Format 
-  autodetect (10x h5 / MEX / h5ad / custom), fragments validation (+ tbi), pairing detection 
-  (paired vs separate workflow branches), metadata handling (minimal reconstruction when absent). 
+  autodetect (10x h5 / MEX / h5ad / custom), fragments validation (+ tbi), and a
+  **diagnostics-driven pairing decision**: detection (direct or suffix-normalized
+  barcode overlap) is advisory; user `declare-branch paired` + optional
+  `barcode_translation_path` / `cell_metadata_path` are consulted via a ladder
+  before committing the workflow branch. When the ladder cannot establish
+  cell-level pairing, S0 auto-downgrades `paired → separate` with the reason
+  surfaced in `validation_report.json`. No barcode pre-intersection at S0 — S3
+  is the sole enforcement point for the paired branch. Metadata handling
+  (minimal reconstruction when absent) is unchanged.
 - **S1a Ambient RNA correction** — DecontX (filtered counts only) or SoupX
   (raw + filtered) auto-dispatched from `s0` outputs. Pass-through when R / Bioconductor 
   is unavailable.
@@ -35,10 +42,12 @@ Preprocessing stages:
   stages operate on the joint cell set; a sentinel `joint_barcodes.txt` is
   written alongside the post-doublet h5ads.
 - **S4 RNA norm + HVG** — log-normalize (target_sum=1e4) + HVG (`seurat_v3` on counts).
-- **S5 ATAC TF-IDF + LSI and Peak Matrix Export** — Performs TF-IDF normalization and spectral embedding (LSI) on the SnapATAC2 tile matrix (`bin_size=500`, unified with S3). In parallel, the stage attempts to export a feature (cell-by-feature) matrix for ATAC using the following approach:
-  1. **Peak Matrix:** If available, loads the peak matrix directly from Cell Ranger ARC (10x) multiome `.h5` files ("arc_h5" mode). If ARC peak matrix is unavailable, generates peaks from fragments using SnapATAC2’s MACS3 integration, then constructs a peak-by-cell matrix ("macs3_from_fragments" mode).
-  2. **Fallback:** If both peak matrix approaches fail, exports the verified SnapATAC2 tile matrix ("tile_matrix_fallback" mode).
-  The resulting exported matrix is used for downstream integration; the LSI embedding is always preserved for ATAC clustering.
+- **S5 ATAC TF-IDF + LSI and Peak Matrix Export** — Performs TF-IDF normalization and spectral embedding (LSI) on the SnapATAC2 tile matrix (`bin_size=500`, unified with S3). In parallel, the stage attempts to export a feature (cell-by-feature) matrix for ATAC using the following priority order:
+  0. **User-supplied peaks:** if `atac_peaks_path` is set in `run.yaml`, S5 builds the peak-by-cell matrix from those intervals via SnapATAC2's `make_peak_matrix` ("user_peaks" mode). Highest priority — user intent wins.
+  1. **ARC peak matrix:** when `single_file_multiome` was detected at S0 (Cell Ranger ARC combined `.h5`), the pre-called peaks are used directly ("arc_h5" mode).
+  2. **MACS3 from fragments:** otherwise, peaks are called from fragments via SnapATAC2's MACS3 integration ("macs3_from_fragments" mode).
+  3. **Tile-matrix fallback:** if all peak paths fail, the verified SnapATAC2 tile matrix is exported ("tile_matrix_fallback" mode).
+  The LSI embedding (used by S6/S7/S8 for clustering and UMAP) is computed from the tile matrix regardless and is unchanged.
 - **S6 Dim reduction + neighbors** — For RNA: applies `sc.pp.scale` (optional), then PCA; the number of principal components (`n_pcs`) is determined using a chord-distance ("elbow") heuristic on the explained-variance curve, capped at `rna_n_pcs_max`. Nearest-neighbors are then computed on the PCA space.
   For ATAC: cells are embedded using SnapATAC2’s LSI (from previous stage), and neighbor graphs are computed directly on the LSI representation.
 - **S7 Clustering** — Leiden resolution sweep with per-modality grid, stable-region knee picker; RNA tilt=higher, ATAC tilt=lower.
@@ -50,11 +59,49 @@ Preprocessing stages:
 
 ## Paired multiome
 
-The paired branch (single Cell Ranger ARC `.h5` or matched RNA matrix +
-ATAC fragments) guarantees that **the final object contains only cells
-passing both RNA and ATAC QC, with matching barcodes across modalities**.
+The paired branch admits three input shapes:
 
-**Barcode Intersection:** In the paired workflow branch, barcode alignment is enforced in three steps to ensure that only cells passing both RNA and ATAC QC are included. First, during S0 ingest, RNA cells are filtered to those with barcodes present in the ATAC fragments, while the ATAC set is left unfiltered to maximize statistical power for ATAC QC. Next, after S1 and S2 QC and S3 doublet removal, a strict intersection of surviving RNA and ATAC barcodes is performed; the resulting joint set is written to both `rna_post_doublet.h5ad` and `atac_post_doublet.h5ad`, and exported as `joint_barcodes.txt` for downstream validation. Finally, at S8 assembly, the MuData writer re-checks that the RNA and ATAC barcodes are identical; if any mismatch arises due to cell losses in earlier stages, the intersection is recalculated and the event is logged to maintain consistency.
+1. A single Cell Ranger ARC `.h5` (combined GEX + Peaks; barcodes share by construction).
+2. Cell Ranger GEX `.h5` + ATAC fragments where the two whitelists match directly
+   (or differ only by a `-N` / `_LIBRARY` suffix).
+3. **Independent GEX + ATAC pipelines whose barcodes live in different 10x whitelists.**
+   This requires an optional 2-column TSV at `barcode_translation_path` (or a
+   `cell_metadata_path` exposing both `rna_barcode` and `atac_barcode` columns) so
+   S0 can rewrite ATAC barcodes into RNA-space before any QC runs.
+
+In all three cases, the final `processed.h5mu` contains only cells passing
+both RNA and ATAC QC with matching barcodes across modalities.
+
+**Diagnostics ladder (S0):** Detection at S0 is *advisory*; the committed
+`workflow_branch` is decided by a ladder that takes the first rung that
+succeeds:
+
+1. Direct barcode overlap ≥0.99 → paired (`pairing.exact_barcode_match`).
+2. Suffix-normalized overlap ≥0.99 → paired (`pairing.prefix_suffix_normalized`).
+3. `barcode_translation_path` translation, then overlap ≥0.99 → paired
+   (`pairing.translation_table`). Translation parquet is persisted at
+   `internal/artifacts/s0_ingest/barcode_translation.parquet` and read by S2
+   to produce a one-time translated copy of `atac_fragments.tsv.gz` upstream
+   of the SnapATAC2 import call.
+4. `cell_metadata_path` exposing both `rna_barcode` + `atac_barcode` columns
+   → treated as a translation table, same rule as rung 3.
+5. None of the above succeed → committed branch downgrades to `separate`
+   with the reason recorded in `validation_report.json#pairing.downgrade_reason`.
+
+If the user declared `paired` via `executor declare-branch paired` but the
+ladder commits `separate`, the stage **does not crash** — the report flags the
+downgrade and the agent surfaces it verbatim per `system_prompt.md` hard rule 3.
+
+**Barcode Intersection enforcement:** No barcode pre-intersection at S0 — S1
+and S2 QC each see their full modality barcode set, so QC thresholds remain
+modality-native. After S3 doublet removal, the paired branch intersects RNA
+and ATAC survivor sets; the joint set is written to both
+`rna_post_doublet.h5ad` and `atac_post_doublet.h5ad`, and exported as
+`joint_barcodes.txt`. An empty intersection at S3 raises with a remediation
+message pointing at the pairing decision and the QC thresholds. Finally, at
+S8 assembly, the MuData writer re-checks barcode equality *before* MuData
+construction; an empty intersection is a hard error, a partial mismatch
+triggers a logged subset.
 
 **Doublet removal policy (union by default).** Doublet flagging runs independently per modality (Scrublet for RNA, SnapATAC2 scrublet for ATAC); the two flag sets are then reconciled at S3. The default is **union** — a cell is removed if flagged by *either* detector (`study_goal=clustering_inference` or unspecified). Switching `study_goal` to `rare_populations` recommends **intersection** instead (remove only cells flagged by *both* detectors), which trades a slightly higher residual-doublet rate for a much lower false-positive removal rate. The chosen policy is surfaced in `plan_review.md` and confirmed at the S3 checkpoint; per-detector scores and boolean flags are preserved in `calls.parquet`, so an alternative cut can be applied retrospectively without re-running S3.
 
@@ -98,6 +145,20 @@ run_dir:               /path/to/your/output/run_01   # where all outputs will be
 rna_path:              /path/to/filtered_feature_bc_matrix.h5
 atac_fragments_path:   /path/to/atac_fragments.tsv.gz
 genome_assembly:       GRCh38   # or mm10
+
+# --- Optional paired-multiome inputs (all default to unset / None) --------
+# 2-column TSV (rna_barcode, atac_barcode) mapping cell pairs across whitelists.
+# Required only when GEX and ATAC pipelines used different 10x whitelists.
+barcode_translation_path:  /path/to/barcode_translation.tsv
+# Optional BED of peak intervals; consumed by S5 as the highest-priority peak
+# source. If unset, S5 falls back to ARC h5 peaks (if present), then MACS3 on
+# fragments, then a verified tile-matrix fallback.
+atac_peaks_path:           /path/to/peaks.bed
+# Optional per-cell metadata TSV (any columns; needs a `barcode` column for the
+# join key). Left-joined into RNA and ATAC obs at S8 before final write. If the
+# file additionally exposes `rna_barcode`+`atac_barcode` columns, S0's pairing
+# ladder will treat those columns as a translation table.
+cell_metadata_path:        /path/to/cell_metadata.tsv
 ```
 
 **Step 3 — Scaffold the run directory** (`init` creates it and copies your config inside):

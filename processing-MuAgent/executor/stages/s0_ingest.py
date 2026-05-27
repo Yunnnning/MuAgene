@@ -12,6 +12,7 @@ from .. import pairing as _pair
 from .. import metadata as _meta
 from .. import provenance as _prov
 from .. import hashing as _h
+from .. import translation as _translation
 from ..log import log_event
 
 
@@ -141,42 +142,185 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     rna_bc: set[str] = set(rna.obs_names) if rna is not None else set()
 
     # Pairing — accepts empty sets on one side for single-modality branches.
-    pr = _pair.detect_pairing(rna_bc, atac_bc, single_file_multiome=single_file_multiome)
+    pr_initial = _pair.detect_pairing(rna_bc, atac_bc, single_file_multiome=single_file_multiome)
 
-    # --- Workflow branch derivation --------------------------------------
-    if pr.status == "ambiguous":
-        raise ValueError(
-            f"S0 pairing is ambiguous (overlap={pr.overlap:.3f}); resolve before running preprocessing."
-        )
-    workflow_branch = pr.status  # paired | separate | rna_only | atac_only
-
-    # User-declared branch (from `executor declare-branch`) — confirm or raise.
+    # --- Diagnostics ladder for the workflow_branch decision -------------
+    # Detection is advisory; declaration + supplied mappings drive the committed branch.
+    # Ladder rungs (first hit wins):
+    #   1. Direct overlap (>=0.99)               -> paired   (pairing.exact_barcode_match)
+    #   2. Suffix-normalized overlap (>=0.99)    -> paired   (pairing.prefix_suffix_normalized)
+    #   3. `barcode_translation_path` mapping    -> paired   (pairing.translation_table)
+    #   4. `cell_metadata_path` w/ atac_barcode  -> paired   (pairing.translation_table)
+    #   5. otherwise (low overlap, no mapping)   -> separate (auto-downgrade with logged reason)
     declared = _prov.get_value(str(params_path), "plan.workflow_branch_declared", None)
-    if declared is not None:
-        if declared != workflow_branch:
-            raise ValueError(
-                f"S0: declared workflow_branch={declared!r} conflicts with detected "
-                f"{workflow_branch!r}. Correct either the declaration or the inputs."
+    barcode_translation_path = config.get("barcode_translation_path")
+    cell_metadata_path = config.get("cell_metadata_path")
+
+    committed_branch = pr_initial.status
+    pairing_result = pr_initial
+    ladder_steps: list[dict[str, Any]] = [{
+        "step": pr_initial.method,
+        "status": pr_initial.status,
+        "overlap": pr_initial.overlap,
+    }]
+    translation_table_loaded: dict[str, str] | None = None
+    translation_source: str | None = None
+    downgrade_reason: str | None = None
+
+    if declared == "paired" and committed_branch != "paired" and rna_bc and atac_bc:
+        # Try barcode_translation_path first.
+        if barcode_translation_path:
+            tpath = Path(barcode_translation_path)
+            if tpath.exists():
+                try:
+                    translation_table_loaded = _translation.load_translation_tsv(tpath)
+                    translation_source = f"barcode_translation_path={tpath}"
+                except Exception as e:
+                    log_event(run_dir, {"stage": "s0_ingest",
+                                         "event": "translation_table_load_failed",
+                                         "path": str(tpath), "error": str(e)})
+
+        # Then try cell_metadata_path if it carries both rna_barcode and atac_barcode.
+        if translation_table_loaded is None and cell_metadata_path:
+            mpath = Path(cell_metadata_path)
+            if mpath.exists():
+                try:
+                    import pandas as _pd
+                    head_df = _pd.read_csv(mpath, sep="\t", dtype=str, nrows=5,
+                                           keep_default_na=False)
+                    cols_l = {c.lower() for c in head_df.columns}
+                    if "atac_barcode" in cols_l and (
+                        "rna_barcode" in cols_l or "gex_barcode" in cols_l
+                    ):
+                        translation_table_loaded = _translation.load_translation_tsv(mpath)
+                        translation_source = f"cell_metadata_path={mpath}"
+                except Exception as e:
+                    log_event(run_dir, {"stage": "s0_ingest",
+                                         "event": "cell_metadata_translation_load_failed",
+                                         "path": str(mpath), "error": str(e)})
+
+        if translation_table_loaded:
+            pr_trans = _pair.pairing_via_translation(
+                rna_bc, atac_bc, translation_table_loaded,
             )
-        # Declaration matches detection — commit with source=user (schema forbids
-        # method on source=user, so the confirmation is recorded in rationale).
+            ladder_steps.append({
+                "step": pr_trans.method, "status": pr_trans.status,
+                "overlap": pr_trans.overlap, "source": translation_source,
+                "n_pairs": len(translation_table_loaded),
+            })
+            if pr_trans.status == "paired":
+                committed_branch = "paired"
+                pairing_result = pr_trans
+                _translation.write_translation_parquet(
+                    translation_table_loaded,
+                    artifacts / "barcode_translation.parquet",
+                )
+            else:
+                committed_branch = "separate"
+                pairing_result = pr_trans
+                downgrade_reason = (
+                    f"User declared 'paired' but translation table from {translation_source} "
+                    f"yielded overlap={pr_trans.overlap:.4f} (<0.99). Auto-downgraded to "
+                    "'separate'. Doublet calls still run per modality; the S3 joint-barcode "
+                    "intersection is skipped because no validated cell-level pairing exists."
+                )
+        else:
+            committed_branch = "separate"
+            pairing_result = pr_initial
+            downgrade_reason = (
+                f"User declared 'paired' but pairing detection committed "
+                f"{pr_initial.status!r} (overlap={pr_initial.overlap:.4f}); no "
+                "`barcode_translation_path` or `cell_metadata_path` (with both "
+                "`rna_barcode` and `atac_barcode` columns) was provided. Auto-downgraded "
+                "to 'separate'. To enable the paired branch, supply a translation table "
+                "mapping ATAC barcodes to RNA barcodes."
+            )
+
+    # Ambiguous overlap with no resolution path is still a hard stop — needs human input.
+    if pairing_result.status == "ambiguous" and committed_branch == "ambiguous":
+        raise ValueError(
+            f"S0 pairing is ambiguous (overlap={pairing_result.overlap:.3f}); resolve "
+            "before running preprocessing — supply `barcode_translation_path` or declare "
+            "the branch explicitly with `executor declare-branch`."
+        )
+
+    # Single-modality declarations that contradict the detected modality set are still
+    # a hard error: rna_only with ATAC inputs (or atac_only with RNA inputs) signals
+    # a data-hygiene problem the user must resolve.
+    if declared is not None and declared != "paired" and declared != committed_branch:
+        raise ValueError(
+            f"S0: declared workflow_branch={declared!r} conflicts with detected "
+            f"{committed_branch!r}. For the paired<->separate decision, supply a "
+            "`barcode_translation_path`; for rna_only/atac_only declarations, either "
+            "remove the unwanted modality from the inputs or correct the declaration."
+        )
+
+    workflow_branch = committed_branch  # paired | separate | rna_only | atac_only
+
+    # Commit workflow_branch with appropriate provenance source/method.
+    if declared == "paired" and workflow_branch == "paired" \
+            and pairing_result.method == "pairing.translation_table":
+        _prov.set_param(params_path, "plan.workflow_branch", workflow_branch,
+                        source="user", confidence="high",
+                        rationale=(f"User declared 'paired'; pairing established via "
+                                   f"translation table ({translation_source}), "
+                                   f"overlap={pairing_result.overlap:.4f}."))
+    elif declared == "paired" and workflow_branch == "paired":
+        _prov.set_param(params_path, "plan.workflow_branch", workflow_branch,
+                        source="user", confidence="high",
+                        rationale=(f"User declared 'paired' via `executor declare-branch`; "
+                                   f"S0 detection via {pairing_result.method} confirmed "
+                                   f"overlap={pairing_result.overlap:.4f}."))
+    elif declared == "paired" and workflow_branch == "separate":
+        _prov.set_param(params_path, "plan.workflow_branch", workflow_branch,
+                        source="derived", confidence="high",
+                        rationale=downgrade_reason or "Paired declaration downgraded to separate.",
+                        method={"name": "s0.paired_to_separate_downgrade",
+                                "code_ref": "executor/stages/s0_ingest.py"})
+    elif declared is not None and declared == workflow_branch:
         _prov.set_param(params_path, "plan.workflow_branch", workflow_branch,
                         source="user", confidence="high",
                         rationale=(f"User declared {declared!r} via `executor declare-branch`; "
-                                   f"S0 detection via {pr.method} confirmed overlap={pr.overlap:.4f}."))
+                                   f"S0 detection via {pairing_result.method} matched."))
     else:
         _prov.set_param(params_path, "plan.workflow_branch", workflow_branch,
-                        source="derived", confidence=pr.confidence,
-                        rationale=f"From pairing status={pr.status}",
+                        source="derived", confidence=pairing_result.confidence,
+                        rationale=f"From pairing status={pairing_result.status}",
                         method={"name": "derive_workflow_branch",
                                 "code_ref": "executor/stages/s0_ingest.py"})
 
-    _prov.set_param(params_path, "ingest.pairing_decision",
-                    {"status": pr.status, "confidence": pr.confidence, "method": pr.method,
-                     "overlap": pr.overlap},
-                    source="derived", confidence=pr.confidence,
-                    rationale=f"Detected via {pr.method}; overlap={pr.overlap:.4f}",
-                    method={"name": pr.method, "code_ref": "executor/pairing.py::detect_pairing"})
+    pairing_record: dict[str, Any] = {
+        "status": pairing_result.status,
+        "confidence": pairing_result.confidence,
+        "method": pairing_result.method,
+        "overlap": pairing_result.overlap,
+        "ladder": ladder_steps,
+        "declared": declared,
+        "committed": workflow_branch,
+    }
+    if downgrade_reason:
+        pairing_record["downgrade_reason"] = downgrade_reason
+    if translation_source:
+        pairing_record["translation_source"] = translation_source
+        pairing_record["n_translation_pairs"] = len(translation_table_loaded or {})
+
+    _prov.set_param(params_path, "ingest.pairing_decision", pairing_record,
+                    source="derived", confidence=pairing_result.confidence,
+                    rationale=f"Detected via {pairing_result.method}; overlap={pairing_result.overlap:.4f}",
+                    method={"name": pairing_result.method,
+                            "code_ref": "executor/pairing.py"})
+
+    # Record the new optional input paths so manifest + reproducibility surface them.
+    for cfg_key, param_key in (
+        ("barcode_translation_path", "ingest.barcode_translation_path"),
+        ("atac_peaks_path", "ingest.atac_peaks_path"),
+        ("cell_metadata_path", "ingest.cell_metadata_path"),
+    ):
+        val = config.get(cfg_key)
+        if val:
+            _prov.set_param(params_path, param_key, str(val),
+                            source="user", confidence="high",
+                            rationale=f"Supplied by user in run.yaml as {cfg_key}.")
 
     # --- Metadata handling -----------------------------------------------
     meta_source = "reconstructed"
@@ -229,13 +373,18 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     # --- Validation report -----------------------------------------------
     report: dict[str, Any] = {
         "workflow_branch": workflow_branch,
-        "pairing": pr.as_dict(),
+        "pairing": pairing_record,
         "genome_assembly": genome_assembly,
         "metadata_source": meta_source,
         "single_file_multiome": single_file_multiome,
         "rna_filtered_status": rna_filtered_status,
         "has_raw_matrix": rna_raw_full is not None,
     }
+    # Surface the optional input paths in the report so users see them
+    # without having to grep parameters.yaml.
+    for k in ("barcode_translation_path", "atac_peaks_path", "cell_metadata_path"):
+        if config.get(k):
+            report[k] = str(config[k])
     if rna is not None:
         report["rna_format"] = rna_fmt
         report["rna_n_cells"] = int(rna.n_obs)
@@ -254,11 +403,10 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     #     branch-aware input functions don't need to special-case existence). --
     rna_out = artifacts / "rna_ingest.h5ad"
     if rna is not None:
-        if workflow_branch == "paired":
-            common_bc = rna_bc & atac_bc
-            rna_ingest = rna[rna.obs_names.isin(common_bc)].copy()
-        else:
-            rna_ingest = rna.copy()
+        # No pre-intersection at S0 — modality-specific QC (S1/S2) runs on each
+        # modality's full barcode set. For the paired branch, S3 enforces the
+        # joint barcode intersection after doublet removal.
+        rna_ingest = rna.copy()
         rna_ingest.layers["counts"] = rna_ingest.X.copy()
         rna_ingest.write_h5ad(rna_out)
     else:

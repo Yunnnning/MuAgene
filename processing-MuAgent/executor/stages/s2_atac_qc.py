@@ -45,6 +45,27 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     atac_meta = json.loads((run_dir / "internal" / "artifacts" / "s0_ingest" / "atac_ingest.json").read_text())
     fragments_path = atac_meta["fragments_path"]
 
+    # Optional barcode-translation shim: when S0 persisted a translation parquet
+    # (paired branch established via `pairing.translation_table`), stream-rewrite
+    # ATAC barcodes into RNA-space before SnapATAC2 ever reads the file. The QC
+    # body below is unchanged — it just imports from a different fragments file.
+    translation_parquet = (run_dir / "internal" / "artifacts" / "s0_ingest"
+                            / "barcode_translation.parquet")
+    if translation_parquet.exists():
+        from .. import translation as _translation
+        translated_path = art / "atac_fragments.translated.tsv.gz"
+        if not translated_path.exists():
+            table = _translation.load_translation_parquet(translation_parquet)
+            stats = _translation.translate_fragments_file(
+                fragments_path, translated_path, table,
+            )
+            log_event(run_dir, {"stage": "s2_atac_qc",
+                                 "event": "fragments_translated",
+                                 "src": str(fragments_path),
+                                 "dst": str(translated_path),
+                                 **stats})
+        fragments_path = str(translated_path)
+
     # Strict: require an explicit, SnapATAC2-supported genome. 
     genome = _prov.get_value(params_path, "ingest.genome_assembly", None)
     if not genome:

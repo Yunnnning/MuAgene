@@ -286,11 +286,8 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
         if kept:
             click.echo(f"Auto-approved all stages except: {sorted(kept)}. "
                        "Snakemake will stop at those gates.")
-        _snakemake(["--configfile", str(paths.run_yaml), "all"],
-                   run_dir, executor=executor)
-    else:
-        _snakemake(["--configfile", str(paths.run_yaml), target],
-                   run_dir, executor=executor)
+    _snakemake(["--configfile", str(paths.run_yaml), target],
+               run_dir, executor=executor)
 
 
 @main.command()
