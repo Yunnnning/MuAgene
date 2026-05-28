@@ -22,10 +22,10 @@ def _s8_outputs(wildcards):
     branch = provenance.get_value(str(INTERNAL / "parameters.yaml"),
                                   "plan.workflow_branch", "paired")
     if branch == "paired":
-        return [str(POST_RUN / "processed" / "processed.h5mu")]
+        return [str(POST_RUN / "processed.h5mu")]
     return [
-        str(POST_RUN / "processed" / "rna_processed.h5ad"),
-        str(POST_RUN / "processed" / "atac_processed.h5ad"),
+        str(POST_RUN / "rna_processed.h5ad"),
+        str(POST_RUN / "atac_processed.h5ad"),
     ]
 
 

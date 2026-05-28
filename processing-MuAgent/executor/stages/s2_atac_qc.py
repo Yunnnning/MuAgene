@@ -256,7 +256,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_figures
+        figs_dir = RunPaths(run_dir).deliv_qc_review
         figs_dir.mkdir(parents=True, exist_ok=True)
         # SnapATAC2's `adata.uns` is a polars-backed PyElemCollection, not a
         # plain dict — `.get()` and `in` may not behave like dict semantics.

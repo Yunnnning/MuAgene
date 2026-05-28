@@ -223,7 +223,7 @@ def resolution_compare_cmd(config_path: str, rna_pair: str, atac_pair: str) -> N
     rna_res = tuple(float(x) for x in rna_pair.split(","))
     atac_res = tuple(float(x) for x in atac_pair.split(","))
     out = _rc.run_comparison(run_dir, rna_resolutions=rna_res, atac_resolutions=atac_res)
-    # Refresh deliverables/figures so the new comparison PNG+PDF show up there (if they qualify).
+    # Refresh deliverables layout manifest after writing comparison figures.
     if (run_dir / "deliverables").exists():
         _layout.reorganise(run_dir)
     click.echo(f"Comparison written: {out}")

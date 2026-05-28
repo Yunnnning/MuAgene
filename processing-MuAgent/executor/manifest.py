@@ -37,10 +37,10 @@ def build_manifest(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any
         outputs["rna_processed_h5ad"] = rel(paths.rna_processed_h5ad)
     if paths.atac_processed_h5ad.exists():
         outputs["atac_processed_h5ad"] = rel(paths.atac_processed_h5ad)
-    # User-facing figures (QC + UMAP) live in deliverables/figures/.
+    # User-facing UMAP figures live flat under deliverables/post_run/.
     figures = (
-        [rel(f) for f in paths.deliv_figures.glob("*.png")]
-        if paths.deliv_figures.exists() else []
+        [rel(f) for f in paths.deliv_post_run.glob("s8_umap_*.png")]
+        if paths.deliv_post_run.exists() else []
     )
     outputs["figures"] = figures
 

@@ -1,15 +1,15 @@
 rule post_qc_review_propose:
-    """Generate QC figures + early QC summary after S3; pause for user review
-    before dimensionality reduction (S4/S5) is allowed to proceed.
+    """QC review user checkpoint (#2): figures + qc_summary.md after S3.
 
     Generates:
-      - deliverables/post_run/figures/post_qc_review_cell_counts.{png,pdf}
-      - deliverables/post_run/figures/post_qc_review_doublet_rna.{png,pdf}
-      - deliverables/post_run/figures/post_qc_review_doublet_atac.{png,pdf}
-      - deliverables/post_run/summary/qc_summary_pre_dimred.md
+      - deliverables/checkpoint/qc_review/post_qc_review_cell_counts.{png,pdf}
+      - deliverables/checkpoint/qc_review/post_qc_review_doublet_rna.{png,pdf}
+      - deliverables/checkpoint/qc_review/post_qc_review_doublet_atac.{png,pdf}
+      - deliverables/checkpoint/qc_review/qc_summary.md
 
-    Note: RNA QC violin and ATAC fragment-size figures written by S1/S2 are
-    also available in deliverables/post_run/figures/ at this point.
+    S1/S2 QC figures are already in deliverables/checkpoint/qc_review/.
+    On paired multiome, the summary also documents the S3 cross-modal doublet
+    policy (union vs intersection) for confirmation at this checkpoint.
     """
     input:
         rna_post  = str(INTERNAL / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"),
@@ -18,7 +18,7 @@ rule post_qc_review_propose:
     output:
         proposal = str(INTERNAL / "proposals" / "post_qc_review.yaml"),
         awaiting = str(INTERNAL / "proposals" / "post_qc_review.awaiting_approval"),
-        summary  = str(POST_RUN / "summary" / "qc_summary_pre_dimred.md"),
+        summary  = str(CHECKPOINT / "qc_review" / "qc_summary.md"),
     params:
         run_dir = str(RUN_DIR),
     run:
@@ -30,10 +30,10 @@ rule post_qc_review_propose:
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "post_qc_review",
             "action": (
-                "QC figures and summary written — review before approving. "
-                "See deliverables/post_run/summary/qc_summary_pre_dimred.md "
-                "and deliverables/post_run/figures/ then run: "
-                "executor approve post_qc_review --config $CFG"
+                "QC review checkpoint — inspect deliverables/checkpoint/qc_review/ "
+                "and qc_summary.md (includes paired S3 doublet policy when applicable). "
+                "Revise S1/S2 thresholds or s3_doublets.removal_policy if needed, "
+                "then run: processing-muagent approve post_qc_review --config $CFG"
             ),
             **result,
         }))

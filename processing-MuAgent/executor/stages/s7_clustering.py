@@ -168,8 +168,74 @@ def propose(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     )
 
     # Human-readable recommendation + summary
+    branch = _prov.get_value(params_path, "plan.workflow_branch", "paired") or "paired"
+    if branch == "paired":
+        checkpoint_intro = (
+            "# Clustering resolution review checkpoint\n"
+            "\n"
+            "**Paired multiome:** the sweep below is **diagnostic** — Leiden at each "
+            "resolution is computed per modality on the shared joint cell set. Approved "
+            "resolutions set `leiden_rna` / `leiden_atac` for UMAP colouring in the "
+            "final `processed.h5mu`; they do **not** perform joint embedding or "
+            "integrated clustering (WNN/MOFA+ are out of scope).\n"
+        )
+        approval_block = (
+            "## Approval\n"
+            "\n"
+            "Confirm per-modality resolutions that yield interpretable diagnostic "
+            "partitions (or revise), then approve before S8 runs:\n"
+            "\n"
+            "```bash\n"
+            "processing-muagent approve s7_clustering --config $CFG\n"
+            "# or revise, e.g.:\n"
+            "processing-muagent revise s7_clustering s7_clustering.rna.resolution=1.2 --config $CFG\n"
+            "```\n"
+            "\n"
+            "Final cluster labels are NOT assigned until approval.\n"
+        )
+    elif branch == "separate":
+        checkpoint_intro = (
+            "# Clustering resolution review checkpoint\n"
+            "\n"
+            "**Separate branch:** choose the RNA and ATAC resolutions that define "
+            "**final** cluster labels in `rna_processed.h5ad` and `atac_processed.h5ad`. "
+            "Use the sweep tables (n_clusters, silhouette, stability ARI) and optional "
+            "adjacency comparison to decide.\n"
+        )
+        approval_block = (
+            "## Approval\n"
+            "\n"
+            "Confirm the resolutions for your final processed outputs (or revise), "
+            "then approve before S8 runs:\n"
+            "\n"
+            "```bash\n"
+            "processing-muagent approve s7_clustering --config $CFG\n"
+            "```\n"
+            "\n"
+            "Final cluster labels are NOT assigned until approval.\n"
+        )
+    else:
+        checkpoint_intro = (
+            "# Clustering resolution review checkpoint\n"
+            "\n"
+            f"**{branch} branch:** choose the resolution that defines **final** cluster "
+            "labels in the processed output. Use the sweep table below.\n"
+        )
+        approval_block = (
+            "## Approval\n"
+            "\n"
+            "Confirm the resolution for your final processed output (or revise), "
+            "then approve before S8 runs:\n"
+            "\n"
+            "```bash\n"
+            "processing-muagent approve s7_clustering --config $CFG\n"
+            "```\n"
+            "\n"
+            "Final cluster labels are NOT assigned until approval.\n"
+        )
+
     summary_lines = [
-        "# S7 Clustering — resolution sweep results",
+        checkpoint_intro,
         "",
         "## RNA",
         f"- Recommended resolution: **{rna_pick['resolution']}**",
@@ -205,13 +271,9 @@ def propose(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     if "atac" in adjacency_reports:
         summary_lines.append(_rcmp.render_adjacency_block(adjacency_reports["atac"]))
 
-    summary_lines += [
-        "## Approval",
-        "User must approve these resolutions (or revise) before s7_clustering_execute runs.",
-        "Final cluster labels are NOT assigned until approval.",
-    ]
+    summary_lines += [approval_block]
     # Resolution summary is a user-facing deliverable — write directly to
-    # deliverables/summary/. The sweep.parquet + adjacency_report.json remain
+    # deliverables/checkpoint/resolution_review/. The sweep.parquet + adjacency_report.json remain
     # under internal/artifacts/ as machine-readable intermediates.
     from ..run_paths import RunPaths
     summary_out = RunPaths(run_dir).resolution_summary_md

@@ -106,11 +106,11 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     a.obs.to_parquet(art / "qc_metrics_pre.parquet")
     a_f.obs.to_parquet(art / "qc_metrics_post.parquet")
 
-    # QC violin figures are user-facing deliverables → deliverables/figures/
+    # QC violin figures are user-facing deliverables → checkpoint/qc_review/
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_figures
+        figs_dir = RunPaths(run_dir).deliv_qc_review
         figs_dir.mkdir(parents=True, exist_ok=True)
         _fig.plot_qc_violin({
             "n_genes": a.obs["n_genes_by_counts"].to_numpy(),

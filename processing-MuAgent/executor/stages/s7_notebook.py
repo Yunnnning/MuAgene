@@ -2,8 +2,8 @@
 
 Invoked by the `s7_clustering_propose` rule after the sweep + adjacency report are
 written. Produces:
-    <run_dir>/deliverables/post_run/notebooks/resolution_review.ipynb
-    <run_dir>/deliverables/post_run/notebooks/resolution_review.html
+    <run_dir>/deliverables/checkpoint/resolution_review/resolution_review.ipynb
+    <run_dir>/deliverables/checkpoint/resolution_review/resolution_review.html
 
 The HTML is rendered statically from the resolution_summary.md + sweep table +
 adjacency report — no notebook execution required, so it's safe to call from the
@@ -62,7 +62,7 @@ from IPython.display import Markdown, display
 
 RUN_DIR = Path(os.environ.get("PMA_RUN_DIR", "__BAKED_RUN_DIR__"))
 ART = RUN_DIR / "internal" / "artifacts" / "s7_clustering"
-SUMMARY_MD = RUN_DIR / "deliverables" / "post_run" / "summary" / "resolution_summary.md"
+SUMMARY_MD = RUN_DIR / "deliverables" / "checkpoint" / "resolution_review" / "resolution_summary.md"
 PARAMS_YAML = RUN_DIR / "internal" / "parameters.yaml"
 
 sweep = pd.read_parquet(ART / "sweep.parquet")
@@ -132,21 +132,45 @@ print("See the markdown cell above for the exact CLI commands.")
 """
 
 
+def _resolution_checkpoint_note(run_dir: Path | str) -> str:
+    from .. import provenance as _prov
+    from ..run_paths import RunPaths
+    run_dir = Path(run_dir)
+    branch = _prov.get_value(str(RunPaths(run_dir).parameters_yaml),
+                             "plan.workflow_branch", "paired") or "paired"
+    if branch == "paired":
+        return (
+            "**Paired multiome:** resolutions are **diagnostic** per-modality Leiden "
+            "labels on the joint cell set — they colour UMAPs in `processed.h5mu` but "
+            "are not joint integrated clustering."
+        )
+    if branch == "separate":
+        return (
+            "**Separate branch:** resolutions set **final** `leiden_rna` / `leiden_atac` "
+            "labels in the processed h5ad outputs."
+        )
+    return (
+        f"**{branch} branch:** resolution sets **final** cluster labels in the "
+        "processed output."
+    )
+
+
 def _build_cells(run_dir: str) -> list[dict[str, Any]]:
     def bake(s: str) -> str:
         return s.replace("__BAKED_RUN_DIR__", run_dir)
 
+    branch_note = _resolution_checkpoint_note(run_dir)
     return [
         _md(f"# Clustering resolution review\n\n"
             f"Run directory: `{run_dir}`\n\n"
-            f"This notebook helps you decide whether to approve the algorithmic "
-            f"resolution choice at the S7 checkpoint or revise it. Static HTML "
-            f"sidekick of this notebook is at `resolution_review.html` — open "
-            f"that one if you only want to read the recommendations."),
+            f"{branch_note}\n\n"
+            f"Use the sweep tables below to see how resolution affects n_clusters, "
+            f"silhouette, and stability ARI. Approve or revise before S8. Static HTML "
+            f"companion: `resolution_review.html`."),
         _md("## Setup"),
         _code(bake(_CELL_SETUP)),
         _md("## Recommendation summary\n\nRendered from the canonical "
-            "`deliverables/post_run/summary/resolution_summary.md`."),
+            "`deliverables/checkpoint/resolution_review/resolution_summary.md`."),
         _code(_CELL_SHOW_SUMMARY),
         _md("## Sweep tables\n\nFull per-resolution results from `sweep.parquet`."),
         _code(_CELL_SWEEP_TABLE),
@@ -184,7 +208,7 @@ _HTML_TEMPLATE = """\
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>S7 — Clustering resolution review</title>
+  <title>Clustering resolution review</title>
   <style>
     body {{ font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
             max-width: 960px; margin: 2em auto; padding: 0 1em;
@@ -203,11 +227,12 @@ _HTML_TEMPLATE = """\
   </style>
 </head>
 <body>
-<h1>S7 — Clustering resolution review</h1>
+<h1>Clustering resolution review</h1>
 <p class="meta">Run: <code>{run_dir}</code></p>
 <div class="alert">
-  <strong>Decision point:</strong> approve the recommended resolutions as-is,
-  or revise via <code>processing-muagent revise s7_clustering …</code>.
+  <strong>Checkpoint #3:</strong> {branch_note}
+  Approve the recommended resolutions or revise via
+  <code>processing-muagent revise s7_clustering …</code>.
   See the bottom of this page for exact CLI commands.
 </div>
 
@@ -331,6 +356,7 @@ def build_html(run_dir: Path | str) -> str:
 
     return _HTML_TEMPLATE.format(
         run_dir=html.escape(str(run_dir)),
+        branch_note=html.escape(_resolution_checkpoint_note(run_dir)),
         rna_res=html.escape(str(rna_res)) if rna_res is not None else "—",
         atac_res=html.escape(str(atac_res)) if atac_res is not None else "—",
         rna_table=_sweep_rows_to_html(rna_rows, rna_res),
@@ -345,14 +371,14 @@ def build_html(run_dir: Path | str) -> str:
 # ---------------------------------------------------------------------------
 
 def build_and_render(run_dir: Path | str) -> tuple[Path, Path]:
-    """Write resolution_review.{ipynb,html} into deliverables/post_run/notebooks/.
+    """Write resolution_review.{ipynb,html} into deliverables/checkpoint/resolution_review/.
 
     Returns (ipynb_path, html_path). Safe to call from a local rule on a login
     node — the HTML is rendered statically (no notebook execution required).
     """
     from ..run_paths import RunPaths
     run_dir = Path(run_dir)
-    out_dir = RunPaths(run_dir).deliv_notebooks
+    out_dir = RunPaths(run_dir).deliv_resolution_review
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ipynb = out_dir / "resolution_review.ipynb"

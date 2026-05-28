@@ -28,13 +28,15 @@ detected modality set still raise. Surface the report verbatim per hard rule 3.
 P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 ```
 
-- **P1 / S0 / P2 / plan_review** are cheap metadata + validation work; they MAY run before user approval of the plan.
+### User checkpoints (3)
+
+1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `pre_run/summary/plan_review.md`.
+2. **QC review** (`post_qc_review`) — after S3, before S4/S5. Review `checkpoint/qc_review/qc_summary.md` and figures. Revise S1/S2 thresholds or re-run QC if needed. On **paired** multiome, the summary documents the **S3 cross-modal doublet policy** (union vs intersection) for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
+3. **Clustering resolution review** (`s7_clustering`) — after S6, before S8. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding).
+
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
-- Mandatory pauses are branch-aware:
-  - All branches: `p1_context`, `plan_review`, `post_qc_review`, `s7_clustering`.
-  - `paired` only: additionally `s3_doublets` — user confirms how to reconcile the RNA and ATAC detector calls.
-  - `separate` / `rna_only` / `atac_only`: S3 is auto-approved — each modality's doublets are filtered by its own detector with no cross-modal reconciliation to confirm — unless the user explicitly asked for stage-by-stage review.
-- `post_qc_review` runs after S3 and before S4/S5; it generates QC figures and a pre-dimred QC summary for the user to review. S4 and S5 are gated on `post_qc_review.approved`.
+- S3 (`s3_doublets`) runs before QC review and is normally auto-approved; change policy via `revise s3_doublets` then re-run S3 + `post_qc_review`.
+- S4 and S5 are gated on `post_qc_review.approved`; S8 is gated on `s7_clustering.approved`.
 - All other stages may be auto-approved unless the user overrides.
 
 For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out of the plan and DAG automatically; you never schedule them.
@@ -68,14 +70,14 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/pre_run/summary/plan_summary.md`
 - `deliverables/pre_run/summary/plan_review.md`
 
-Files produced during / after the run — point them here at the relevant checkpoints and at the hard stop:
+Files at user checkpoints and at the hard stop:
 
-- `deliverables/post_run/summary/qc_summary_pre_dimred.md` (post_qc_review — QC checkpoint before S4/S5)
-- `deliverables/post_run/summary/resolution_summary.md` (S7 approval helper)
-- `deliverables/post_run/summary/qc_summary.md` (final QC summary, written at manifest)
-- `deliverables/post_run/summary/run_manifest.json` (handoff artifact)
-- `deliverables/post_run/figures/` (QC violins + doublet histograms + cell-count waterfall + UMAPs)
-- `deliverables/post_run/processed/` (final AnnData / MuData)
-- `deliverables/post_run/notebooks/review_processed_h5mu.ipynb`
+- `deliverables/checkpoint/qc_review/qc_summary.md` (QC review checkpoint #2)
+- `deliverables/checkpoint/qc_review/` (QC figures)
+- `deliverables/checkpoint/resolution_review/resolution_summary.md` (resolution review #3)
+- `deliverables/checkpoint/resolution_review/resolution_review.{html,ipynb}`
+- `deliverables/post_run/qc_summary.md` (final QC summary, written at manifest)
+- `deliverables/post_run/run_manifest.json` (handoff artifact)
+- `deliverables/post_run/` (UMAP figures, processed data, review_processed_h5mu.ipynb)
 
 All executor CLI commands accept `--config <path-to-run.yaml>`. The canonical path after `executor init` is `deliverables/pre_run/config/run.yaml`; use that for every subsequent CLI call.

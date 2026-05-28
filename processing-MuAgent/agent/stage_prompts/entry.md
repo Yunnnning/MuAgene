@@ -30,24 +30,29 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 
 **For `paired` and `separate`:**
 
-> Got it — you're running the **[paired / separate]** branch at `<run_dir>`. Upcoming checkpoints you'll see:
+> Got it — you're running the **[paired / separate]** branch at `<run_dir>`.
 >
 > - **P1 biological context** (mandatory) — you provide organism/tissue/assay or opt out explicitly.
-> - **plan_review** (mandatory) — you approve the full preprocessing plan before any heavy compute.
-> - **S3 doublets** (mandatory) — you confirm how to reconcile the RNA and ATAC detector calls.
-> - **S7 clustering** (mandatory) — you confirm the resolution.
+>
+> Three user checkpoints during preprocessing:
+>
+> 1. **Plan review** — approve the preprocessing plan before heavy compute.
+> 2. **QC review** — inspect QC figures and `checkpoint/qc_review/qc_summary.md`; revise thresholds if needed. On **paired**, this checkpoint also covers the S3 cross-modal doublet policy (union vs intersection).
+> 3. **Resolution review** — choose Leiden resolution from sweep metrics. On **separate**, this sets final cluster labels; on **paired**, diagnostic labels for UMAP only.
 >
 > Ready to send me the paths?
 
 **For `rna_only` and `atac_only`:**
 
-> Got it — you're running the **[rna_only / atac_only]** branch at `<run_dir>`. Upcoming checkpoints you'll see:
+> Got it — you're running the **[rna_only / atac_only]** branch at `<run_dir>`.
 >
 > - **P1 biological context** (mandatory) — you provide organism/tissue/assay or opt out explicitly.
-> - **plan_review** (mandatory) — you approve the full preprocessing plan before any heavy compute.
-> - **S7 clustering** (mandatory) — you confirm the resolution.
 >
-> S3 doublets runs with the single-detector recommended policy; there's nothing to reconcile with one modality, so it's not a mandatory pause. I can still stop at S3 if you want stage-by-stage review — just say so.
+> Three user checkpoints during preprocessing:
+>
+> 1. **Plan review** — approve the preprocessing plan.
+> 2. **QC review** — inspect QC figures and summary; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
+> 3. **Resolution review** — choose resolution for final cluster labels in the processed output.
 >
 > Ready to send me the paths?
 
@@ -77,7 +82,7 @@ Do not offer to bundle. Do not auto-chain. Hard stop is hard stop.
 
 Ask for it plainly; don't guess a default:
 
-> I don't guess run locations. Where should I put the outputs? A fresh empty directory anywhere on your filesystem works. You'll end up with two sub-trees under it: `internal/` (pipeline state) and `deliverables/` (user-facing outputs split into `pre_run/` + `post_run/`).
+> I don't guess run locations. Where should I put the outputs? A fresh empty directory anywhere on your filesystem works. You'll end up with two sub-trees under it: `internal/` (pipeline state) and `deliverables/` (user-facing outputs split into `pre_run/`, `checkpoint/`, and `post_run/`).
 
 ### User gives a run_dir that already has a previous run in it
 

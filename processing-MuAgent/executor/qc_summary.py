@@ -438,7 +438,93 @@ def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any])
     )
 
 
-def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
+def _workflow_branch(run_dir: Path, params: dict[str, Any]) -> str:
+    from . import provenance as _prov
+    from .run_paths import RunPaths
+    branch = _prov.get_value(str(RunPaths(run_dir).parameters_yaml), "plan.workflow_branch")
+    if branch:
+        return str(branch)
+    return str(params.get("plan.workflow_branch", "paired"))
+
+
+def _qc_review_intro(branch: str) -> str:
+    lines = [
+        "# QC review checkpoint",
+        "",
+        "Review the QC figures in `deliverables/checkpoint/qc_review/` alongside this "
+        "summary. Approve when satisfied, or revise thresholds / doublet policy and "
+        "re-run the affected stages before approving.",
+        "",
+        "**Figures to inspect:** RNA QC violins (pre/post S1), ATAC fragment-size "
+        "distribution (S2), doublet-score histograms (S3), and the S0–S3 cell-count "
+        "waterfall.",
+        "",
+    ]
+    if branch == "paired":
+        lines += [
+            "**Paired multiome:** this checkpoint also covers the **S3 cross-modal "
+            "doublet removal policy** (union vs intersection) and the joint barcode "
+            "intersection after doublet filtering. Confirm both the QC metrics and "
+            "the policy below before approving.",
+            "",
+        ]
+    else:
+        lines += [
+            f"**`{branch}` branch:** RNA and ATAC doublets are removed **independently** "
+            "per modality. There is no cross-modal union/intersection policy to confirm "
+            "on unpaired / separate analyses.",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def _qc_review_actions(branch: str) -> str:
+    cfg = "`deliverables/pre_run/config/run.yaml`"
+    lines = [
+        "## How to approve or revise",
+        "",
+        "### Adjust RNA / ATAC QC thresholds",
+        "",
+        "If violin plots or the cell-count waterfall look wrong, revise S1/S2 parameters "
+        "and re-run from the affected stage, then re-open this checkpoint:",
+        "",
+        "```bash",
+        "# Example — tighten ATAC TSS enrichment floor:",
+        f"processing-muagent revise s2_atac_qc s2_atac_qc.tss_enrichment_min=1.5 --config {cfg}",
+        f"processing-muagent run --config {cfg} --target s2_atac_qc_execute",
+        "# Re-run S3 + post_qc_review if S2 changed:",
+        f"processing-muagent run --config {cfg} --target post_qc_review_propose",
+        "```",
+        "",
+    ]
+    if branch == "paired":
+        lines += [
+            "### Change paired doublet removal policy (S3)",
+            "",
+            "Default recommendation follows `study_goal`: **union** for "
+            "`clustering_inference`, **intersection** for `rare_populations`. "
+            "To override, revise and re-run S3 before re-approving this checkpoint:",
+            "",
+            "```bash",
+            f"processing-muagent revise s3_doublets s3_doublets.removal_policy=intersection --config {cfg}",
+            f"processing-muagent run --config {cfg} --target s3_doublets_execute",
+            f"processing-muagent run --config {cfg} --target post_qc_review_propose",
+            "```",
+            "",
+        ]
+    lines += [
+        "### Approve and continue to dimensionality reduction",
+        "",
+        "```bash",
+        f"processing-muagent approve post_qc_review --config {cfg}",
+        f"processing-muagent run --config {cfg} --target s6_dimred_execute",
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _doublet_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) -> str:
     """Build a corrected doublet summary from the raw per-cell calls.parquet.
 
     Issues with the existing `overlap_summary.json`:
@@ -493,12 +579,48 @@ def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
                               (calls["atac_is_doublet"].fillna(False))).sum())
 
     overlap_summary = json.loads(overlap_path.read_text())
-    policy = (overlap_summary.get("recommended_policy")
+    policy = (_param(params, "s3_doublets.removal_policy")
+              or overlap_summary.get("recommended_policy")
               or overlap_summary.get("chosen_policy")
               or overlap_summary.get("policy") or "unspecified")
+    branch = _workflow_branch(run_dir, params)
+    rationale = overlap_summary.get("rationale", "")
+
+    policy_note = ""
+    if branch == "paired":
+        policy_note = (
+            "\n"
+            "### Cross-modal policy (paired — confirm at this checkpoint)\n"
+            "\n"
+            f"- Applied policy: **{policy}**\n"
+            + (f"- Rationale: {rationale}\n" if rationale else "")
+            + f"- Joint barcodes after RNA∩ATAC intersection: "
+            f"**{counts.get('n_cells_joint', 'n/a')}**\n"
+            "\n"
+            "Union removes a cell if **either** detector flags it; intersection "
+            "removes only when **both** flag it. Revise `s3_doublets.removal_policy` "
+            "and re-run S3 if you disagree (see **How to approve or revise** below).\n"
+        )
+    elif branch == "separate":
+        policy_note = (
+            "\n"
+            "### Per-modality removal (`separate` branch)\n"
+            "\n"
+            "RNA and ATAC doublet calls are applied **independently** — no cross-modal "
+            "union/intersection reconciliation. Each modality keeps its own survivor set.\n"
+        )
+    else:
+        policy_note = (
+            "\n"
+            f"### Single-modality removal (`{branch}` branch)\n"
+            "\n"
+            "Only one modality is present; doublet filtering runs on that modality alone. "
+            "No cross-modal policy applies.\n"
+        )
 
     return (
         "## Doublets (S3)\n"
+        f"{policy_note}"
         "\n"
         "### Per-detector flagged counts (evaluated cells only)\n"
         "\n"
@@ -515,7 +637,7 @@ def _doublet_section(run_dir: Path, counts: dict[str, Any]) -> str:
         "\n"
         "### Removal\n"
         "\n"
-        f"- Policy: **{policy}**\n"
+        f"- Applied removal policy: **{policy}**\n"
         f"- Removed from RNA (S3 RNA: {counts.get('rna_qc_post')} → {counts.get('rna_post_doublet')}): **{n_removed_rna if n_removed_rna is not None else 'n/a'}**\n"
         f"- Removed from ATAC (S3 ATAC: {counts.get('atac_qc_post')} → {counts.get('atac_post_doublet')}): **{n_removed_atac if n_removed_atac is not None else 'n/a'}**\n"
         f"- Distinct barcodes flagged across merged union set: **{n_distinct_flagged}** "
@@ -598,7 +720,29 @@ def _final_section(run_dir: Path, counts: dict[str, Any]) -> str:
 # Top-level
 # ---------------------------------------------------------------------------
 
+def build_qc_review(run_dir: Path | str) -> str:
+    """Markdown for the QC review user checkpoint (after S3, before S4/S5)."""
+    from .run_paths import RunPaths
+    run_dir = Path(run_dir)
+    params_path = RunPaths(run_dir).parameters_yaml
+    params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
+    counts = _stage_counts(run_dir)
+    branch = _workflow_branch(run_dir, params)
+
+    sections = [
+        _qc_review_intro(branch),
+        _flow_section(counts),
+        _ambient_section(run_dir, params, counts),
+        _rna_section(run_dir, params, counts),
+        _atac_section(run_dir, params, counts),
+        _doublet_section(run_dir, params, counts),
+        _qc_review_actions(branch),
+    ]
+    return "\n".join(sections).rstrip() + "\n"
+
+
 def build(run_dir: Path | str) -> str:
+    """Full end-to-end QC summary (written at manifest to post_run/)."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     params_path = RunPaths(run_dir).parameters_yaml
@@ -612,7 +756,7 @@ def build(run_dir: Path | str) -> str:
         _ambient_section(run_dir, params, counts),
         _rna_section(run_dir, params, counts),
         _atac_section(run_dir, params, counts),
-        _doublet_section(run_dir, counts),
+        _doublet_section(run_dir, params, counts),
         _final_section(run_dir, counts),
     ]
     return "\n".join(sections).rstrip() + "\n"

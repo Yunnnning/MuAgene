@@ -15,9 +15,11 @@ Direct-write layout:
                                                       (run.yaml, biological_context.md,
                                                        context_summary.md, plan_summary.md,
                                                        plan_review.md)
-      POST_RUN   = deliverables/post_run            — in-run + final results
-                                                      (figures/, processed/, notebooks/,
-                                                       summary/{resolution,qc,manifest,layout})
+      CHECKPOINT = deliverables/checkpoint          — intermediate review artifacts
+                                                      (qc_review/, resolution_review/)
+      POST_RUN   = deliverables/post_run            — final results only (flat:
+                                                      UMAP figures, processed data,
+                                                      review notebook, manifest)
 Rule outputs land directly at their canonical location; no mirroring.
 """
 from pathlib import Path
@@ -26,6 +28,7 @@ RUN_DIR = Path(config["run_dir"])
 INTERNAL = RUN_DIR / "internal"
 DELIVERABLES = RUN_DIR / "deliverables"
 PRE_RUN = DELIVERABLES / "pre_run"
+CHECKPOINT = DELIVERABLES / "checkpoint"
 POST_RUN = DELIVERABLES / "post_run"
 
 STAGES = [
@@ -82,4 +85,4 @@ localrules:
 
 rule all:
     input:
-        str(POST_RUN / "summary" / "run_manifest.json"),
+        str(POST_RUN / "run_manifest.json"),

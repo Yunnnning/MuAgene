@@ -3,7 +3,7 @@
 Given an existing run directory with S6 dim-reduced RNA + S5 LSI ATAC, re-cluster
 each modality at two user-specified resolutions and render a side-by-side UMAP
 figure + summary table. Writes to <run_dir>/internal/artifacts/s7_clustering/
-and surfaces in <run_dir>/deliverables/figures + summary.
+and surfaces comparison figures in deliverables/checkpoint/resolution_review/.
 
 Does not mutate the approved cluster labels on disk — this is a *comparison* tool
 to inform resolution selection at the S7 checkpoint.
@@ -105,10 +105,13 @@ def compare_rna(run_dir: Path | str, resolutions: tuple[float, float], seed: int
         lbl = rna.obs[f"_cmp_leiden_{res}"].astype(str).to_numpy()
         labels[res] = lbl
         sizes[res] = _cluster_sizes(lbl)
+    from .run_paths import RunPaths
+    fig_out = RunPaths(run_dir).deliv_resolution_review
+    fig_out.mkdir(parents=True, exist_ok=True)
     figs = _plot_two_panel(
         rna.obsm["X_umap"], labels[resolutions[0]], f"RNA res={resolutions[0]}",
         rna.obsm["X_umap"], labels[resolutions[1]], f"RNA res={resolutions[1]}",
-        out_dir=run_dir / "internal" / "figures",
+        out_dir=fig_out,
         stem=f"s7_compare_rna_res_{resolutions[0]}_vs_{resolutions[1]}",
         suptitle="RNA — Leiden resolution comparison",
     )
@@ -155,10 +158,13 @@ def compare_atac(run_dir: Path | str, resolutions: tuple[float, float], seed: in
         return {"figures": [], "sizes": {str(k): v for k, v in sizes.items()},
                 "n_clusters": {str(k): len(v) for k, v in sizes.items()},
                 "note": "ATAC UMAP unavailable; no side-by-side figure rendered."}
+    from .run_paths import RunPaths
+    fig_out = RunPaths(run_dir).deliv_resolution_review
+    fig_out.mkdir(parents=True, exist_ok=True)
     figs = _plot_two_panel(
         coords, labels[resolutions[0]], f"ATAC res={resolutions[0]}",
         coords, labels[resolutions[1]], f"ATAC res={resolutions[1]}",
-        out_dir=run_dir / "internal" / "figures",
+        out_dir=fig_out,
         stem=f"s7_compare_atac_res_{resolutions[0]}_vs_{resolutions[1]}",
         suptitle="ATAC — Leiden resolution comparison",
     )

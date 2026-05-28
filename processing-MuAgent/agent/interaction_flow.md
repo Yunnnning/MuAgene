@@ -85,7 +85,7 @@ Once the user answers, in order:
    Write it to a temporary path like `<run_dir>/run.yaml.draft` (before init copies it to the canonical location).
 
 2. Invoke `executor init --config <draft-run.yaml>`.
-   - This scaffolds `internal/` and `deliverables/{pre_run,post_run}/` and writes the blank biological-context template at `deliverables/pre_run/config/biological_context.md`.
+   - This scaffolds `internal/` and `deliverables/{pre_run,checkpoint,post_run}/` and writes the blank biological-context template at `deliverables/pre_run/config/biological_context.md`.
    - From this point forward, use `$CFG = <run_dir>/deliverables/pre_run/config/run.yaml` for every CLI call.
 
 3. Populate biological context (if the user gave any):
@@ -147,10 +147,10 @@ The full 8-item `plan_review.md` content, verbatim. Do not paraphrase values. If
 (At each mandatory pause, surface the stage's proposal content and ask for approval or revision. Pauses are branch-aware:)
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
-- **`plan_review`** (all branches): covered in Step 3.
-- **`s3_doublets`** (`paired` only): Scrublet + ATAC detector overlap table; user confirms reconciliation policy (union vs intersection). For `separate` / `rna_only` / `atac_only`, auto-approve silently — each modality's doublets are removed independently with no cross-modal policy to confirm — unless the user explicitly asked for per-stage review.
-- **`post_qc_review`** (all branches): mandatory QC checkpoint between S3 and S4/S5. The stage generates QC figures (doublet-score histograms, cell-count waterfall) and writes `qc_summary_pre_dimred.md` summarising all S1–S3 results. Point the user at `deliverables/post_run/summary/qc_summary_pre_dimred.md` and `deliverables/post_run/figures/`. Only approve after the user confirms QC is acceptable; they may revise S1/S2 thresholds via `executor revise` if the numbers look wrong.
-- **`s7_clustering`** (all branches): resolution sweep results; user confirms per-modality resolution or revises.
+- **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between S3 and S4/S5. Generates QC figures and `checkpoint/qc_review/qc_summary.md` (S1–S3 metrics; on **paired**, includes S3 cross-modal doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/`. They may revise S1/S2 thresholds or (paired) `s3_doublets.removal_policy` and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
+- **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
+- **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
 (For other stages, auto-approve silently unless the user asked for per-stage review.)
 
@@ -167,15 +167,15 @@ Approve, revise, or abort?"
    - Loop:
      a. Run `executor status --config $CFG` to see which stage is currently `awaiting_approval`.
      b. Read `<run_dir>/internal/proposals/<stage>.yaml` — the structured proposal.
-     c. If the stage has a linked summary in `deliverables/post_run/summary/` (e.g., `resolution_summary.md` for s7), read that too and surface both.
+     c. If the stage has a linked summary in `deliverables/checkpoint/resolution_review/` (e.g., `resolution_summary.md` for s7), read that too and surface both.
      d. Based on user decision:
         - Approve → `executor approve <stage> --config $CFG`.
         - Revise → `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
      e. Re-invoke `executor run --config $CFG`. Continue until `manifest` completes.
 
 2. When `manifest` finishes:
-   - Read `deliverables/post_run/summary/run_manifest.json` and extract `workflow_branch`, `outputs`.
-   - Point the user at `deliverables/post_run/summary/qc_summary.md`, the final figures in `deliverables/post_run/figures/`, and the handoff artifact `run_manifest.json`.
+   - Read `deliverables/post_run/run_manifest.json` and extract `workflow_branch`, `outputs`.
+   - Point the user at `deliverables/post_run/qc_summary.md`, the UMAP figures in `deliverables/post_run/`, and the handoff artifact `run_manifest.json`.
 
 ### WHAT_TO_SURFACE_BACK
 
@@ -214,8 +214,10 @@ host (login node in interactive mode; the head-job in headless mode).
        --auto-approve --auto-approve-except post_qc_review --auto-approve-except s7_clustering
    ```
 
-3. **QC review (Phase C)** — review `deliverables/post_run/summary/qc_summary_pre_dimred.md`
-   and `deliverables/post_run/figures/`. If QC looks acceptable, approve; otherwise revise
+3. **QC review (Phase C)** — review `deliverables/checkpoint/qc_review/qc_summary.md`
+   and `deliverables/checkpoint/qc_review/`. On paired runs, confirm the S3 doublet
+   policy section. If QC looks acceptable, approve; otherwise revise thresholds or
+   (paired) doublet policy and re-run affected stages.
    thresholds first.
 
    ```bash
@@ -228,7 +230,7 @@ host (login node in interactive mode; the head-job in headless mode).
    ```
 
 4. **Resolution review + finish (Phase D)** — open the static review HTML at
-   `<run_dir>/deliverables/post_run/notebooks/resolution_review.html`
+   `<run_dir>/deliverables/checkpoint/resolution_review/resolution_review.html`
    (no Jupyter needed). Approve or revise, then submit a small finishing job
    that runs `s7_clustering_execute` → `s8_umap` → `manifest`.
 

@@ -12,21 +12,24 @@ Top-level layout (direct-write; no symlinks):
             context_summary.md          ← P1 output
             plan_summary.md             ← P2 output
             plan_review.md              ← `executor plan-review`
-        post_run/                   materials produced DURING or AFTER execution
-          summary/
-            resolution_summary.md       ← S7 approval helper
-            qc_summary.md               ← manifest rule
-            run_manifest.json           ← manifest rule (handoff artifact)
-            layout.json                 ← layout.finalize (manifest of deliverables)
-          figures/                  user-facing figures only (QC + UMAP)
+        checkpoint/                 intermediate review artifacts (flat subfolders)
+          qc_review/                  QC review checkpoint (figures + qc_summary.md)
+            qc_summary.md
             s1_rna_qc_violin_{pre,post}.{png,pdf}
-            s8_umap_{rna,atac}_by_leiden.{png,pdf}
-          processed/
-            processed.h5mu              (paired branch)
-            rna_processed.h5ad          (separate / rna_only branches)
-            atac_processed.h5ad         (separate / atac_only branches)
-          notebooks/
-            review_processed_h5mu.ipynb + .py
+            ...
+          resolution_review/          S7 resolution checkpoint
+            resolution_summary.md
+            resolution_review.{ipynb,html}
+            s7_compare_*.{png,pdf}    (from resolution-compare CLI)
+        post_run/                   final deliverables only (flat — no subfolders)
+          s8_umap_{rna,atac}_by_leiden.{png,pdf}
+          review_processed_h5mu.{ipynb,py}
+          processed.h5mu              (paired branch)
+          rna_processed.h5ad          (separate / rna_only branches)
+          atac_processed.h5ad         (separate / atac_only branches)
+          qc_summary.md               ← manifest rule
+          run_manifest.json           ← manifest rule (handoff artifact)
+          layout.json                 ← layout.finalize (manifest of deliverables)
       internal/                     canonical pipeline state (not user-facing)
         artifacts/sN_<stage>/       intermediate stage outputs
         proposals/                  <stage>.yaml + awaiting_approval sentinels
@@ -38,9 +41,9 @@ Top-level layout (direct-write; no symlinks):
 Key invariants:
 - No file lives at the top of <run_dir>/; exactly two subdirectories exist there.
 - No symlinks or aliases — every logical artifact has a single canonical path.
-- Figures (QC + UMAP only) go to post_run/figures; no diagnostic figures anywhere.
+- QC figures + checkpoint summaries live under checkpoint/{qc_review,resolution_review}/.
+- post_run/ contains UMAP figures, processed data, final notebook, and manifest only.
 - pre_run/ contains only files the user reviews before approving the plan.
-- post_run/ contains in-run approval helpers (resolution_summary) + final results.
 """
 from __future__ import annotations
 
@@ -97,10 +100,25 @@ class RunPaths:
         return self.deliverables / "pre_run"
 
     @property
+    def deliv_checkpoint(self) -> Path:
+        return self.deliverables / "checkpoint"
+
+    @property
+    def deliv_qc_review(self) -> Path:
+        """checkpoint/qc_review/ — QC figures + pre-dimred summary."""
+        return self.deliv_checkpoint / "qc_review"
+
+    @property
+    def deliv_resolution_review(self) -> Path:
+        """checkpoint/resolution_review/ — S7 summary, notebook, comparison figures."""
+        return self.deliv_checkpoint / "resolution_review"
+
+    @property
     def deliv_post_run(self) -> Path:
+        """post_run/ — flat final deliverables (UMAP figures, data, notebook, manifest)."""
         return self.deliverables / "post_run"
 
-    # --- Deliverable sub-directories --------------------------------------
+    # --- pre_run sub-directories (unchanged) ------------------------------
     @property
     def deliv_config(self) -> Path:
         """pre_run/config/ — user-supplied config + biological context."""
@@ -111,25 +129,7 @@ class RunPaths:
         """pre_run/summary/ — P1 / P2 / plan_review materials for approval."""
         return self.deliv_pre_run / "summary"
 
-    @property
-    def deliv_post_summary(self) -> Path:
-        """post_run/summary/ — in-run helpers + final run summaries."""
-        return self.deliv_post_run / "summary"
-
-    @property
-    def deliv_figures(self) -> Path:
-        return self.deliv_post_run / "figures"
-
-    @property
-    def deliv_processed(self) -> Path:
-        return self.deliv_post_run / "processed"
-
-    @property
-    def deliv_notebooks(self) -> Path:
-        return self.deliv_post_run / "notebooks"
-
     # --- Canonical user-facing files --------------------------------------
-    # NOTE: these are deliverables (written directly), NOT internal copies.
     @property
     def run_yaml(self) -> Path:
         return self.deliv_config / "run.yaml"
@@ -151,40 +151,62 @@ class RunPaths:
     def plan_review_md(self) -> Path:
         return self.deliv_pre_summary / "plan_review.md"
 
-    # post_run/summary/*
+    # checkpoint/qc_review/*
     @property
-    def resolution_summary_md(self) -> Path:
-        return self.deliv_post_summary / "resolution_summary.md"
+    def qc_review_summary_md(self) -> Path:
+        """checkpoint/qc_review/qc_summary.md — QC review user checkpoint (after S3)."""
+        return self.deliv_qc_review / "qc_summary.md"
 
     @property
     def qc_summary_pre_dimred_md(self) -> Path:
-        """post_run/summary/qc_summary_pre_dimred.md — early QC review before S4/S5."""
-        return self.deliv_post_summary / "qc_summary_pre_dimred.md"
+        """Deprecated alias for qc_review_summary_md."""
+        return self.qc_review_summary_md
+
+    # checkpoint/resolution_review/*
+    @property
+    def resolution_summary_md(self) -> Path:
+        return self.deliv_resolution_review / "resolution_summary.md"
 
     @property
+    def resolution_review_ipynb(self) -> Path:
+        return self.deliv_resolution_review / "resolution_review.ipynb"
+
+    @property
+    def resolution_review_html(self) -> Path:
+        return self.deliv_resolution_review / "resolution_review.html"
+
+    # post_run/* (flat)
+    @property
     def qc_summary_md(self) -> Path:
-        return self.deliv_post_summary / "qc_summary.md"
+        return self.deliv_post_run / "qc_summary.md"
 
     @property
     def run_manifest_json(self) -> Path:
-        return self.deliv_post_summary / "run_manifest.json"
+        return self.deliv_post_run / "run_manifest.json"
 
     @property
     def layout_json(self) -> Path:
-        return self.deliv_post_summary / "layout.json"
+        return self.deliv_post_run / "layout.json"
 
-    # post_run/processed/*
     @property
     def processed_h5mu(self) -> Path:
-        return self.deliv_processed / "processed.h5mu"
+        return self.deliv_post_run / "processed.h5mu"
 
     @property
     def rna_processed_h5ad(self) -> Path:
-        return self.deliv_processed / "rna_processed.h5ad"
+        return self.deliv_post_run / "rna_processed.h5ad"
 
     @property
     def atac_processed_h5ad(self) -> Path:
-        return self.deliv_processed / "atac_processed.h5ad"
+        return self.deliv_post_run / "atac_processed.h5ad"
+
+    @property
+    def review_notebook_ipynb(self) -> Path:
+        return self.deliv_post_run / "review_processed_h5mu.ipynb"
+
+    @property
+    def review_notebook_py(self) -> Path:
+        return self.deliv_post_run / "review_processed_h5mu.py"
 
     # --- Stage helpers -----------------------------------------------------
     def stage_dir(self, stage: str) -> Path:
@@ -204,8 +226,11 @@ class RunPaths:
     def approved_sentinel(self, stage: str) -> Path:
         return self.checkpoints / f"{stage}.approved"
 
-    def deliv_figure(self, stem: str, *, ext: str = "png") -> Path:
-        return self.deliv_figures / f"{stem}.{ext}"
+    def deliv_qc_figure(self, stem: str, *, ext: str = "png") -> Path:
+        return self.deliv_qc_review / f"{stem}.{ext}"
+
+    def deliv_umap_figure(self, stem: str, *, ext: str = "png") -> Path:
+        return self.deliv_post_run / f"{stem}.{ext}"
 
     # --- Bootstrap ---------------------------------------------------------
     def ensure(self) -> None:
@@ -215,7 +240,7 @@ class RunPaths:
             self.artifacts, self.proposals, self.checkpoints,
             self.deliverables,
             self.deliv_pre_run, self.deliv_config, self.deliv_pre_summary,
-            self.deliv_post_run, self.deliv_post_summary,
-            self.deliv_figures, self.deliv_processed, self.deliv_notebooks,
+            self.deliv_checkpoint, self.deliv_qc_review, self.deliv_resolution_review,
+            self.deliv_post_run,
         ):
             p.mkdir(parents=True, exist_ok=True)

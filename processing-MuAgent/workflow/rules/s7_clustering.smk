@@ -12,11 +12,11 @@ rule s7_clustering_propose:
         awaiting = str(INTERNAL / "proposals" / "s7_clustering.awaiting_approval"),
         sweep    = str(INTERNAL / "artifacts" / "s7_clustering" / "sweep.parquet"),
         # resolution_summary.md is user-facing → deliverables/summary/
-        summary  = str(POST_RUN / "summary" / "resolution_summary.md"),
+        summary  = str(CHECKPOINT / "resolution_review" / "resolution_summary.md"),
         # Review notebook + static HTML deliverables (built statically from the
         # sweep artifacts; safe to declare as outputs since they are always written).
-        notebook = str(POST_RUN / "notebooks" / "resolution_review.ipynb"),
-        html     = str(POST_RUN / "notebooks" / "resolution_review.html"),
+        notebook = str(CHECKPOINT / "resolution_review" / "resolution_review.ipynb"),
+        html     = str(CHECKPOINT / "resolution_review" / "resolution_review.html"),
     params:
         run_dir = str(RUN_DIR),
     run:

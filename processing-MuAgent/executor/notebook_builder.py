@@ -1,8 +1,8 @@
 """Generate a user-facing Jupyter review notebook for each run.
 
 Writes:
-    <run_dir>/deliverables/post_run/notebooks/review_processed_h5mu.ipynb
-    <run_dir>/deliverables/post_run/notebooks/review_processed_h5mu.py   (paired script)
+    <run_dir>/deliverables/post_run/review_processed_h5mu.ipynb
+    <run_dir>/deliverables/post_run/review_processed_h5mu.py   (paired script)
 
 The notebook is self-contained: RUN_DIR is baked in at generation time and can be
 overridden at runtime via the `PMA_RUN_DIR` environment variable so the notebook
@@ -77,7 +77,7 @@ import anndata as ad
 from IPython.display import Image, display
 
 RUN_DIR = Path(os.environ.get("PMA_RUN_DIR", "__BAKED_RUN_DIR__"))
-PROCESSED_DIR = RUN_DIR / "deliverables" / "post_run" / "processed"
+PROCESSED_DIR = RUN_DIR / "deliverables" / "post_run"
 H5MU = PROCESSED_DIR / "processed.h5mu"
 RNA_H5AD = PROCESSED_DIR / "rna_processed.h5ad"
 ATAC_H5AD = PROCESSED_DIR / "atac_processed.h5ad"
@@ -144,8 +144,15 @@ if atac_cluster_col:
 
 
 _CELL_SHOW_HELPER = """\
-def _show(stem: str) -> None:
-    p = RUN_DIR / "deliverables" / "post_run" / "figures" / f"{stem}.png"
+def _show_qc(stem: str) -> None:
+    p = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / f"{stem}.png"
+    if p.exists():
+        display(Image(filename=str(p)))
+    else:
+        print(f"(missing: {p})")
+
+def _show_umap(stem: str) -> None:
+    p = RUN_DIR / "deliverables" / "post_run" / f"{stem}.png"
     if p.exists():
         display(Image(filename=str(p)))
     else:
@@ -155,15 +162,15 @@ def _show(stem: str) -> None:
 
 _CELL_QC_FIGS = """\
 # Ambient RNA correction (S1a) — shown only when the stage actually ran.
-_show("s1a_ambient_contamination_hist")
-_show("s1a_ambient_counts_before_after")
+_show_qc("s1a_ambient_contamination_hist")
+_show_qc("s1a_ambient_counts_before_after")
 
 # RNA QC plots (pre + post filter)
-_show("s1_rna_qc_violin_pre")
-_show("s1_rna_qc_violin_post")
+_show_qc("s1_rna_qc_violin_pre")
+_show_qc("s1_rna_qc_violin_post")
 
 # ATAC fragment-size distribution (sanity check for nucleosome periodicity)
-_show("s2_atac_qc_fragment_size_distribution")
+_show_qc("s2_atac_qc_fragment_size_distribution")
 """
 
 
@@ -267,7 +274,12 @@ def _cells(run_dir: str) -> list[dict[str, Any]]:
         _code(_CELL_SHOW_HELPER),
         _md("### Ambient correction + RNA + ATAC QC figures"),
         _code(_CELL_QC_FIGS),
-        _md("### UMAPs — computed from `processed.h5mu`"),
+        _md("### UMAPs — pre-rendered deliverables"),
+        _code("""\
+_show_umap("s8_umap_rna_by_leiden")
+_show_umap("s8_umap_atac_by_leiden")
+"""),
+        _md("### UMAPs — reproduced from `processed.h5mu`"),
         _code(_CELL_UMAP_REPRO),
         _md("## 4. Clustering resolution review"),
         _code(_CELL_SWEEP_TABLE),
@@ -325,13 +337,13 @@ def build_script(run_dir: Path | str) -> str:
 def write_review_notebook(run_dir: Path | str) -> tuple[Path, Path]:
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
-    out_dir = RunPaths(run_dir).deliv_notebooks
-    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = RunPaths(run_dir)
+    paths.deliv_post_run.mkdir(parents=True, exist_ok=True)
 
-    ipynb = out_dir / "review_processed_h5mu.ipynb"
+    ipynb = paths.review_notebook_ipynb
     ipynb.write_text(json.dumps(build_notebook(run_dir), indent=1))
 
-    py = out_dir / "review_processed_h5mu.py"
+    py = paths.review_notebook_py
     py.write_text(build_script(run_dir))
 
     return ipynb, py

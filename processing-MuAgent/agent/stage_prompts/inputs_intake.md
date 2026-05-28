@@ -66,7 +66,7 @@ This creates:
 - `<run_dir>/internal/` — pipeline state scaffold
 - `<run_dir>/deliverables/pre_run/config/run.yaml` — canonical copy of the config
 - `<run_dir>/deliverables/pre_run/config/biological_context.md` — blank template
-- `<run_dir>/deliverables/{pre_run,post_run}/summary/`, plus `post_run/{figures,processed,notebooks}/`
+- `<run_dir>/deliverables/{pre_run,checkpoint,post_run}/` — user-facing outputs split by lifecycle phase
 
 From now on, `$CFG = <run_dir>/deliverables/pre_run/config/run.yaml` for every subsequent CLI call.
 
