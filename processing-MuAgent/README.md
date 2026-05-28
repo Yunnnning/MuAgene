@@ -52,8 +52,8 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   | `fragments_tsv` | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present |
   | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
-- **P2 Preprocessing plan generation** — Holistic `preprocessing_plan.json` for every downstream stage; assembled from P1 context + S0 ingest outputs.
-- **plan_review** — Concise 8-item plan summary at `deliverables/pre_run/summary/plan_review.md`. Hard gate before any S1–S8 execute rule runs.
+- **P2 Preprocessing plan generation** — Creates `preprocessing_plan.json` with execution and parameter settings for all downstream stages, using outputs from P1 context and S0 ingest.
+- **plan_review** — Generates a summary at `deliverables/pre_run/summary/plan_review.md` for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs.
 
 ### Preprocessing
 
@@ -277,7 +277,7 @@ export PMA_RESOURCES_SCALE=2
 | Step | Stages | Executes on | You |
 |------|--------|-------------|-----|
 | Planning | P1 → P2 | Login node | — |
-| S0 ingest | S0 | Login node (default); **Cluster if local fails for large dataset** | — |
+| S0 ingest | S0 | Login node (default); Cluster if local fails for large dataset | — |
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S1 → S2 → S3 | Cluster | — |
 | Checkpoint **#2** | post_qc_review | — | Review QC |

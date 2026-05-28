@@ -300,6 +300,60 @@ def load_execution_mode(parameters_path: Path | str) -> Executor:
     return "local"
 
 
+def parse_hpc_env(path: Path | str) -> dict[str, str]:
+    """Parse export PMA_*=... lines from an hpc.env shell snippet."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("export PMA_"):
+            continue
+        body = line[len("export ") :]
+        if "=" not in body:
+            continue
+        key, _, raw = body.partition("=")
+        val = raw.strip().strip("'\"")
+        out[key] = val
+    return out
+
+
+def load_execution_settings(run_dir: Path | str) -> dict[str, object]:
+    """Execution mode + HPC settings recorded for this run (for plan review)."""
+    from .run_paths import RunPaths
+
+    paths = RunPaths(Path(run_dir))
+    mode = load_execution_mode(paths.parameters_yaml)
+    hpc_env_path = paths.hpc_env_sh
+    from_file = parse_hpc_env(hpc_env_path) if hpc_env_path.exists() else {}
+    live = env_diagnostics()
+
+    def _get(env_key: str, field: str) -> str | None:
+        return from_file.get(env_key) or live.get(env_key)
+
+    settings: dict[str, str | None] = {
+        "pbs_queue": _get("PMA_PBS_QUEUE", "pbs_queue"),
+        "pbs_project": _get("PMA_PBS_PROJECT", "pbs_project"),
+        "slurm_partition": _get("PMA_SLURM_PARTITION", "slurm_partition"),
+        "slurm_account": _get("PMA_SLURM_ACCOUNT", "slurm_account"),
+        "notify_email": _get("PMA_NOTIFY_EMAIL", "notify_email"),
+        "resources_scale": _get("PMA_RESOURCES_SCALE", "resources_scale"),
+        "conda_env": _get("PMA_CONDA_ENV", "conda_env"),
+    }
+
+    return {
+        "mode": mode,
+        "hpc_env_path": "deliverables/pre_run/config/hpc.env"
+        if hpc_env_path.exists() else None,
+        "settings": settings,
+        "s0_policy": (
+            "S0 ingest runs on the login node first; on OOM/walltime (or very large "
+            "inputs) it is retried as a cluster job before P2 continues."
+        ),
+    }
+
+
 _RESOURCE_FAILURE_MARKERS = (
     "out of memory",
     "oom",

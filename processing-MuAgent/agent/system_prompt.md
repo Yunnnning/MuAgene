@@ -69,7 +69,8 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/pre_run/config/biological_context.md`
 - `deliverables/pre_run/config/hpc.env` (HPC runs — source before submit)
 - `deliverables/pre_run/summary/context_summary.md`
-- `deliverables/pre_run/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix)
+- `deliverables/pre_run/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
+- `deliverables/pre_run/summary/plan_summary.md` (concise summary bullets, including execution)
 
 Files at user checkpoints and at the hard stop:
 
