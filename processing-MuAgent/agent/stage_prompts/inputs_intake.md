@@ -34,7 +34,7 @@ Tailor the required paths to the declared `workflow_branch`:
 >
 > Optional: same as above.
 >
-> If the RNA and ATAC barcodes overlap ≥99% I'll treat as `paired`; if they don't overlap at all I'll treat as `separate`. Anything in between, I'll stop and ask.
+> If the RNA and ATAC barcodes have Jaccard overlap ≥80%, or one modality's barcodes are ≥80% contained in the other (typical when cell counts differ before QC), I'll treat as `paired`. If they don't overlap at all I'll treat as `separate`. Jaccard between 30% and 80% with no subset relation, I'll stop and ask.
 
 ## Actions
 

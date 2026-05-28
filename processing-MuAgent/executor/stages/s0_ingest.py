@@ -162,23 +162,32 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
 
     # --- Diagnostics ladder for the workflow_branch decision -------------
     # Detection is advisory; declaration + supplied mappings drive the committed branch.
-    # Ladder rungs (first hit wins):
-    #   1. Direct overlap (>=0.99)               -> paired   (pairing.exact_barcode_match)
-    #   2. Suffix-normalized overlap (>=0.99)    -> paired   (pairing.prefix_suffix_normalized)
-    #   3. `barcode_translation_path` mapping    -> paired   (pairing.translation_table)
-    #   4. `cell_metadata_path` w/ atac_barcode  -> paired   (pairing.translation_table)
-    #   5. otherwise (low overlap, no mapping)   -> separate (auto-downgrade with logged reason)
+    # Ladder rungs (first hit wins; thresholds in executor/pairing.py):
+    #   1. Direct Jaccard >= PAIRING_OVERLAP_THRESHOLD -> pairing.exact_barcode_match
+    #   2. ATAC or RNA barcode subset (>= SUBSET_COVERAGE_THRESHOLD of smaller set)
+    #   3. Suffix-normalized Jaccard or subset -> prefix_suffix_normalized / *_subset_of_*
+    #   4. `barcode_translation_path` or cell_metadata translation table
+    #   5. otherwise -> separate (auto-downgrade with logged reason)
+    _pair_thresh = _pair.PAIRING_OVERLAP_THRESHOLD
     declared = _prov.get_value(str(params_path), "plan.workflow_branch_declared", None)
     barcode_translation_path = config.get("barcode_translation_path")
     cell_metadata_path = config.get("cell_metadata_path")
 
     committed_branch = pr_initial.status
     pairing_result = pr_initial
-    ladder_steps: list[dict[str, Any]] = [{
-        "step": pr_initial.method,
-        "status": pr_initial.status,
-        "overlap": pr_initial.overlap,
-    }]
+    def _ladder_step(pr: _pair.PairingResult, **extra: Any) -> dict[str, Any]:
+        step: dict[str, Any] = {
+            "step": pr.method,
+            "status": pr.status,
+            "overlap": pr.overlap,
+        }
+        if pr.subset_relation:
+            step["subset_relation"] = pr.subset_relation
+            step["subset_coverage"] = pr.subset_coverage
+        step.update(extra)
+        return step
+
+    ladder_steps: list[dict[str, Any]] = [_ladder_step(pr_initial)]
     translation_table_loaded: dict[str, str] | None = None
     translation_source: str | None = None
     downgrade_reason: str | None = None
@@ -219,11 +228,10 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
             pr_trans = _pair.pairing_via_translation(
                 rna_bc, atac_bc, translation_table_loaded,
             )
-            ladder_steps.append({
-                "step": pr_trans.method, "status": pr_trans.status,
-                "overlap": pr_trans.overlap, "source": translation_source,
-                "n_pairs": len(translation_table_loaded),
-            })
+            ladder_steps.append(_ladder_step(
+                pr_trans, source=translation_source,
+                n_pairs=len(translation_table_loaded),
+            ))
             if pr_trans.status == "paired":
                 committed_branch = "paired"
                 pairing_result = pr_trans
@@ -236,7 +244,8 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
                 pairing_result = pr_trans
                 downgrade_reason = (
                     f"User declared 'paired' but translation table from {translation_source} "
-                    f"yielded overlap={pr_trans.overlap:.4f} (<0.99). Auto-downgraded to "
+                    f"yielded overlap={pr_trans.overlap:.4f} (Jaccard < {_pair_thresh}; no "
+                    f"subset relation ≥ {_pair.SUBSET_COVERAGE_THRESHOLD}). Auto-downgraded to "
                     "'separate'. Doublet calls still run per modality; the S3 joint-barcode "
                     "intersection is skipped because no validated cell-level pairing exists."
                 )
@@ -313,7 +322,15 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         "ladder": ladder_steps,
         "declared": declared,
         "committed": workflow_branch,
+        "thresholds": {
+            "jaccard_paired": _pair.PAIRING_OVERLAP_THRESHOLD,
+            "subset_coverage": _pair.SUBSET_COVERAGE_THRESHOLD,
+            "ambiguous_low": _pair.AMBIGUOUS_OVERLAP_LOW,
+        },
     }
+    if pairing_result.subset_relation:
+        pairing_record["subset_relation"] = pairing_result.subset_relation
+        pairing_record["subset_coverage"] = pairing_result.subset_coverage
     if downgrade_reason:
         pairing_record["downgrade_reason"] = downgrade_reason
     if translation_source:

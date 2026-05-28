@@ -9,32 +9,11 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
 **Stage order** (Snakemake DAG — ingest validation must finish before preprocessing plan assembly, because P2 reads `internal/artifacts/s0_ingest/validation_report.json`):
 
 ```
-P1 context extraction → S0 ingest validation → P2 preprocessing plan → plan_review
-  → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → post_qc_review
-  → S4 RNA normalization + HVG → S5 ATAC TF-IDF + LSI
-  → S6 dimensionality reduction + neighbors → S7 clustering → S8 UMAP → manifest
-              ↑                              ↑                        ↑
-         CHECKPOINT 1                   CHECKPOINT 2            CHECKPOINT 3
-        (plan review)                  (QC review)      (resolution review)
+P1 context extraction → S0 ingest validation → P2 preprocessing plan → (CHECKPOINT 1) plan_review
+  → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → (CHECKPOINT 2) post_qc_review
+  → S4 RNA normalization + HVG → S5 ATAC TF-IDF + LSI → S6 dimensionality reduction + neighbors 
+  → S7 clustering + (CHECKPOINT 3) resolution_review → S8 UMAP → manifest
 ```
-
-| Stage ID | Full name |
-|----------|-----------|
-| `p1_context` | P1 context extraction |
-| `s0_ingest` | S0 ingest validation |
-| `p2_plan` | P2 preprocessing plan |
-| `plan_review` | Plan review (checkpoint 1) |
-| `s1a_ambient` | S1a ambient RNA correction |
-| `s1_rna_qc` | S1 RNA QC |
-| `s2_atac_qc` | S2 ATAC QC |
-| `s3_doublets` | S3 doublets |
-| `post_qc_review` | Post-QC review (checkpoint 2) |
-| `s4_rna_norm` | S4 RNA normalization + HVG |
-| `s5_atac_lsi` | S5 ATAC TF-IDF + LSI |
-| `s6_dimred` | S6 dimensionality reduction + neighbors |
-| `s7_clustering` | S7 clustering (checkpoint 3) |
-| `s8_umap` | S8 UMAP |
-| `manifest` | Run manifest + final summaries |
 
 Each stage is a Snakemake `<stage>_propose` + `<stage>_execute` pair (except `post_qc_review`, which is propose-only). Execute rules run only after `internal/checkpoints/<stage>.approved` is written by `processing-muagent approve <stage>`.
 
@@ -45,10 +24,8 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 | # | Checkpoint | Gate stage | When | What you decide |
 |---|------------|------------|------|-----------------|
 | **1** | **Plan review** | `plan_review` | After S0 + P2, before S1 | Approve the preprocessing plan (`pre_run/summary/plan_review.md`) |
-| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md`; revise S1/S2 thresholds and re-run if needed; on **paired** multiome, also confirm the **S3 cross-modal doublet policy** (union vs intersection) documented in the summary |
+| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md`; revise **S1/S2 thresholds** and re-run if needed; on **paired** multiome, also confirm the **S3 cross-modal doublet removal policy** (union vs intersection) documented in the summary |
 | **3** | **Clustering resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
-
-**QC review and S3 policy:** S3 runs before the QC review checkpoint. On `paired`, the applied doublet policy and joint barcode counts are written into `qc_summary.md` — there is no separate S3 user gate. On `separate` / `rna_only` / `atac_only`, doublets are removed independently per modality; no cross-modal policy applies.
 
 **Snakemake approval gates:** 14 stages require an internal `*.approved` sentinel (including the three checkpoints above). With `--auto-approve`, all 14 are pre-seeded; typical HPC usage keeps only checkpoints **2** and **3** open:
 
@@ -82,7 +59,7 @@ processing-muagent submit --config $CFG --executor pbs \
   | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
 - **P2 Preprocessing plan generation** — Holistic `preprocessing_plan.json` for every downstream stage; assembled from P1 context + S0 ingest outputs.
-- **plan_review** — Merged plan review at `deliverables/pre_run/summary/plan_review.md`: concise decision summary (8 items) plus a full parameter appendix. Hard gate before any S1–S8 execute rule runs.
+- **plan_review** — Concise 8-item plan summary at `deliverables/pre_run/summary/plan_review.md`. Hard gate before any S1–S8 execute rule runs.
 
 ### Preprocessing
 
@@ -92,8 +69,8 @@ processing-muagent submit --config $CFG --executor pbs \
 - **S3 Doublets** — Per-modality doublet detection, then branch-specific reconciliation:
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **ATAC:** SnapATAC2 scrublet (thresholds configurable in the preprocessing plan).
-  - **`separate` / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
-  - **`paired` branch:** Also performs joint barcode intersection after doublet removal; the applied cross-modal policy (union vs intersection) is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_summary.md`), not at a separate S3 gate.
+  - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
+  - **paired branch:** Also performs joint barcode intersection after doublet removal; the applied cross-modal policy (union vs intersection) is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_summary.md`).
 - **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and dimensionality reduction. Generates doublet histograms, cell-count waterfall, and `checkpoint/qc_review/qc_summary.md` (S1–S3 metrics + paired S3 policy). Revise S1/S2 thresholds or `s3_doublets.removal_policy` and re-run affected stages before approving.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC TF-IDF + LSI and peak matrix export** — TF-IDF normalization and spectral embedding (LSI) on the SnapATAC2 tile matrix (`bin_size=500`, unified with S3). In parallel, exports a feature (cell-by-feature) matrix using this priority order:
@@ -120,13 +97,17 @@ In all cases, the final `processed.h5mu` contains only cells passing both RNA an
 
 ### Diagnostics ladder (S0)
 
-Detection at S0 is advisory; the committed `workflow_branch` follows the first successful rung:
+Detection at S0 is advisory; the committed `workflow_branch` follows the first successful rung. Thresholds are defined in `executor/pairing.py` (`PAIRING_OVERLAP_THRESHOLD` = 0.80, `SUBSET_COVERAGE_THRESHOLD` = 0.80).
 
-1. Direct barcode overlap ≥ 0.99 → paired (`pairing.exact_barcode_match`).
-2. Suffix-normalized overlap ≥ 0.99 → paired (`pairing.prefix_suffix_normalized`).
-3. `barcode_translation_path` translation, then overlap ≥ 0.99 → paired (`pairing.translation_table`). Translation parquet is persisted at `internal/artifacts/s0_ingest/barcode_translation.parquet`; S2 reads it to produce a one-time translated copy of `atac_fragments.tsv.gz` before SnapATAC2 import.
-4. `cell_metadata_path` with `rna_barcode` + `atac_barcode` columns → same rule as rung 3.
-5. None succeed → branch downgrades to `separate`; reason in `validation_report.json#pairing.downgrade_reason`.
+**Overlap metric:** Jaccard `|RNA ∩ ATAC| / |RNA ∪ ATAC|` on exact barcode strings (or suffix-normalized variants). When one modality calls fewer cells than the other at ingest, subset checks use `|∩| / |smaller modality| ≥ 0.80` (`pairing.atac_subset_of_rna` or `pairing.rna_subset_of_atac`).
+
+1. Direct Jaccard ≥ 0.80 → paired (`pairing.exact_barcode_match`).
+2. ATAC barcodes mostly contained in RNA (≥ 80% of ATAC in RNA) → paired (`pairing.atac_subset_of_rna`), or RNA mostly in ATAC → paired (`pairing.rna_subset_of_atac`).
+3. Suffix-normalized Jaccard ≥ 0.80 → paired (`pairing.prefix_suffix_normalized`), or the same subset rules on normalized barcodes.
+4. `barcode_translation_path` translation, then Jaccard ≥ 0.80 or subset rule → paired (`pairing.translation_table`). S2 reads it to produce a one-time translated copy of `atac_fragments.tsv.gz` before SnapATAC2 import.
+5. `cell_metadata_path` with `rna_barcode` + `atac_barcode` columns → same rule as rung 4.
+6. Jaccard between 0.30 and 0.80 with no subset or translation resolution → **ambiguous** (hard stop; user must declare branch or supply a translation table).
+7. None of the above → `separate`.
 
 If the user declared `paired` but the ladder commits `separate`, the stage does not crash — the report flags the downgrade for review.
 
@@ -144,14 +125,6 @@ Doublet flagging runs independently per modality; flag sets are reconciled at S3
 
 RNA-only (`leiden_rna`) and ATAC-only (`leiden_atac`) clustering at S7 are **diagnostic**, not joint clustering. Both run on the same joint cell set from S3 (paired) or per-modality sets (separate). Joint clustering (WNN / MOFA+) is out of scope.
 
-### Key artifact paths
-
-| Path | Contents |
-|------|----------|
-| `internal/artifacts/s3_doublets/joint_barcodes.txt` | Sentinel joint set (paired only) |
-| `internal/parameters.yaml` → `s3_doublets.paired_intersection` | `n_joint`, `n_dropped_rna_at_join`, `n_dropped_atac_at_join` |
-| `deliverables/checkpoint/qc_review/qc_summary.md` | QC review checkpoint — S1–S3 metrics + paired S3 doublet policy |
-| `deliverables/post_run/qc_summary.md` | Final QC summary (written at manifest) |
 
 ## Run directory layout
 
@@ -166,7 +139,8 @@ Per-run state lives under `run_dir` from your config — never inside the source
         biological_context.md     ← Biological Context Report
       summary/
         context_summary.md        ← P1 output
-        plan_review.md            ← plan review gate (summary + appendix)
+        plan_summary.md           ← P2 output
+        plan_review.md            ← plan review gate
     checkpoint/
       qc_review/                  ← QC review checkpoint (#2): figures + qc_summary.md
       resolution_review/          ← resolution_summary.md + resolution_review.{html,ipynb}
@@ -253,10 +227,11 @@ processing-muagent propose s0_ingest --config $CONFIG
 processing-muagent approve s0_ingest --config $CONFIG
 
 processing-muagent propose p2_plan --config $CONFIG
+# review: <run_dir>/deliverables/pre_run/summary/plan_summary.md
 processing-muagent approve p2_plan --config $CONFIG
 
 processing-muagent plan-review --config $CONFIG
-# review: <run_dir>/deliverables/pre_run/summary/plan_review.md  (summary + appendix)
+# review: <run_dir>/deliverables/pre_run/summary/plan_review.md
 processing-muagent approve plan_review --config $CONFIG
 
 # S1a → S8:
@@ -286,16 +261,16 @@ For large datasets the workflow runs in four phases. Planning (`p1_context`, `s0
 ### One-time setup
 
 ```bash
-# Imperial RDS (PBS Pro):
-export PMA_PBS_QUEUE=v1_throughput72
-export PMA_PBS_PROJECT=<your project code>
-export PMA_NOTIFY_EMAIL=<you@example.com>
+# PBS Pro example:
+export PMA_PBS_QUEUE=<your_queue_name>
+export PMA_PBS_PROJECT=<your_project_code>
+export PMA_NOTIFY_EMAIL=<your_email_address>
 
-# Generic SLURM site:
-export PMA_SLURM_PARTITION=cpu
-export PMA_SLURM_ACCOUNT=<your account>
+# SLURM example:
+export PMA_SLURM_PARTITION=<your_partition_name>
+export PMA_SLURM_ACCOUNT=<your_account_name>
 
-# Optional — scale per-rule mem and walltime (default 1):
+# Optional — scale per-rule memory and walltime (default is 1):
 export PMA_RESOURCES_SCALE=2
 ```
 
