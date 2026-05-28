@@ -42,6 +42,10 @@ rule s0_ingest_execute:
         rna_h5  = str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
     params:
         run_dir = str(RUN_DIR),
+    threads: RESOURCES["s0_ingest"]["cpus"]
+    resources:
+        mem_mb=lambda wc, attempt: mem_mb_for("s0_ingest", attempt),
+        runtime=RUNTIME["s0_ingest"],
     run:
         from executor.stages import s0_ingest
         s0_ingest.run(params.run_dir, config)

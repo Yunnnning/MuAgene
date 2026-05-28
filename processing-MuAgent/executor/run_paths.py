@@ -137,6 +137,11 @@ class RunPaths:
     def biological_context_md(self) -> Path:
         return self.deliv_config / "biological_context.md"
 
+    @property
+    def hpc_env_sh(self) -> Path:
+        """pre_run/config/hpc.env — source-able PMA_* exports for cluster runs."""
+        return self.deliv_config / "hpc.env"
+
     # pre_run/summary/*
     @property
     def context_summary_md(self) -> Path:
