@@ -6,15 +6,35 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
 
 ## Pipeline overview
 
-**Stage order** (Snakemake DAG — S0 must complete before P2/plan_review because the plan is assembled from `validation_report.json`):
+**Stage order** (Snakemake DAG — ingest validation must finish before preprocessing plan assembly, because P2 reads `internal/artifacts/s0_ingest/validation_report.json`):
 
 ```
-P1 context → S0 ingest → P2 plan → plan_review → S1a … → S3 doublets → post_qc_review
-  → S4 … → S6 dimred → S7 clustering → S8 UMAP → manifest
+P1 context extraction → S0 ingest validation → P2 preprocessing plan → plan_review
+  → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → post_qc_review
+  → S4 RNA normalization + HVG → S5 ATAC TF-IDF + LSI
+  → S6 dimensionality reduction + neighbors → S7 clustering → S8 UMAP → manifest
               ↑                              ↑                        ↑
          CHECKPOINT 1                   CHECKPOINT 2            CHECKPOINT 3
         (plan review)                  (QC review)      (resolution review)
 ```
+
+| Stage ID | Full name |
+|----------|-----------|
+| `p1_context` | P1 context extraction |
+| `s0_ingest` | S0 ingest validation |
+| `p2_plan` | P2 preprocessing plan |
+| `plan_review` | Plan review (checkpoint 1) |
+| `s1a_ambient` | S1a ambient RNA correction |
+| `s1_rna_qc` | S1 RNA QC |
+| `s2_atac_qc` | S2 ATAC QC |
+| `s3_doublets` | S3 doublets |
+| `post_qc_review` | Post-QC review (checkpoint 2) |
+| `s4_rna_norm` | S4 RNA normalization + HVG |
+| `s5_atac_lsi` | S5 ATAC TF-IDF + LSI |
+| `s6_dimred` | S6 dimensionality reduction + neighbors |
+| `s7_clustering` | S7 clustering (checkpoint 3) |
+| `s8_umap` | S8 UMAP |
+| `manifest` | Run manifest + final summaries |
 
 Each stage is a Snakemake `<stage>_propose` + `<stage>_execute` pair (except `post_qc_review`, which is propose-only). Execute rules run only after `internal/checkpoints/<stage>.approved` is written by `processing-muagent approve <stage>`.
 
