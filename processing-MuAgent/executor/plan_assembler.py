@@ -197,15 +197,16 @@ def write_plan(run_dir: Path | str, plan: dict[str, Any]) -> tuple[Path, str]:
     return out, phash
 
 
-def render_plan_summary(plan: dict[str, Any]) -> str:
+def render_plan_appendix(plan: dict[str, Any]) -> str:
+    """Per-stage parameter listing for the plan-review appendix."""
     lines: list[str] = [
-        "# Preprocessing Plan Summary",
+        "## Appendix: full parameters",
         "",
         f"**Workflow branch:** `{plan['workflow_branch']}`",
         "",
     ]
     for stage, body in plan["stages"].items():
-        lines.append(f"## {stage}")
+        lines.append(f"### {stage}")
         for pname, pv in body["parameters"].items():
             lines.append(
                 f"- **{pname}**: `{pv['value']}` — {pv['source']}/{pv['confidence']}"
@@ -213,7 +214,16 @@ def render_plan_summary(plan: dict[str, Any]) -> str:
             lines.append(f"  - {pv['rationale']}")
         lines.append("")
     if plan.get("warnings"):
-        lines.append("## Warnings")
+        lines.append("### Warnings")
         for w in plan["warnings"]:
             lines.append(f"- {w}")
-    return "\n".join(lines) + "\n"
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_plan_summary(plan: dict[str, Any]) -> str:
+    """Legacy standalone plan summary (superseded by merged plan_review.md)."""
+    return (
+        "# Preprocessing Plan Summary\n\n"
+        + render_plan_appendix(plan).replace("## Appendix: full parameters\n\n", "", 1)
+    )

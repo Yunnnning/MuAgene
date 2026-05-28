@@ -82,7 +82,7 @@ processing-muagent submit --config $CFG --executor pbs \
   | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
 - **P2 Preprocessing plan generation** — Holistic `preprocessing_plan.json` for every downstream stage; assembled from P1 context + S0 ingest outputs.
-- **plan_review** — Concise 8-item plan summary at `deliverables/pre_run/summary/plan_review.md`. Hard gate before any S1–S8 execute rule runs.
+- **plan_review** — Merged plan review at `deliverables/pre_run/summary/plan_review.md`: concise decision summary (8 items) plus a full parameter appendix. Hard gate before any S1–S8 execute rule runs.
 
 ### Preprocessing
 
@@ -166,8 +166,7 @@ Per-run state lives under `run_dir` from your config — never inside the source
         biological_context.md     ← Biological Context Report
       summary/
         context_summary.md        ← P1 output
-        plan_summary.md           ← P2 output
-        plan_review.md            ← plan review gate
+        plan_review.md            ← plan review gate (summary + appendix)
     checkpoint/
       qc_review/                  ← QC review checkpoint (#2): figures + qc_summary.md
       resolution_review/          ← resolution_summary.md + resolution_review.{html,ipynb}
@@ -254,11 +253,10 @@ processing-muagent propose s0_ingest --config $CONFIG
 processing-muagent approve s0_ingest --config $CONFIG
 
 processing-muagent propose p2_plan --config $CONFIG
-# review: <run_dir>/deliverables/pre_run/summary/plan_summary.md
 processing-muagent approve p2_plan --config $CONFIG
 
 processing-muagent plan-review --config $CONFIG
-# review: <run_dir>/deliverables/pre_run/summary/plan_review.md
+# review: <run_dir>/deliverables/pre_run/summary/plan_review.md  (summary + appendix)
 processing-muagent approve plan_review --config $CONFIG
 
 # S1a → S8:

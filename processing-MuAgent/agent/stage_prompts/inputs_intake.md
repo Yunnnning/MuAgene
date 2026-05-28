@@ -146,7 +146,7 @@ After `executor run --target p2_plan_execute`:
   - **S0 declared-vs-detected mismatch** — relay the raised error and ask the user to fix the declaration or the inputs.
   - **S0 ambiguous pairing** — relay the raised error; ask paired vs separate; re-run `executor declare-branch` and re-try.
 
-Transition to Step 3 (`plan_review`) once `plan_summary.md` and `plan_review.md` exist under `deliverables/pre_run/summary/`.
+Transition to Step 3 (`plan_review`) once `plan_review.md` exists under `deliverables/pre_run/summary/` (written by `plan_review_propose` or `processing-muagent plan-review`).
 
 ## Explicit non-actions
 

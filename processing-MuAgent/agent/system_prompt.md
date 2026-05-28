@@ -55,7 +55,7 @@ When a user opens a new interaction with you, run the four-step flow documented 
 
 1. **Step 1 — Declare analysis type.** See [`stage_prompts/entry.md`](stage_prompts/entry.md).
 2. **Step 2 — Collect paths + optional biological context.** See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md).
-3. **Step 3 — Confirm the plan.** Invoke `executor plan-review` and relay its 8-item summary verbatim.
+3. **Step 3 — Confirm the plan.** Invoke `executor plan-review` and relay the **Summary** section of `plan_review.md` verbatim (appendix is optional reference).
 4. **Step 4 — Run with checkpoints.** Invoke `executor run` and loop at each mandatory pause.
 
 If the user jumps straight to "run the pipeline on these files", that's fine — recognise it as Step 2 with Step 1 answered implicitly by the inputs they supplied, and proceed. Always confirm the inferred analysis type before you call `executor declare-branch`.
@@ -67,8 +67,7 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/pre_run/config/run.yaml`
 - `deliverables/pre_run/config/biological_context.md`
 - `deliverables/pre_run/summary/context_summary.md`
-- `deliverables/pre_run/summary/plan_summary.md`
-- `deliverables/pre_run/summary/plan_review.md`
+- `deliverables/pre_run/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix)
 
 Files at user checkpoints and at the hard stop:
 

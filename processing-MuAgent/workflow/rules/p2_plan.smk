@@ -24,11 +24,7 @@ rule p2_plan_propose:
                                 sample_type=sample_type,
                                 study_goal=study_goal)
         _, plan_hash = pa.write_plan(params.run_dir, plan)
-        # plan_summary.md is user-facing → deliverables/summary/
-        plan_summary_out = PRE_RUN / "summary" / "plan_summary.md"
-        plan_summary_out.parent.mkdir(parents=True, exist_ok=True)
-        plan_summary_out.write_text(pa.render_plan_summary(plan))
-        # Record plan_hash
+        # Merged plan_review.md (summary + appendix) is written at plan_review_propose.
         provenance.set_param(
             str(INTERNAL / "parameters.yaml"), "plan.plan_hash", plan_hash,
             source="derived", confidence="high",
@@ -65,9 +61,6 @@ rule p2_plan_execute:
         plan = pa.assemble_plan(str(RUN_DIR), workflow_branch=branch,
                                 sample_type=sample_type, study_goal=study_goal)
         out_path, plan_hash = pa.write_plan(str(RUN_DIR), plan)
-        plan_summary_out = PRE_RUN / "summary" / "plan_summary.md"
-        plan_summary_out.parent.mkdir(parents=True, exist_ok=True)
-        plan_summary_out.write_text(pa.render_plan_summary(plan))
         provenance.set_param(
             str(INTERNAL / "parameters.yaml"), "plan.plan_hash", plan_hash,
             source="derived", confidence="high",

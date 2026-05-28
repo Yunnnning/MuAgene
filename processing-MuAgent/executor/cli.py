@@ -197,10 +197,9 @@ def status(config_path: str, watch: bool, interval: float) -> None:
 @main.command(name="plan-review")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 def plan_review_cmd(config_path: str) -> None:
-    """Print the concise preprocessing-plan review summary for the run."""
+    """Render and write the merged plan-review markdown (summary + appendix)."""
     run_dir = _resolve_run_dir(config_path)
-    items = _pr.build_summary(run_dir)
-    text = _pr.render_summary_text(items)
+    text = _pr.render_merged_markdown(run_dir)
     click.echo(text)
     out = _pr.write_summary(run_dir)
     click.echo(f"\nWritten: {out}")

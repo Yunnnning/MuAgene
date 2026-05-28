@@ -13,7 +13,7 @@ Direct-write layout:
     DELIVERABLES = <run_dir>/deliverables           — user-facing, split by phase:
       PRE_RUN    = deliverables/pre_run             — config + approval-support materials
                                                       (run.yaml, biological_context.md,
-                                                       context_summary.md, plan_summary.md,
+                                                       context_summary.md, plan_review.md,
                                                        plan_review.md)
       CHECKPOINT = deliverables/checkpoint          — intermediate review artifacts
                                                       (qc_review/, resolution_review/)

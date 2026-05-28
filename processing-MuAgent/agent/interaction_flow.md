@@ -126,7 +126,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 ### AGENT_ACTIONS
 
 1. Invoke `executor plan-review --config $CFG`.
-   - This re-renders (and writes) `deliverables/pre_run/summary/plan_review.md` — the concise 8-item review summary.
+   - This re-renders (and writes) `deliverables/pre_run/summary/plan_review.md` — summary section (8 decision items) plus a full parameter appendix.
    - The same content also lives at that path if the user wants to open it directly.
 
 2. On user decision:
@@ -136,7 +136,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 
 ### WHAT_TO_SURFACE_BACK
 
-The full 8-item `plan_review.md` content, verbatim. Do not paraphrase values. If the review flags `?` uncertainties or unresolved warnings, highlight those — they're the decision points.
+The **Summary** section of `plan_review.md`, verbatim (the appendix is reference detail — surface decision points and any `?` flags from the summary). Do not paraphrase values.
 
 ---
 

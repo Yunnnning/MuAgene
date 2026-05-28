@@ -1,5 +1,5 @@
 rule plan_review_propose:
-    """Render the concise plan review summary. Writes the awaiting_approval sentinel.
+    """Render the merged plan review summary (concise + appendix). Writes the awaiting_approval sentinel.
     User must approve before any preprocessing stage (S1..S8) runs.
     """
     input:

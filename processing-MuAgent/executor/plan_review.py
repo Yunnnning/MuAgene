@@ -181,24 +181,61 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     return items
 
 
-def render_summary_text(items: list[dict[str, Any]]) -> str:
-    lines: list[str] = ["# Preprocessing plan review (concise)", ""]
+def _render_concise_section(items: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
     for it in items:
         tag = "✓" if it["certainty"] == "certain" else "?"
         lines.append(f"- **{it['label']}** [{tag} {it['certainty']}]")
         lines.append(f"  - value: `{it['value']}`")
         if it["reason"]:
             lines.append(f"  - reason: {it['reason']}")
-    lines.append("")
-    lines.append("_Full parameter details: `parameters.yaml` + `artifacts/p2_plan/preprocessing_plan.json`_")
     return "\n".join(lines)
 
 
-def write_summary(run_dir: Path | str) -> Path:
-    """Write the plan-review markdown directly to its canonical deliverable path."""
+def render_summary_text(items: list[dict[str, Any]]) -> str:
+    """Concise review bullets only (legacy helper for tests / partial display)."""
+    return (
+        "# Preprocessing plan review — summary\n\n"
+        + _render_concise_section(items)
+        + "\n"
+    )
+
+
+def render_merged_markdown(run_dir: Path | str) -> str:
+    """Full plan-review deliverable: concise summary + parameter appendix."""
+    from .plan_assembler import render_plan_appendix
     from .run_paths import RunPaths
+    run_dir = Path(run_dir)
+    paths = RunPaths(run_dir)
     items = build_summary(run_dir)
-    out = RunPaths(Path(run_dir)).plan_review_md
+    plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+    parts = [
+        "# Preprocessing plan review",
+        "",
+        "## Summary",
+        "",
+        _render_concise_section(items),
+        "",
+        "_Machine-readable plan: `internal/artifacts/p2_plan/preprocessing_plan.json` "
+        "and `internal/parameters.yaml`. Full parameter listing in the appendix below._",
+        "",
+        "---",
+        "",
+    ]
+    if plan:
+        parts.append(render_plan_appendix(plan).rstrip())
+        parts.append("")
+    else:
+        parts.append("_Appendix unavailable — `preprocessing_plan.json` not found._")
+        parts.append("")
+    return "\n".join(parts)
+
+
+def write_summary(run_dir: Path | str) -> Path:
+    """Write merged plan-review markdown to deliverables/pre_run/summary/plan_review.md."""
+    from .run_paths import RunPaths
+    run_dir = Path(run_dir)
+    out = RunPaths(run_dir).plan_review_md
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_summary_text(items))
+    out.write_text(render_merged_markdown(run_dir))
     return out

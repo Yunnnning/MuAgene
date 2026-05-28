@@ -10,8 +10,7 @@ Top-level layout (direct-write; no symlinks):
             biological_context.md       ← canonical Biological Context Report
           summary/
             context_summary.md          ← P1 output
-            plan_summary.md             ← P2 output
-            plan_review.md              ← `executor plan-review`
+            plan_review.md              ← plan review gate (summary + parameter appendix)
         checkpoint/                 intermediate review artifacts (flat subfolders)
           qc_review/                  QC review checkpoint (figures + qc_summary.md)
             qc_summary.md
@@ -144,11 +143,8 @@ class RunPaths:
         return self.deliv_pre_summary / "context_summary.md"
 
     @property
-    def plan_summary_md(self) -> Path:
-        return self.deliv_pre_summary / "plan_summary.md"
-
-    @property
     def plan_review_md(self) -> Path:
+        """pre_run/summary/plan_review.md — merged summary + full parameter appendix."""
         return self.deliv_pre_summary / "plan_review.md"
 
     # checkpoint/qc_review/*
