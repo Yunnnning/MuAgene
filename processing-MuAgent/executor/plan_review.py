@@ -100,16 +100,39 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
 
     # 5. Doublet policy — reconciliation is only meaningful when both detectors run.
     # Single-modality branches have one detector; the S3 item is informational, not
-    # a checkpoint gate. Default is union (study_goal=clustering_inference);
-    # intersection is used only when study_goal=rare_populations.
+    # a checkpoint gate.
     branch = plan.get("workflow_branch", "paired")
     policy = param("s3_doublets", "removal_policy_recommendation")
     goal = param("s3_doublets", "study_goal")
+
+    def _paired_doublet_policy_detail(recommended: str) -> list[str]:
+        alt = "intersection" if recommended == "union" else "union"
+        return [
+            "- paired-multiome policy: Each modality runs its own doublet detector. "
+            "You choose how to merge the two call lists before joint analysis:",
+            "  - `union` — remove a cell if *either* modality flags it "
+            "(stricter; more cells dropped).",
+            "  - `intersection` — remove a cell only if *both* modalities flag it "
+            "(more lenient; keeps cells where only one modality is suspicious).",
+            f"- recommended: `{recommended}` — "
+            + (
+                "better when the priority is clean clustering and cell-type inference; "
+                f"choose `{alt}` if retaining rare populations matters more than "
+                "aggressively filtering ambiguous cells."
+                if recommended == "union"
+                else "better when retaining rare populations matters more than "
+                "aggressively filtering ambiguous cells; "
+                f"choose `{alt}` if the priority is clean clustering and cell-type inference."
+            ),
+        ]
+
     if branch == "paired":
+        policy_val = policy.get("value", "?")
         items.append({
             "label": "Doublet removal policy",
-            "value": f"{policy.get('value', '?')} (reconciling Scrublet RNA + ATAC detector; raw calls preserved)",
-            "reason": f"study_goal={goal.get('value', '?')}; four-way overlap recorded; user confirms reconciliation at S3.",
+            "value": policy_val,
+            "detail": _paired_doublet_policy_detail(policy_val),
+            "reason": "",
             "certainty": "needs confirmation",
         })
     elif branch == "separate":
@@ -117,7 +140,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "label": "Doublet removal policy",
             "value": "independent (per-modality; Scrublet for RNA, SnapATAC2 for ATAC; raw calls preserved)",
             "reason": ("separate branch: modalities are independent samples with disjoint barcodes; "
-                       "each modality's doublets removed by its own detector; no cross-modal reconciliation."),
+                       "each modality's doublets removed by its own detector."),
             "certainty": "certain",
         })
     elif branch == "rna_only":
@@ -187,7 +210,9 @@ def _render_concise_section(items: list[dict[str, Any]]) -> str:
         tag = "✓" if it["certainty"] == "certain" else "?"
         lines.append(f"- **{it['label']}** [{tag} {it['certainty']}]")
         lines.append(f"  - value: `{it['value']}`")
-        if it["reason"]:
+        for detail_line in it.get("detail", []):
+            lines.append(f"  {detail_line}")
+        if it.get("reason"):
             lines.append(f"  - reason: {it['reason']}")
     return "\n".join(lines)
 
