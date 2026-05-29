@@ -84,40 +84,100 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 The paired branch admits three input shapes:
 
 1. A single Cell Ranger ARC `.h5` (combined GEX + Peaks; barcodes match by construction).
-2. Cell Ranger GEX `.h5` + ATAC fragments where whitelists match directly (or differ only by a `-N` / `_LIBRARY` suffix).
-3. **Independent GEX + ATAC pipelines** whose barcodes live in different 10x whitelists — requires a 2-column TSV at `barcode_translation_path` (or `cell_metadata_path` with `rna_barcode` + `atac_barcode` columns) so S0 can rewrite ATAC barcodes into RNA space before QC.
+2. Cell Ranger GEX `.h5` + ATAC fragments where cell barcodes match directly (or differ only by a `-N` / `_LIBRARY` suffix).
+3. Independent GEX + ATAC pipelines whose barcodes live in different 10x whitelists — requires a 2-column TSV at `barcode_translation_path` (or `cell_metadata_path` with `rna_barcode` + `atac_barcode` columns) so S0 can rewrite ATAC barcodes into RNA space before QC.
 
 In all cases, the final `processed.h5mu` contains only cells passing both RNA and ATAC QC with matching barcodes.
 
-### Diagnostics ladder (S0)
+### Barcode matching and intersection
 
-Detection at S0 is advisory; the committed `workflow_branch` follows the first successful rung. Thresholds are defined in `executor/pairing.py` (`PAIRING_OVERLAP_THRESHOLD` = 0.80, `SUBSET_COVERAGE_THRESHOLD` = 0.80).
+In paired RNA and ATAC workflows, the pipeline first checks how well the barcodes from each dataset align:
 
-**Overlap metric:** Jaccard `|RNA ∩ ATAC| / |RNA ∪ ATAC|` on exact barcode strings (or suffix-normalized variants). When one modality calls fewer cells than the other at ingest, subset checks use `|∩| / |smaller modality| ≥ 0.80` (`pairing.atac_subset_of_rna` or `pairing.rna_subset_of_atac`).
+1. **Strong match:** If at least 80% of barcodes directly overlap between RNA and ATAC, the data is treated as paired.
+2. **Subset match:** If most ATAC barcodes are found in the RNA set (or vice versa), the data is also paired.
+3. **Minor differences:** If barcodes are similar but differ by prefixes or suffixes, they are normalized and re-checked. If 80% still match, pairing proceeds.
+4. **Translation table:** If barcodes are different but you provide a translation table (`barcode_translation_path` or `cell_metadata_path`), this is used to match barcodes.
+5. **Ambiguous match:** If the overlap is between 30% and 80% and can't be resolved above, you must declare if the data is paired or provide a translation.
+6. **Low match:** If none of the above, the data is treated as separate.
 
-1. Direct Jaccard ≥ 0.80 → paired (`pairing.exact_barcode_match`).
-2. ATAC barcodes mostly contained in RNA (≥ 80% of ATAC in RNA) → paired (`pairing.atac_subset_of_rna`), or RNA mostly in ATAC → paired (`pairing.rna_subset_of_atac`).
-3. Suffix-normalized Jaccard ≥ 0.80 → paired (`pairing.prefix_suffix_normalized`), or the same subset rules on normalized barcodes.
-4. `barcode_translation_path` translation, then Jaccard ≥ 0.80 or subset rule → paired (`pairing.translation_table`). S2 reads it to produce a one-time translated copy of `atac_fragments.tsv.gz` before SnapATAC2 import.
-5. `cell_metadata_path` with `rna_barcode` + `atac_barcode` columns → same rule as rung 4.
-6. Jaccard between 0.30 and 0.80 with no subset or translation resolution → **ambiguous** (hard stop; user must declare branch or supply a translation table).
-7. None of the above → `separate`.
+If you select paired mode but the automatic check does not support it, you will be notified to review the findings; the process will not stop, but a report will flag the issue.
 
-If the user declared `paired` but the ladder commits `separate`, the stage does not crash — the report flags the downgrade for review.
+**Barcode intersection enforcement:**
 
-### Barcode intersection enforcement
+- **S0:** Barcodes are checked but not intersected. S1 and S2 each see the full modality barcode set in RNA and ATAC modalities.
+- **S3 (paired):** After doublet removal, only barcodes found in both modalities are kept. Empty intersection raises with a remediation message.
+- **S8 (paired):** Before final output, the workflow re-checks barcode equality before construction; empty intersection is a hard error; partial mismatch triggers a logged subset.
 
-- **S0:** No pre-intersection; S1 and S2 each see their full modality barcode set.
-- **S3 (paired):** After doublet removal, intersect RNA and ATAC survivor sets. Joint set is written to both `rna_post_doublet.h5ad` and `atac_post_doublet.h5ad`, plus `joint_barcodes.txt`. Empty intersection raises with a remediation message.
-- **S8 (paired):** MuData writer re-checks barcode equality before construction; empty intersection is a hard error; partial mismatch triggers a logged subset.
+**Doublet removal in paired data:**
 
-### Doublet removal policy (paired branch)
-
-Doublet flagging runs independently per modality; flag sets are reconciled at S3. Default is **union** — remove if flagged by either detector (`study_goal=clustering_inference` or unspecified). With `study_goal=rare_populations`, the recommendation switches to **intersection** (remove only if flagged by both). Per-detector scores and flags are preserved in `calls.parquet` for retrospective re-cutting.
+Doublets are detected separately in RNA and ATAC; their results are combined during S3 reconciliation. By default (**union mode**), a cell is removed if either detector (RNA or ATAC) flags it as a doublet (`study_goal=clustering_inference` or unset). For `study_goal=rare_populations`, **intersection mode** is recommended: remove only if both detectors flag the cell. Detector scores and flags are saved in `calls.parquet` for later review.
 
 ### Diagnostic vs final clustering
 
-RNA-only (`leiden_rna`) and ATAC-only (`leiden_atac`) clustering at S7 are **diagnostic**, not joint clustering. Both run on the same joint cell set from S3 (paired) or per-modality sets (separate). Joint clustering (WNN / MOFA+) is out of scope.
+At S7, RNA-only (`leiden_rna`) and ATAC-only (`leiden_atac`) clustering are run separately for diagnostic comparison—not for joint clustering. In paired mode, both clusterings use the same intersected cell set from S3; in separate mode, they use their respective modality’s cells. Joint multimodal clustering (e.g., WNN or MOFA+) is not performed in this preprocessing workflow.
+
+## Repository layout
+
+```
+processing-MuAgent/
+├── agent/               # chat-runtime prompts (system_prompt, interaction_flow)
+├── config/              # example run configurations
+├── executor/            # Python implementation (stages, methods, CLI, helpers)
+│   ├── stages/          # per-stage scripts S0..S8 + post_qc_review
+│   ├── methods/         # MAD thresholds, resolution sweep, doublet policy
+│   └── hpc.py           # PBS/SLURM head-job submission helpers
+├── workflow/            # Snakemake orchestration
+│   ├── Snakefile        # localrules for planning + propose + manifest
+│   ├── resources.smk    # per-stage mem/runtime/cpus
+│   ├── rules/           # per-stage propose/execute rule pairs + manifest
+│   ├── envs/            # conda env (mirrors `grn`)
+│   └── profiles/
+│       ├── pbs/         # PBS Pro snakemake profile
+│       └── slurm/       # SLURM snakemake profile
+└── scripts/             # launch_runner.sh + head-job templates
+```
+
+
+## Running on HPC (PBS Pro or SLURM)
+
+On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode; you only need to configure your site once (below). Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
+
+### One-time setup
+
+Set these environment variables for your cluster before the first run:
+
+```bash
+# PBS Pro example:
+export PMA_PBS_QUEUE=<your_queue_name>
+export PMA_PBS_PROJECT=<your_project_code>
+export PMA_NOTIFY_EMAIL=<your_email_address>
+
+# SLURM example:
+export PMA_SLURM_PARTITION=<your_partition_name>
+export PMA_SLURM_ACCOUNT=<your_account_name>
+
+# Optional — scale per-rule memory and walltime (default is 1):
+export PMA_RESOURCES_SCALE=2
+```
+
+`PMA_NOTIFY_EMAIL` is optional but recommended: you receive mail when a submitted batch finishes or pauses at a review checkpoint. For larger datasets, increase `PMA_RESOURCES_SCALE` (e.g. `2` for ~30k cells, `4` for ~100k). Per-stage CPU, memory, and walltime defaults live in `workflow/resources.smk`; OOM-killed jobs are retried once at double memory.
+
+### How the HPC run proceeds
+
+| Step | Stages | Executes on | You |
+|------|--------|-------------|-----|
+| Planning | P1 → P2 | Login node | — |
+| S0 ingest | S0 | Login node (default); Cluster if local fails for large dataset | — |
+| Checkpoint **#1** | plan_review | Login node | Review plan |
+| QC | S1a → S1 → S2 → S3 | Cluster | — |
+| Checkpoint **#2** | post_qc_review | — | Review QC |
+| Dimred + clustering | S4 → S5 → S6 → S7 (sweep) | Cluster | — |
+| Checkpoint **#3** | s7_clustering | — | Review resolution |
+| Finish | S7 (labels) → S8 → manifest | Cluster | — |
+
+**Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2 on the login node. Logic errors (pairing conflicts, bad paths) stay on the login node.
+
+Each heavy `_execute` stage runs as its own scheduler job. Gates between your reviews are auto-approved; email notification fires when a batch pauses or completes (if `PMA_NOTIFY_EMAIL` is set).
 
 
 ## Run directory layout
@@ -248,71 +308,8 @@ processing-muagent resolution-compare --config $CFG --rna 1.0,1.2 --atac 0.6,0.8
 processing-muagent run --config $CFG --no-context   # explicit opt-out of biological context
 ```
 
-## Running on HPC (PBS Pro or SLURM)
-
-On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode; you only need to configure your site once (below). Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
-
-### One-time setup
-
-Set these environment variables for your cluster before the first run:
-
-```bash
-# PBS Pro example:
-export PMA_PBS_QUEUE=<your_queue_name>
-export PMA_PBS_PROJECT=<your_project_code>
-export PMA_NOTIFY_EMAIL=<your_email_address>
-
-# SLURM example:
-export PMA_SLURM_PARTITION=<your_partition_name>
-export PMA_SLURM_ACCOUNT=<your_account_name>
-
-# Optional — scale per-rule memory and walltime (default is 1):
-export PMA_RESOURCES_SCALE=2
-```
-
-`PMA_NOTIFY_EMAIL` is optional but recommended: you receive mail when a submitted batch finishes or pauses at a review checkpoint. For larger datasets, increase `PMA_RESOURCES_SCALE` (e.g. `2` for ~30k cells, `4` for ~100k). Per-stage CPU, memory, and walltime defaults live in `workflow/resources.smk`; OOM-killed jobs are retried once at double memory.
-
-### How the HPC run proceeds
-
-| Step | Stages | Executes on | You |
-|------|--------|-------------|-----|
-| Planning | P1 → P2 | Login node | — |
-| S0 ingest | S0 | Login node (default); Cluster if local fails for large dataset | — |
-| Checkpoint **#1** | plan_review | Login node | Review plan |
-| QC | S1a → S1 → S2 → S3 | Cluster | — |
-| Checkpoint **#2** | post_qc_review | — | Review QC |
-| Dimred + clustering | S4 → S5 → S6 → S7 (sweep) | Cluster | — |
-| Checkpoint **#3** | s7_clustering | — | Review resolution |
-| Finish | S7 (labels) → S8 → manifest | Cluster | — |
-
-**Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2 on the login node. Logic errors (pairing conflicts, bad paths) stay on the login node.
-
-Each heavy `_execute` stage runs as its own scheduler job. Gates between your reviews are auto-approved; email notification fires when a batch pauses or completes (if `PMA_NOTIFY_EMAIL` is set).
-
-## Repository layout
-
-```
-processing-MuAgent/
-├── agent/               # chat-runtime prompts (system_prompt, interaction_flow)
-├── config/              # example run configurations
-├── executor/            # Python implementation (stages, methods, CLI, helpers)
-│   ├── stages/          # per-stage scripts S0..S8 + post_qc_review
-│   ├── methods/         # MAD thresholds, resolution sweep, doublet policy
-│   └── hpc.py           # PBS/SLURM head-job submission helpers
-├── workflow/            # Snakemake orchestration
-│   ├── Snakefile        # localrules for planning + propose + manifest
-│   ├── resources.smk    # per-stage mem/runtime/cpus
-│   ├── rules/           # per-stage propose/execute rule pairs + manifest
-│   ├── envs/            # conda env (mirrors `grn`)
-│   └── profiles/
-│       ├── pbs/         # PBS Pro snakemake profile
-│       └── slurm/       # SLURM snakemake profile
-└── scripts/             # launch_runner.sh + head-job templates
-```
 
 ## Environment
-
-Implementation developed against the `cell_annotation` micromamba env with pip-installed `muon`, `scrublet`, `leidenalg`, `snakemake`, `mudata`. The `workflow/envs/*.yaml` files are the canonical production conda definitions.
 
 **Ambient-correction R dependency (optional).** S1a calls DecontX (`celda`) or SoupX (`SoupX`) via `Rscript`. If R / the requested package is not installed, S1a degrades to pass-through and records `s1a_ambient.method = "skipped_no_r"` in `parameters.yaml`. To enable:
 

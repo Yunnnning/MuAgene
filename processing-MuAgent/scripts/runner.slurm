@@ -20,8 +20,8 @@ cd "${PMA_REPO_ROOT}"
 
 SNAKE_ARGS=(
     --profile "workflow/profiles/slurm"
-    --configfile "${PMA_CONFIG}"
     "${PMA_TARGET:-all}"
+    --configfile "${PMA_CONFIG}"
 )
 
 EXIT_CODE=0
