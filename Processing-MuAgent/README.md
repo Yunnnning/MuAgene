@@ -353,15 +353,11 @@ On HPC after plan review, use `submit` (see **Submit workflow** above) instead o
 
 ## Environment
 
-Recreate the canonical conda env (includes Python stack **and** S1a R backends):
+Recreate the canonical conda env:
 
 ```bash
-micromamba env create -n grn -f workflow/envs/processing.yaml
-micromamba activate grn
+micromamba env create -n preprocess -f workflow/envs/processing.yaml
+micromamba activate preprocess
 pip install -e .
 python scripts/apply_nfs_patch.py   # once per env; SLURM NFS hang fix
 ```
-
-S1a calls DecontX (`celda`) or SoupX (`r-soupx`) via `Rscript`. Whether correction runs is set in the preprocessing plan (`s1a_ambient.method`: `auto`, `none`, `decontx`, `soupx`) from workflow branch, sample type (nuclei → `none` by default), and whether S0 produced a raw matrix — not from optional R installs. Override at plan review or with `Processing-MuAgent revise s1a_ambient s1a_ambient.method=none`.
-
-SnapATAC2 function names (`pp.import_fragments`, `metrics.tsse`, `pp.add_tile_matrix`, `pp.select_features`, `tl.spectral`, `tl.leiden`, `tl.umap`) were selected for SnapATAC2 ≥ 2.6; verify against the installed version at execute time.
