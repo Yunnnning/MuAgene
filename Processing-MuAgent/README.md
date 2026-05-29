@@ -57,7 +57,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 
 ### Preprocessing
 
-- **S1a Ambient RNA correction** — DecontX (filtered counts only) or SoupX (raw + filtered) auto-dispatched from S0 inputs when `method=auto`. Disabled (`method=none`) for nuclei samples by default; omitted on `atac_only` branches. R + celda + SoupX are required env dependencies (`workflow/envs/processing.yaml`), not optional runtime extras.
+- **S1a Ambient RNA correction** — Default `method=auto` on RNA branches (SoupX if raw+filtered exist, else DecontX). Omitted on `atac_only`. Whether to run is confirmed by user at **plan review (#1)** depending on the study goal, inputs, and sample context (see [10x ambient RNA guide](https://www.10xgenomics.com/analysis-guides/introduction-to-ambient-rna-correction)).
 - **S1 RNA QC** — MAD-derived thresholds on `total_counts` / `n_genes` / `pct_counts_mt` plus a `pct_counts_ribo` ceiling, computed on decontaminated counts from S1a. Writes pre/post QC violin figures to `deliverables/checkpoint/qc_review/`.
 - **S2 ATAC QC** — TSS enrichment, per-cell nucleosome signal (Signac-style `mono / nucleosome_free`), and fragment-count MAD via SnapATAC2. Writes fragment-size distribution figures to `deliverables/checkpoint/qc_review/`.
 - **S3 Doublets** — Per-modality doublet detection, then branch-specific reconciliation:
@@ -359,5 +359,5 @@ Recreate the canonical conda env:
 micromamba env create -n preprocess -f workflow/envs/processing.yaml
 micromamba activate preprocess
 pip install -e .
-python scripts/apply_nfs_patch.py   # once per env; SLURM NFS hang fix
+python scripts/apply_nfs_patch.py   # only for SLURM/NFS setups
 ```

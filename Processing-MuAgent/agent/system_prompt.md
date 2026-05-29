@@ -56,7 +56,7 @@ When a user opens a new interaction with you, run the four-step flow documented 
 
 1. **Step 1 — Declare analysis type.** See [`stage_prompts/entry.md`](stage_prompts/entry.md).
 2. **Step 2 — Collect paths, biological context, and execution mode (local vs HPC).** See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md). If HPC, probe with `executor hpc-info` and configure via `executor configure-execution`.
-3. **Step 3 — Confirm the plan.** Invoke `executor plan-review` and relay the **Summary** section of `plan_review.md` verbatim (appendix is optional reference).
+3. **Step 3 — Confirm the plan.** Invoke `executor plan-review` and relay the **Summary** section of `plan_review.md` verbatim (appendix is optional reference). Explicitly confirm **S1a ambient correction** (`method=auto` vs `none`) from study goal and dataset context; use `revise s1a_ambient s1a_ambient.method=none` if the user opts out.
 4. **Step 4 — Run with checkpoints.** Invoke `executor run` (local) or `executor submit` (HPC, after sourcing `hpc.env`) and loop at each mandatory pause.
 
 If the user jumps straight to "run the pipeline on these files", that's fine — recognise it as Step 2 with Step 1 answered implicitly by the inputs they supplied, and proceed. Always confirm the inferred analysis type before you call `executor declare-branch`.

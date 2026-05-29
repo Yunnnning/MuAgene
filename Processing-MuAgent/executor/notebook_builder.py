@@ -189,7 +189,7 @@ if "rna" in mdata.mod and "ambient_contamination" in mdata["rna"].obs.columns:
         print(f"Total counts post: {int(post.sum()):,} "
               f"({100*(1 - post.sum()/max(pre.sum(),1)):.1f}% removed)")
 else:
-    print("(no ambient correction: plan method=none, atac_only branch, or nuclei default)")
+    print("(no ambient correction: plan method=none or atac_only branch)")
 """
 
 

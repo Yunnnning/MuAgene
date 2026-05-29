@@ -15,8 +15,13 @@ run_dir: /Users/yunning/Desktop/MuAgene/example/output/run_example
 # SoupX to estimate the soup profile. When BOTH `rna_path` (filtered) and
 # `rna_raw_path` (raw) are supplied, the plan sets s1a_ambient.method=auto →
 # SoupX. When only a filtered matrix is supplied, auto → DecontX.
-# Nuclei samples default to method=none at plan time; override at plan review
-# or via: Processing-MuAgent revise s1a_ambient s1a_ambient.method=auto
+#
+# Study goal guides ambient correction strength at plan time (confirm at plan review):
+#   rare_populations     → auto recommended (high confidence in plan)
+#   clustering_inference → auto default (confirm; set none if contamination is low)
+#
+# Optional explicit override (skips plan heuristics):
+# s1a_ambient_method: none   # auto | none | decontx | soupx
 rna_path: /Users/yunning/Desktop/MuAgene/example/data/pbmc_3k_filtered_feature_bc_matrix.h5
 # rna_raw_path: /path/to/raw_feature_bc_matrix.h5
 atac_fragments_path: /Users/yunning/Desktop/MuAgene/example/data/pbmc_3k_atac_fragments.tsv.gz
@@ -24,7 +29,7 @@ atac_fragments_path: /Users/yunning/Desktop/MuAgene/example/data/pbmc_3k_atac_fr
 # Genome assembly (REQUIRED; no default)
 genome_assembly: GRCh38
 
-# Study goal — guides the S3 doublet-removal policy recommendation.
+# Study goal — guides S1a ambient correction recommendation and S3 doublet policy.
 # One of: clustering_inference | rare_populations | <absent>
 study_goal: clustering_inference
 

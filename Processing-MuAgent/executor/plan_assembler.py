@@ -38,20 +38,34 @@ def _stages_for_branch(branch: str) -> set[str]:
         ) from exc
 
 
+_AMBIENT_METHODS = frozenset({"auto", "none", "decontx", "soupx"})
+
+
 def _default_ambient_method(
     *,
     sample_type: str,
     ingest: dict[str, Any] | None,
+    study_goal: str | None,
+    user_method: str | None,
 ) -> tuple[str, str, str, str]:
-    """Return (method, source, rationale, confidence) for s1a_ambient.method."""
-    if sample_type == "nuclei":
+    """Return (method, source, rationale, confidence) for s1a_ambient.method.
+
+    Correction is dataset- and goal-driven (10x ambient-RNA guidance), not
+    cells-vs-nuclei. Default is ``auto`` on RNA branches; confirm at plan review.
+    """
+    if user_method is not None:
+        m = str(user_method).strip().lower()
+        if m not in _AMBIENT_METHODS:
+            raise ValueError(
+                f"s1a_ambient_method must be one of {sorted(_AMBIENT_METHODS)} — got {user_method!r}."
+            )
         return (
-            "none",
-            "inferred",
-            "Single-nucleus prep: cytoplasmic ambient RNA is minimal; "
-            "correction disabled unless overridden at plan review.",
+            m,
+            "user",
+            f"Explicit run.yaml override (s1a_ambient_method={m}).",
             "high",
         )
+
     has_raw = bool((ingest or {}).get("has_raw_matrix"))
     rna_status = (ingest or {}).get("rna_filtered_status")
     auto_hint = (
@@ -59,12 +73,32 @@ def _default_ambient_method(
         if has_raw or rna_status == "raw"
         else "DecontX on filtered counts when no raw matrix"
     )
+    goal = (study_goal or "clustering_inference").strip().lower()
+    nuclei_note = (
+        " Sample type is nuclei: ambient RNA can still be elevated with debris "
+        "(10x guidance); disable only if you have inspected the data and "
+        "contamination is low."
+        if sample_type == "nuclei"
+        else ""
+    )
+    if goal == "rare_populations":
+        return (
+            "auto",
+            "recommended",
+            f"study_goal=rare_populations: ambient correction recommended to "
+            f"protect rare types from soup contamination. S0 dispatch: {auto_hint}."
+            f"{nuclei_note} Set method=none at plan review if web summary / markers "
+            "show low background.",
+            "high",
+        )
     return (
         "auto",
         "default",
-        f"auto-dispatch from S0 inputs ({auto_hint}). Use 'none' to disable; "
-        "'decontx' or 'soupx' to force.",
-        "high",
+        f"Default auto-dispatch from S0 inputs ({auto_hint}). Confirm at plan "
+        f"review: set method=none if major cell types are clear and ambient "
+        f"contamination is low (10x: not every dataset needs correction)."
+        f"{nuclei_note}",
+        "medium",
     )
 
 
@@ -75,6 +109,7 @@ def assemble_plan(
     sample_type: str = "unknown",
     study_goal: str | None = None,
     ingest: dict[str, Any] | None = None,
+    s1a_ambient_method: str | None = None,
 ) -> dict[str, Any]:
     run_dir = Path(run_dir)
 
@@ -82,7 +117,10 @@ def assemble_plan(
         return {"value": value, "source": source, "rationale": rationale, "confidence": confidence}
 
     ambient_method, amb_src, amb_rat, amb_conf = _default_ambient_method(
-        sample_type=sample_type, ingest=ingest,
+        sample_type=sample_type,
+        ingest=ingest,
+        study_goal=study_goal,
+        user_method=s1a_ambient_method,
     )
 
     # Sample-type-aware ceilings for RNA QC

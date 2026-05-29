@@ -60,9 +60,11 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         "certainty": "certain" if pairing.get("confidence") == "high" else "needs confirmation",
     })
 
-    # 4. Ambient RNA correction (S1a)
+    # 4. Ambient RNA correction (S1a) — confirm at plan review (10x: dataset + goal, not cells vs nuclei)
     ambient_method = param("s1a_ambient", "method")
     ambient_cap = param("s1a_ambient", "max_contamination")
+    study_goal = param("s3_doublets", "study_goal")
+    sample_type = field("sample_type").get("value", "unknown")
     rna_filtered_status = ingest.get("rna_filtered_status")
     has_raw = ingest.get("has_raw_matrix", False)
     if ambient_method.get("value") is not None:
@@ -75,16 +77,23 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             )
         elif method_label == "none":
             chosen_hint = " → pass-through (no correction)"
+        goal_val = study_goal.get("value", "?")
         items.append({
             "label": "Ambient RNA correction (S1a)",
             "value": f"method={method_label}{chosen_hint}, cap={ambient_cap.get('value', '?')}",
             "reason": (
+                f"study_goal={goal_val}, sample_type={sample_type}, "
                 f"rna_filtered_status={rna_filtered_status}, has_raw={has_raw}. "
-                "DecontX corrects from filtered counts; SoupX uses raw drops to "
-                "estimate the soup profile and is preferred when raw is available. "
-                "Nuclei samples default to method=none; whole-cell droplet data uses auto."
+                "Default is auto unless run.yaml sets s1a_ambient_method. "
+                "Confirm before S1a: use auto when rare populations or elevated ambient "
+                "is likely; set method=none if you inspected Cell Ranger / markers and "
+                "contamination is low (10x: not every dataset needs correction; nuclei "
+                "can still have high ambient with debris). "
+                f"Plan rationale: {ambient_method.get('rationale', '')}"
             ),
-            "certainty": "certain" if method_label not in ("auto",) else "needs confirmation",
+            "certainty": (
+                "certain" if ambient_method.get("source") == "user" else "needs confirmation"
+            ),
         })
 
     # 5. Key QC strategy

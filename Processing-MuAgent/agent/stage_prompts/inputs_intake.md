@@ -50,7 +50,8 @@ run_dir: <user's run_dir>
 rna_path: <optional>
 atac_fragments_path: <optional>
 genome_assembly: <required>
-study_goal: <clustering_inference | rare_populations>     # default clustering_inference
+study_goal: <clustering_inference | rare_populations>     # default clustering_inference; guides S1a + S3
+# s1a_ambient_method: <auto | none | decontx | soupx>   # optional; else plan uses study_goal + ingest
 seed: 42
 ```
 

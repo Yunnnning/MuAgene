@@ -20,11 +20,13 @@ rule p2_plan_propose:
         branch = provenance.get_value(str(INTERNAL / "parameters.yaml"),
                                       "plan.workflow_branch", "paired")
         study_goal = config.get("study_goal")
+        s1a_ambient_method = config.get("s1a_ambient_method")
         plan = pa.assemble_plan(params.run_dir,
                                 workflow_branch=branch,
                                 sample_type=sample_type,
                                 study_goal=study_goal,
-                                ingest=ingest)
+                                ingest=ingest,
+                                s1a_ambient_method=s1a_ambient_method)
         _, plan_hash = pa.write_plan(params.run_dir, plan)
         # Merged plan_review.md (summary + appendix) is written at plan_review_propose.
         provenance.set_param(
@@ -62,9 +64,11 @@ rule p2_plan_execute:
         branch = provenance.get_value(str(INTERNAL / "parameters.yaml"),
                                       "plan.workflow_branch", "paired")
         study_goal = config.get("study_goal")
+        s1a_ambient_method = config.get("s1a_ambient_method")
         plan = pa.assemble_plan(str(RUN_DIR), workflow_branch=branch,
                                 sample_type=sample_type, study_goal=study_goal,
-                                ingest=ingest)
+                                ingest=ingest,
+                                s1a_ambient_method=s1a_ambient_method)
         out_path, plan_hash = pa.write_plan(str(RUN_DIR), plan)
         provenance.set_param(
             str(INTERNAL / "parameters.yaml"), "plan.plan_hash", plan_hash,

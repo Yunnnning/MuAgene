@@ -265,7 +265,7 @@ def _ambient_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
     if method in (None, "none", "skipped_empty"):
         note = {
             None: "_(stage did not run; legacy run or RNA absent)_",
-            "none": "_disabled in preprocessing plan (method=none, e.g. nuclei sample); "
+            "none": "_disabled in preprocessing plan (method=none); "
                     "no ambient correction applied._",
             "skipped_empty": "_RNA AnnData empty (atac_only branch); pass-through._",
         }[method]

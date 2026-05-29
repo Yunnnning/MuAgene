@@ -26,7 +26,7 @@ rule s1a_ambient_propose:
             "stage": "s1a_ambient",
             "action": (
                 "Ambient RNA correction per plan (auto: SoupX if raw matrix present, "
-                "else DecontX; none = pass-through for nuclei or user override)"
+                "else DecontX; none = pass-through; confirm method at plan review)"
             ),
         }))
         approval.mark_awaiting(params.run_dir, "s1a_ambient")
