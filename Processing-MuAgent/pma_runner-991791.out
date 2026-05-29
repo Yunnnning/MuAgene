@@ -1,0 +1,19 @@
+Using profile workflow/profiles/slurm for setting default command line arguments.
+host: compute006.jex
+Building DAG of jobs...
+You are running snakemake in a SLURM job context. This is not recommended, as it may lead to unexpected behavior. If possible, please run Snakemake directly on the login node.
+SLURM run ID: 0686632f-3006-4686-b354-3bc68abea418
+Using shell: /usr/bin/bash
+Provided remote nodes: 8
+Job stats:
+job                       count
+----------------------  -------
+s2_atac_qc_execute            1
+s3_doublets_propose           1
+s3_doublets_execute           1
+post_qc_review_propose        1
+total                         4
+
+Select jobs to execute...
+Execute 1 jobs...
+Job 14 has been submitted with SLURM jobid 991792 (log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s2_atac_qc_execute/991792.log).

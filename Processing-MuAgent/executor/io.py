@@ -477,6 +477,7 @@ def filter_fragments_to_chrom_bounds(
     in_path: Path | str,
     chrom_sizes: dict[str, int],
     out_path: Path | str | None = None,
+    add_chr_prefix: bool = False,
 ) -> Path:
     """Remove fragments whose end position exceeds the chromosome length.
 
@@ -487,6 +488,13 @@ def filter_fragments_to_chrom_bounds(
 
     The output file is written to `out_path` (defaults to a `_cbf.tsv.gz` sibling
     of `in_path`). Idempotent: returns immediately if both output and .tbi exist.
+
+    add_chr_prefix: When True, prepend "chr" to each fragment chromosome name
+        before checking against chrom_sizes. Use when the fragments file uses
+        Ensembl/NCBI naming (e.g. "1", "X") but chrom_sizes uses UCSC naming
+        ("chr1", "chrX"). The output file will carry UCSC-style chromosome names.
+        Contigs whose chr-prefixed form is absent from chrom_sizes (e.g. unplaced
+        scaffolds) pass through unchanged with their original name.
     """
     in_path = Path(in_path)
     if out_path is None:
@@ -506,10 +514,19 @@ def filter_fragments_to_chrom_bounds(
 
     # Build inline awk sizes dict — no temp file needed.
     sizes_str = "; ".join(f'sizes["{c}"]={s}' for c, s in chrom_sizes.items())
-    awk_prog = (
-        f'BEGIN{{ OFS="\\t"; {sizes_str} }}'
-        ' { if (!($1 in sizes) || (int($3) <= sizes[$1])) print }'
-    )
+    if add_chr_prefix:
+        # Fragments use Ensembl naming (no chr prefix); chrom_sizes uses UCSC naming.
+        # Try "chr"+chrom against sizes: if found, bounds-filter and rename; if not
+        # found (scaffold), pass through with the original (un-prefixed) name.
+        awk_prog = (
+            f'BEGIN{{ OFS="\\t"; {sizes_str} }}'
+            ' { chrom="chr"$1; if (chrom in sizes) { if (int($3)<=sizes[chrom]) { $1=chrom; print } } else { print } }'
+        )
+    else:
+        awk_prog = (
+            f'BEGIN{{ OFS="\\t"; {sizes_str} }}'
+            ' { if (!($1 in sizes) || (int($3) <= sizes[$1])) print }'
+        )
 
     zcat = subprocess.Popen(["zcat", str(in_path)], stdout=subprocess.PIPE)
     awk = subprocess.Popen(["awk", awk_prog], stdin=zcat.stdout, stdout=subprocess.PIPE)

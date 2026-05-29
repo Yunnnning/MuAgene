@@ -93,14 +93,35 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             f"Available assemblies: {available}."
         )
 
+    # Detect Ensembl vs UCSC chromosome naming mismatch between the fragments
+    # file and the SnapATAC2 genome object. Cell Ranger ARC (GRCm39 / GRCh38)
+    # writes Ensembl-style names ("1", "X") while SnapATAC2 built-in genomes use
+    # UCSC-style ("chr1", "chrX"). When the mismatch is detected, add_chr_prefix
+    # is passed to filter_fragments_to_chrom_bounds so the output tsv.gz carries
+    # UCSC-style names that SnapATAC2 can match.
+    genome_uses_chr = any(k.startswith("chr") for k in genome_ref.chrom_sizes)
+    frags_chroms = _io._tabix_list_chromosomes(Path(fragments_path))
+    add_chr_prefix = False
+    if genome_uses_chr and frags_chroms:
+        canonical = [c for c in frags_chroms
+                     if c in {str(i) for i in range(1, 100)} | {"X", "Y", "M", "MT"}]
+        if canonical and not any(c.startswith("chr") for c in canonical):
+            add_chr_prefix = True
+            log_event(run_dir, {"stage": "s2_atac_qc", "event": "chr_prefix_normalization",
+                                 "fragments_chrom_style": "ensembl_no_prefix",
+                                 "genome_chrom_style": "ucsc_chr_prefix",
+                                 "action": "adding_chr_prefix_in_cbf_filter"})
+
     # Clip fragments to declared chromosome bounds before SnapATAC2 import.
     # Some aligners produce fragments that extend past a chromosome end
     # (aligner treats end as open interval); SnapATAC2's Rust backend panics on
     # these. Filter is idempotent: skipped if the _cbf file already exists.
-    cbf_path = art / "atac_fragments_cbf.tsv.gz"
+    cbf_suffix = "atac_fragments_cbf_chrnorm.tsv.gz" if add_chr_prefix else "atac_fragments_cbf.tsv.gz"
+    cbf_path = art / cbf_suffix
     try:
         fragments_path = str(_io.filter_fragments_to_chrom_bounds(
             fragments_path, dict(genome_ref.chrom_sizes), cbf_path,
+            add_chr_prefix=add_chr_prefix,
         ))
         _prov.set_param(params_path, "s2_atac_qc.chrom_bound_filter",
                         str(cbf_path),
