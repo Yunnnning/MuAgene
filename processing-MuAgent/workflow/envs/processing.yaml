@@ -7,6 +7,7 @@
 #   micromamba env create -n grn -f workflow/envs/processing.yaml
 #   micromamba activate grn
 #   pip install -e .              # processing-muagent itself
+#   python scripts/apply_nfs_patch.py   # idempotent SLURM plugin fix (see below)
 #
 # Notes:
 # - Snakemake + scheduler executor plugins live here so the runner wrapper
@@ -47,5 +48,8 @@ dependencies:
       - scrublet>=0.2
       - snakemake>=7.32
       - snakemake-executor-plugin-cluster-generic
-      - snakemake-executor-plugin-slurm
+      # Pin SLURM plugin to 2.7.0, then run scripts/apply_nfs_patch.py (in Recreate
+      # steps above). The patch replaces child-job --executor slurm-jobstep with
+      # --executor local so store_storage_outputs() is skipped on shared NFS.
+      - snakemake-executor-plugin-slurm==2.7.0
       - papermill

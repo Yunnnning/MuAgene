@@ -351,6 +351,14 @@ On HPC after plan review, use `submit` (see **Submit workflow** above) instead o
 
 ## Environment
 
+Recreate the project conda env from `workflow/envs/processing.yaml` (default name `grn`; override with `PMA_CONDA_ENV`):
+
+```bash
+micromamba env create -n grn -f workflow/envs/processing.yaml
+micromamba activate grn
+pip install -e .
+```
+
 **Ambient-correction R dependency (optional).** S1a calls DecontX (`celda`) or SoupX (`SoupX`) via `Rscript`. If R / the requested package is not installed, S1a degrades to pass-through and records `s1a_ambient.method = "skipped_no_r"` in `parameters.yaml`. To enable:
 
 ```bash
