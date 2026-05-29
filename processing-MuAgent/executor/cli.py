@@ -366,20 +366,45 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
                run_dir, executor=executor)
 
 
+def _infer_submit_target(run_dir: Path) -> str:
+    """Pick the Snakemake target for the current pipeline phase.
+
+    Snakemake 8+ raises MissingInputException when a required checkpoint
+    sentinel (e.g. post_qc_review.approved) doesn't exist and no rule can
+    produce it.  By targeting only up to the next unapproved gate we keep the
+    DAG build valid while still running the maximum useful work in each
+    submission.
+
+    Phase ladder (first unapproved gate wins):
+      - post_qc_review not yet approved → target post_qc_review_propose
+        (runs S1a → S3 → generates QC summary, then stops)
+      - s7_clustering not yet approved  → target s7_clustering_propose
+        (runs S4 → S6 → generates resolution sweep, then stops)
+      - both approved                   → target all (S7 execute → S8 → manifest)
+    """
+    chk = run_dir / "internal" / "checkpoints"
+    if not (chk / "post_qc_review.approved").exists():
+        return "post_qc_review_propose"
+    if not (chk / "s7_clustering.approved").exists():
+        return "s7_clustering_propose"
+    return "all"
+
+
 @main.command()
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--executor", type=EXECUTOR_CHOICE, required=True,
               help="Scheduler to submit the head-job to (pbs or slurm). "
                    "Use --executor local with `run` instead for foreground runs.")
-@click.option("--target", default="all",
-              help="Snakemake target the head-job will run (default: all).")
+@click.option("--target", default=None,
+              help="Override the Snakemake target. Omit to auto-infer the current "
+                   "phase (post_qc_review_propose → s7_clustering_propose → all).")
 @click.option("--auto-approve", is_flag=True,
               help="Pre-seed all checkpoint sentinels; head-job runs unattended end-to-end.")
 @click.option("--auto-approve-except", "auto_except", multiple=True,
               help="With --auto-approve, keep these gates honoured. Repeatable.")
 @click.option("--output", "output_log", type=click.Path(), default=None,
               help="Scheduler output-log path for the head-job (optional).")
-def submit(config_path: str, executor: str, target: str,
+def submit(config_path: str, executor: str, target: str | None,
            auto_approve: bool, auto_except: tuple[str, ...],
            output_log: str | None) -> None:
     """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
@@ -392,12 +417,17 @@ def submit(config_path: str, executor: str, target: str,
     Typical headless workflow on HPC:
 
         # Run planning interactively (Phase A), then submit the heavy middle:
-        processing-muagent submit --config $CFG --executor pbs \\
-                --auto-approve --auto-approve-except s7_clustering
+        processing-muagent submit --config $CFG --executor slurm \\
+                --auto-approve --auto-approve-except post_qc_review \\
+                --auto-approve-except s7_clustering
 
-        # After the email arrives, review resolution_review.html, approve, resume:
+        # After QC review, approve and resume (target auto-inferred):
+        processing-muagent approve post_qc_review --config $CFG
+        processing-muagent submit --config $CFG --executor slurm
+
+        # After resolution review, approve and finish:
         processing-muagent approve s7_clustering --config $CFG
-        processing-muagent submit --config $CFG --executor pbs
+        processing-muagent submit --config $CFG --executor slurm
     """
     if executor == "local":
         raise click.UsageError("--executor local is for `run`, not `submit`. "
@@ -413,17 +443,21 @@ def submit(config_path: str, executor: str, target: str,
             approval.approve(run_dir, s, note="auto-approved (submit)")
         if kept:
             click.echo(f"Auto-approved all stages except: {sorted(kept)}.")
+        # Tell the head-job's propose rules not to revoke pre-seeded approvals.
+        os.environ["PMA_AUTO_APPROVE"] = "1"
+
+    resolved_target = target if target is not None else _infer_submit_target(run_dir)
 
     out_path = Path(output_log) if output_log else None
-    job_id = hpc.submit_head_job(executor, paths.run_yaml, target=target,
+    job_id = hpc.submit_head_job(executor, paths.run_yaml, target=resolved_target,
                                   output_log=out_path)
     log_event(run_dir, {"stage": "submit", "event": "head_job_submitted",
-                        "executor": executor, "target": target,
+                        "executor": executor, "target": resolved_target,
                         "job_id": job_id, "auto_approve": auto_approve,
                         "kept_gates": sorted(set(auto_except))})
     click.echo(f"Submitted {executor} head-job: {job_id}")
     click.echo(f"  config:  {paths.run_yaml}")
-    click.echo(f"  target:  {target}")
+    click.echo(f"  target:  {resolved_target}")
     if os.environ.get("PMA_NOTIFY_EMAIL"):
         click.echo(f"  notify:  {os.environ['PMA_NOTIFY_EMAIL']}")
     click.echo("\nPoll progress with: processing-muagent status --watch "
