@@ -27,20 +27,14 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 | **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md`; revise **S1/S2 thresholds** and re-run if needed; on **paired** multiome, also confirm the **S3 cross-modal doublet removal policy** (union vs intersection) documented in the summary |
 | **3** | **Clustering resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
 
-**Snakemake approval gates:** 14 stages require an internal `*.approved` sentinel (including the three checkpoints above). With `--auto-approve`, all 14 are pre-seeded; typical HPC usage keeps only checkpoints **2** and **3** open:
-
-```bash
-processing-muagent submit --config $CFG --executor pbs \
-    --auto-approve --auto-approve-except post_qc_review \
-    --auto-approve-except s7_clustering
-```
+**Snakemake approval gates:** 14 stages require an internal `*.approved` sentinel (including the three checkpoints above). On HPC, all gates except checkpoints **#2** and **#3** are normally auto-approved so the batch job runs unattended between your reviews.
 
 ## Workflow stages
 
 ### Planning (pre-QC)
 
 - **P1 Context extraction** — Biological Context Report (organism, tissue, assay, DOIs) plus DOI-based prior-analysis extraction.
-- **S0 Ingest** — Accepts Cell Ranger **filtered** and **raw** matrices. Format autodetect for RNA and ATAC inputs (see tables below), fragments validation (+ `.tbi`), and a **diagnostics-driven pairing decision**: detection (direct or suffix-normalized barcode overlap) is advisory; user `declare-branch` plus optional `barcode_translation_path` / `cell_metadata_path` are consulted via a ladder before committing the workflow branch. When the ladder cannot establish cell-level pairing, S0 auto-downgrades `paired → separate` with the reason in `validation_report.json`. No barcode pre-intersection at S0 — S3 is the sole enforcement point for the paired branch. **Runs after P1 and before P2** — the preprocessing plan is built from S0's validation report.
+- **S0 Ingest** — Accepts Cell Ranger **filtered** and **raw** matrices, auto-detecting RNA and ATAC formats (see tables below) and validating fragments files. Performs a **diagnostic barcode check for paired multiome**: S0 checks for direct barcode matches, then tries matching after removing suffixes. If those don't match, it looks for a `barcode_translation_path` or `cell_metadata_path` provided by the user. No barcode intersection is performed here. If pairing can’t be confirmed, S0 downgrades the workflow from `paired` to `separate` and logs the reason in `validation_report.json`. S0 runs after P1 and before P2; its validation report feeds into the preprocessing plan. By default, S0 runs on the login node, but will auto-retry as a **cluster job** for large datasets using the same HPC setup as later stages.
 
   **Supported RNA input formats (`rna_path`):**
 
@@ -58,8 +52,8 @@ processing-muagent submit --config $CFG --executor pbs \
   | `fragments_tsv` | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present |
   | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
-- **P2 Preprocessing plan generation** — Holistic `preprocessing_plan.json` for every downstream stage; assembled from P1 context + S0 ingest outputs.
-- **plan_review** — Concise 8-item plan summary at `deliverables/pre_run/summary/plan_review.md`. Hard gate before any S1–S8 execute rule runs.
+- **P2 Preprocessing plan generation** — Creates `preprocessing_plan.json` with execution and parameter settings for all downstream stages, using outputs from P1 context and S0 ingest.
+- **plan_review** — Generates a summary at `deliverables/pre_run/summary/plan_review.md` for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs.
 
 ### Preprocessing
 
@@ -256,9 +250,11 @@ processing-muagent run --config $CFG --no-context   # explicit opt-out of biolog
 
 ## Running on HPC (PBS Pro or SLURM)
 
-For large datasets the workflow runs in four phases. Planning (`p1_context`, `s0_ingest`, `p2_plan`, `plan_review`) stays on the login node so pairing-detection conflicts surface interactively before cluster jobs are dispatched.
+On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode; you only need to configure your site once (below). Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
 
 ### One-time setup
+
+Set these environment variables for your cluster before the first run:
 
 ```bash
 # PBS Pro example:
@@ -274,78 +270,24 @@ export PMA_SLURM_ACCOUNT=<your_account_name>
 export PMA_RESOURCES_SCALE=2
 ```
 
-Activate the project conda env (`grn` by default; set `PMA_CONDA_ENV` to override).
+`PMA_NOTIFY_EMAIL` is optional but recommended: you receive mail when a submitted batch finishes or pauses at a review checkpoint. For larger datasets, increase `PMA_RESOURCES_SCALE` (e.g. `2` for ~30k cells, `4` for ~100k). Per-stage CPU, memory, and walltime defaults live in `workflow/resources.smk`; OOM-killed jobs are retried once at double memory.
 
-### Phase A — planning (login node, inside `tmux`)
+### How the HPC run proceeds
 
-```bash
-tmux new -s pma
-processing-muagent init --config config/run.yaml
-CFG=<run_dir>/deliverables/pre_run/config/run.yaml
-processing-muagent run --config $CFG --target s0_ingest_execute
-# Walk through plan_review approval / branch declaration as in the local flow.
-```
+| Step | Stages | Executes on | You |
+|------|--------|-------------|-----|
+| Planning | P1 → P2 | Login node | — |
+| S0 ingest | S0 | Login node (default); Cluster if local fails for large dataset | — |
+| Checkpoint **#1** | plan_review | Login node | Review plan |
+| QC | S1a → S1 → S2 → S3 | Cluster | — |
+| Checkpoint **#2** | post_qc_review | — | Review QC |
+| Dimred + clustering | S4 → S5 → S6 → S7 (sweep) | Cluster | — |
+| Checkpoint **#3** | s7_clustering | — | Review resolution |
+| Finish | S7 (labels) → S8 → manifest | Cluster | — |
 
-### Phase B — submit the unattended head-job (S1a → S3 + post_qc_review)
+**Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2 on the login node. Logic errors (pairing conflicts, bad paths) stay on the login node.
 
-```bash
-processing-muagent submit --config $CFG --executor pbs \
-    --auto-approve --auto-approve-except post_qc_review \
-    --auto-approve-except s7_clustering
-```
-
-The head-job stops at `post_qc_review` propose and emails `$PMA_NOTIFY_EMAIL` (if set). Poll progress:
-
-```bash
-processing-muagent status --watch --config $CFG
-```
-
-### Phase C — QC review + resume (S4 → S7 propose)
-
-Review `deliverables/checkpoint/qc_review/qc_summary.md` and figures in `deliverables/checkpoint/qc_review/`. On paired runs, confirm the S3 doublet policy section. Revise thresholds if needed, then approve:
-
-```bash
-# Optionally revise, e.g.:
-processing-muagent revise s2_atac_qc s2_atac_qc.tss_enrichment_min=1.5 --config $CFG
-
-processing-muagent approve post_qc_review --config $CFG
-processing-muagent submit --config $CFG --executor pbs \
-    --auto-approve --auto-approve-except s7_clustering
-```
-
-The head-job stops again at `s7_clustering` propose.
-
-### Phase D — resolution review + finish (S7 execute → S8 → manifest)
-
-Open in any browser:
-
-```
-<run_dir>/deliverables/checkpoint/resolution_review/resolution_review.html
-```
-
-The accompanying `resolution_review.ipynb` is for power users who want to re-cluster at custom resolutions. Approve or revise:
-
-```bash
-processing-muagent approve s7_clustering --config $CFG
-# OR:
-processing-muagent revise s7_clustering s7_clustering.rna.resolution=1.2 --config $CFG
-
-processing-muagent submit --config $CFG --executor pbs
-```
-
-### Foreground cluster mode (alternative to `submit`)
-
-Keep Snakemake attached in your tmux session (lowest-latency approvals, no head-job queue time):
-
-```bash
-processing-muagent run --config $CFG --executor pbs
-```
-
-Snakemake dispatches per-rule cluster jobs and exits cleanly at unapproved gates. Re-invoke after each approval.
-
-### Per-stage resources
-
-Edit `workflow/resources.smk` to override mem/walltime/cpus. The table is the single source of truth for both PBS and SLURM profiles. OOM-killed jobs are retried once at 2× memory (`restart-times: 1`).
+Each heavy `_execute` stage runs as its own scheduler job. Gates between your reviews are auto-approved; email notification fires when a batch pauses or completes (if `PMA_NOTIFY_EMAIL` is set).
 
 ## Repository layout
 

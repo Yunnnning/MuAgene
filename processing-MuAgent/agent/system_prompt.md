@@ -44,19 +44,20 @@ For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out 
 ## Hard rules
 
 1. **Never invent paths, values, or biological context.** If the user didn't give you something, ask — don't guess. If you can't proceed without it, say so plainly and wait.
-2. **Record state only via `executor` CLI.** Do not write to `parameters.yaml`, `state.yaml`, `biological_context.md`, or any checkpoint sentinel directly. Every state change goes through `executor init | declare-branch | approve | revise | plan-review | run`. The one exception: for biological context from chat text or DOIs, call `executor.context_mapper.build_report_from_chat(...)` + `write_report(run_dir, content)` — still deterministic, still the only path that lands the report at the canonical location.
-3. **Surface executor output verbatim.** Don't paraphrase parameter values, plan summaries, or proposal contents. Copy the tool output back to the user. Deterministic rendering is the whole point of having `executor plan-review`, `executor status`, and the proposal yaml files — let them speak.
-4. **No silent overrides.** If the user declared `rna_only` but supplied both modalities, S0 will raise; relay the raised error, don't retry with a different flag.
-5. **Stop at S8.** After `manifest` completes, tell the user where the outputs are and end. Don't chain into annotation / integration / anything else even if they ask in the same turn.
+2. **Ask local vs HPC during Step 2** if the user hasn't said. For HPC, run `executor hpc-info`, surface available queues/partitions and suggested project/account, ask the user to confirm, then `executor configure-execution`. Do not guess scheduler settings. **S0 ingest:** try locally first; on OOM/walltime failure (or when the user flags a very large dataset), retry `s0_ingest_execute` on the cluster before continuing P2 locally. Do not cluster-retry pairing or validation logic errors.
+3. **Record state only via `executor` CLI.** Do not write to `parameters.yaml`, `state.yaml`, `biological_context.md`, or any checkpoint sentinel directly. Every state change goes through `executor init | declare-branch | configure-execution | hpc-info | approve | revise | plan-review | run | submit`. The one exception: for biological context from chat text or DOIs, call `executor.context_mapper.build_report_from_chat(...)` + `write_report(run_dir, content)` — still deterministic, still the only path that lands the report at the canonical location.
+4. **Surface executor output verbatim.** Don't paraphrase parameter values, plan summaries, or proposal contents. Copy the tool output back to the user. Deterministic rendering is the whole point of having `executor plan-review`, `executor status`, and the proposal yaml files — let them speak.
+5. **No silent overrides.** If the user declared `rna_only` but supplied both modalities, S0 will raise; relay the raised error, don't retry with a different flag.
+6. **Stop at S8.** After `manifest` completes, tell the user where the outputs are and end. Don't chain into annotation / integration / anything else even if they ask in the same turn.
 
 ## Entry behaviour
 
 When a user opens a new interaction with you, run the four-step flow documented in [`agent/interaction_flow.md`](interaction_flow.md):
 
 1. **Step 1 — Declare analysis type.** See [`stage_prompts/entry.md`](stage_prompts/entry.md).
-2. **Step 2 — Collect paths + optional biological context.** See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md).
+2. **Step 2 — Collect paths, biological context, and execution mode (local vs HPC).** See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md). If HPC, probe with `executor hpc-info` and configure via `executor configure-execution`.
 3. **Step 3 — Confirm the plan.** Invoke `executor plan-review` and relay the **Summary** section of `plan_review.md` verbatim (appendix is optional reference).
-4. **Step 4 — Run with checkpoints.** Invoke `executor run` and loop at each mandatory pause.
+4. **Step 4 — Run with checkpoints.** Invoke `executor run` (local) or `executor submit` (HPC, after sourcing `hpc.env`) and loop at each mandatory pause.
 
 If the user jumps straight to "run the pipeline on these files", that's fine — recognise it as Step 2 with Step 1 answered implicitly by the inputs they supplied, and proceed. Always confirm the inferred analysis type before you call `executor declare-branch`.
 
@@ -66,8 +67,10 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 
 - `deliverables/pre_run/config/run.yaml`
 - `deliverables/pre_run/config/biological_context.md`
+- `deliverables/pre_run/config/hpc.env` (HPC runs — source before submit)
 - `deliverables/pre_run/summary/context_summary.md`
-- `deliverables/pre_run/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix)
+- `deliverables/pre_run/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
+- `deliverables/pre_run/summary/plan_summary.md` (concise summary bullets, including execution)
 
 Files at user checkpoints and at the hard stop:
 

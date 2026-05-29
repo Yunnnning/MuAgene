@@ -110,6 +110,82 @@ def declare_branch(branch: str, config_path: str) -> None:
     click.echo(f"Declared workflow_branch={branch!r}; S0 will confirm at ingest time.")
 
 
+@main.command(name="hpc-info")
+def hpc_info() -> None:
+    """Probe the login node for scheduler queues/partitions and current PMA_* env."""
+    import json
+    info = hpc.discover_site()
+    click.echo(json.dumps(info, indent=2, sort_keys=True))
+
+
+@main.command(name="configure-execution")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+@click.option("--mode", "mode", required=True, type=EXECUTOR_CHOICE,
+              help="Execution backend: local, pbs, or slurm.")
+@click.option("--pbs-queue", default=None, help="PBS queue name (PMA_PBS_QUEUE).")
+@click.option("--pbs-project", default=None, help="PBS project code (PMA_PBS_PROJECT).")
+@click.option("--slurm-partition", default=None, help="SLURM partition (PMA_SLURM_PARTITION).")
+@click.option("--slurm-account", default=None, help="SLURM account (PMA_SLURM_ACCOUNT).")
+@click.option("--notify-email", default=None, help="Email for batch completion (PMA_NOTIFY_EMAIL).")
+@click.option("--resources-scale", default=None, type=float,
+              help="Memory/walltime scale factor (PMA_RESOURCES_SCALE).")
+@click.option("--conda-env", default=None, help="Conda env name for cluster jobs (PMA_CONDA_ENV).")
+def configure_execution(
+    config_path: str,
+    mode: str,
+    pbs_queue: str | None,
+    pbs_project: str | None,
+    slurm_partition: str | None,
+    slurm_account: str | None,
+    notify_email: str | None,
+    resources_scale: float | None,
+    conda_env: str | None,
+) -> None:
+    """Record execution mode and write deliverables/pre_run/config/hpc.env."""
+    run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
+    paths.ensure()
+
+    provenance.set_param(
+        str(paths.parameters_yaml),
+        "execution.mode", mode,
+        source="user", confidence="high",
+        rationale=f"Execution backend set via configure-execution --mode {mode}.",
+    )
+
+    settings: dict[str, str | None] = {
+        "pbs_queue": pbs_queue or os.environ.get("PMA_PBS_QUEUE"),
+        "pbs_project": pbs_project or os.environ.get("PMA_PBS_PROJECT"),
+        "slurm_partition": slurm_partition or os.environ.get("PMA_SLURM_PARTITION"),
+        "slurm_account": slurm_account or os.environ.get("PMA_SLURM_ACCOUNT"),
+        "notify_email": notify_email or os.environ.get("PMA_NOTIFY_EMAIL"),
+        "resources_scale": (
+            str(int(resources_scale)) if resources_scale is not None
+            else os.environ.get("PMA_RESOURCES_SCALE")
+        ),
+        "conda_env": conda_env or os.environ.get("PMA_CONDA_ENV"),
+    }
+
+    if mode == "local":
+        click.echo("Execution mode: local (no hpc.env written).")
+        return
+
+    if mode == "pbs" and not settings["pbs_queue"]:
+        raise click.ClickException(
+            "PBS mode requires --pbs-queue or PMA_PBS_QUEUE in the environment.")
+    if mode == "slurm" and not settings["slurm_partition"]:
+        raise click.ClickException(
+            "SLURM mode requires --slurm-partition or PMA_SLURM_PARTITION in the environment.")
+
+    out = hpc.write_hpc_env(paths.hpc_env_sh, mode=mode, settings=settings)
+    log_event(run_dir, {"stage": "configure_execution", "event": "configured",
+                        "mode": mode, "hpc_env": str(out)})
+    click.echo(f"Execution mode: {mode}")
+    click.echo(f"Wrote {out}")
+    click.echo("Source this file in your shell before submit/run on the cluster:")
+    click.echo(f"  source {out}")
+
+
 @main.command()
 @click.argument("stage")
 @click.argument("param_kv")

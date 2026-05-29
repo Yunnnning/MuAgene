@@ -29,7 +29,10 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
 
     items: list[dict[str, Any]] = []
 
-    # 1. Dataset type / modality
+    # 1. Execution mode + HPC settings (from configure-execution / hpc.env)
+    items.extend(_execution_review_items(run_dir, plan))
+
+    # 2. Dataset type / modality
     modality = field("modality_type")
     items.append({
         "label": "Detected dataset type",
@@ -204,6 +207,78 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     return items
 
 
+def _execution_review_items(run_dir: Path, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    from .run_paths import RunPaths
+
+    exec_block = plan.get("execution") or {}
+    mode = exec_block.get("mode", "local")
+    settings = exec_block.get("settings") or {}
+    params = provenance.load(RunPaths(run_dir).parameters_yaml)
+    mode_entry = params.get("execution.mode") or {}
+    user_configured = isinstance(mode_entry, dict) and mode_entry.get("source") == "user"
+
+    items: list[dict[str, Any]] = [{
+        "label": "Execution mode",
+        "value": mode,
+        "reason": exec_block.get(
+            "s0_policy",
+            "How heavy stages (S0 onward) are dispatched: local machine vs PBS/SLURM.",
+        ),
+        "certainty": "certain" if user_configured else "needs confirmation",
+    }]
+
+    if mode == "local":
+        hpc_path = exec_block.get("hpc_env_path")
+        items.append({
+            "label": "HPC configuration",
+            "value": hpc_path or "none (local default)",
+            "reason": (
+                "Cluster vars not required for a fully local run. "
+                "If S0 fails locally, the agent may configure HPC and retry ingest on the cluster."
+            ),
+            "certainty": "certain" if not hpc_path else "needs confirmation",
+        })
+        return items
+
+    # PBS or SLURM — surface scheduler settings for review
+    parts: list[str] = []
+    missing: list[str] = []
+    if mode == "pbs":
+        for label, key in (("queue", "pbs_queue"), ("project", "pbs_project")):
+            val = settings.get(key)
+            if val:
+                parts.append(f"{label}={val}")
+            elif key == "pbs_queue":
+                missing.append("pbs_queue")
+        for label, key in (("notify", "notify_email"), ("scale", "resources_scale"), ("conda", "conda_env")):
+            val = settings.get(key)
+            if val:
+                parts.append(f"{label}={val}")
+    else:
+        for label, key in (("partition", "slurm_partition"), ("account", "slurm_account")):
+            val = settings.get(key)
+            if val:
+                parts.append(f"{label}={val}")
+            elif key == "slurm_partition":
+                missing.append("slurm_partition")
+        for label, key in (("notify", "notify_email"), ("scale", "resources_scale"), ("conda", "conda_env")):
+            val = settings.get(key)
+            if val:
+                parts.append(f"{label}={val}")
+
+    env_ref = exec_block.get("hpc_env_path") or "deliverables/pre_run/config/hpc.env"
+    items.append({
+        "label": "HPC configuration",
+        "value": ", ".join(parts) if parts else "not set",
+        "reason": (
+            f"Source `{env_ref}` before cluster submit/resume. "
+            + (f"Missing required: {', '.join(missing)}." if missing else "Scheduler settings recorded for this run.")
+        ),
+        "certainty": "needs confirmation" if missing else ("certain" if user_configured else "needs confirmation"),
+    })
+    return items
+
+
 def _render_concise_section(items: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for it in items:
@@ -257,10 +332,13 @@ def render_merged_markdown(run_dir: Path | str) -> str:
 
 
 def write_summary(run_dir: Path | str) -> Path:
-    """Write merged plan-review markdown to deliverables/pre_run/summary/plan_review.md."""
+    """Write merged plan-review markdown and concise plan_summary.md."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
-    out = RunPaths(run_dir).plan_review_md
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_merged_markdown(run_dir))
-    return out
+    paths = RunPaths(run_dir)
+    items = build_summary(run_dir)
+    merged = render_merged_markdown(run_dir)
+    paths.plan_review_md.parent.mkdir(parents=True, exist_ok=True)
+    paths.plan_review_md.write_text(merged)
+    paths.plan_summary_md.write_text(render_summary_text(items))
+    return paths.plan_review_md

@@ -137,6 +137,11 @@ class RunPaths:
     def biological_context_md(self) -> Path:
         return self.deliv_config / "biological_context.md"
 
+    @property
+    def hpc_env_sh(self) -> Path:
+        """pre_run/config/hpc.env — source-able PMA_* exports for cluster runs."""
+        return self.deliv_config / "hpc.env"
+
     # pre_run/summary/*
     @property
     def context_summary_md(self) -> Path:
@@ -146,6 +151,11 @@ class RunPaths:
     def plan_review_md(self) -> Path:
         """pre_run/summary/plan_review.md — merged summary + full parameter appendix."""
         return self.deliv_pre_summary / "plan_review.md"
+
+    @property
+    def plan_summary_md(self) -> Path:
+        """pre_run/summary/plan_summary.md — concise review bullets (includes execution)."""
+        return self.deliv_pre_summary / "plan_summary.md"
 
     # checkpoint/qc_review/*
     @property

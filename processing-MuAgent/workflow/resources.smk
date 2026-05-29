@@ -39,7 +39,7 @@ def _scaled_runtime_min(minutes: int) -> int:
 
 # Base resource table. Edit here; both PBS and SLURM profiles pick this up.
 _BASE_RESOURCES: dict[str, dict[str, int]] = {
-    # Local rules — declared for completeness; not used by execute rules.
+    # Local rules — declared for completeness; s0_ingest_execute uses these on cluster.
     "p1_context":     {"cpus": 1, "mem_mb": 1_000},
     "p2_plan":        {"cpus": 1, "mem_mb": 1_000},
     "plan_review":    {"cpus": 1, "mem_mb": 1_000},

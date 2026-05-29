@@ -117,7 +117,7 @@ def submit_head_job(
 
 
 def env_diagnostics() -> dict[str, str | None]:
-    """Snapshot of HPC-relevant env vars — used by `processing-muagent status --hpc`
+    """Snapshot of HPC-relevant env vars — used by `processing-muagent hpc-info`
     to show the user what's wired up.
     """
     keys = (
@@ -127,3 +127,250 @@ def env_diagnostics() -> dict[str, str | None]:
         "PMA_CONDA_ENV", "PMA_LOG_DIR",
     )
     return {k: os.environ.get(k) for k in keys}
+
+
+def _run_cmd(cmd: list[str], *, timeout: int = 15) -> str:
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return ""
+
+
+def _parse_pbs_queues(text: str) -> list[str]:
+    queues: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("-") or line.startswith("Queue"):
+            continue
+        parts = line.split()
+        if parts and parts[0] not in {"Queue", "---"}:
+            queues.append(parts[0])
+    return sorted(set(queues))
+
+
+def _parse_slurm_partitions(text: str) -> list[str]:
+    parts: list[str] = []
+    for line in text.splitlines():
+        name = line.strip().split()[0] if line.strip() else ""
+        if name:
+            parts.append(name.rstrip("*"))
+    return sorted(set(parts))
+
+
+def _parse_slurm_accounts(text: str) -> list[str]:
+    accounts: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("Account"):
+            continue
+        acct = line.split("|")[0].split()[0] if "|" in line else line.split()[0]
+        if acct and acct not in {"Account", "----------"}:
+            accounts.append(acct)
+    return sorted(set(accounts))
+
+
+def discover_site() -> dict[str, object]:
+    """Probe the login node for scheduler type, queues/partitions, and accounts.
+
+    Best-effort — individual probes may return empty lists when the scheduler
+    CLI is unavailable or the site restricts listing.
+    """
+    detected = detect_scheduler()
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    info: dict[str, object] = {
+        "detected_scheduler": detected,
+        "user": user,
+        "current_env": env_diagnostics(),
+        "pbs": {"queues": [], "projects": [], "suggested_queue": None, "suggested_project": None},
+        "slurm": {"partitions": [], "accounts": [], "suggested_partition": None, "suggested_account": None},
+    }
+
+    if detected == "pbs":
+        pbs = info["pbs"]
+        assert isinstance(pbs, dict)
+        queue_text = _run_cmd(["qstat", "-Q"])
+        queues = _parse_pbs_queues(queue_text)
+        pbs["queues"] = queues
+
+        # Site-specific hints already in the environment.
+        for key in ("PMA_PBS_QUEUE", "PBS_DEFAULT_QUEUE", "PBS_QUEUE"):
+            val = os.environ.get(key)
+            if val:
+                pbs["suggested_queue"] = val
+                break
+        if not pbs["suggested_queue"] and queues:
+            pbs["suggested_queue"] = queues[0]
+
+        for key in ("PMA_PBS_PROJECT", "PBS_PROJECT", "PBS_ACCOUNT"):
+            val = os.environ.get(key)
+            if val:
+                pbs["projects"] = [val]
+                pbs["suggested_project"] = val
+                break
+
+        # Recent jobs may expose a project code (-P).
+        if user:
+            recent = _run_cmd(["qstat", "-u", user, "-f"])
+            for line in recent.splitlines():
+                if "Project" in line:
+                    proj = line.split("=", 1)[-1].strip()
+                    if proj and proj not in pbs["projects"]:
+                        pbs["projects"].append(proj)
+            if not pbs["suggested_project"] and pbs["projects"]:
+                pbs["suggested_project"] = pbs["projects"][0]
+
+    elif detected == "slurm":
+        slurm = info["slurm"]
+        assert isinstance(slurm, dict)
+        part_text = _run_cmd(["sinfo", "-h", "-o", "%P"])
+        partitions = _parse_slurm_partitions(part_text)
+        slurm["partitions"] = partitions
+
+        for key in ("PMA_SLURM_PARTITION", "SLURM_PARTITION"):
+            val = os.environ.get(key)
+            if val:
+                slurm["suggested_partition"] = val
+                break
+        if not slurm["suggested_partition"] and partitions:
+            slurm["suggested_partition"] = partitions[0]
+
+        if user:
+            acct_text = _run_cmd([
+                "sacctmgr", "show", "assoc", f"where=user={user}",
+                "format=Account,Partition", "-P", "-n",
+            ])
+            accounts = _parse_slurm_accounts(acct_text)
+            slurm["accounts"] = accounts
+
+        for key in ("PMA_SLURM_ACCOUNT", "SLURM_ACCOUNT"):
+            val = os.environ.get(key)
+            if val:
+                slurm["suggested_account"] = val
+                break
+        if not slurm["suggested_account"] and slurm["accounts"]:
+            slurm["suggested_account"] = slurm["accounts"][0]
+
+    return info
+
+
+def write_hpc_env(path: Path | str, *, mode: Executor, settings: dict[str, str | None]) -> Path:
+    """Write a source-able shell snippet with PMA_* exports for this run."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# processing-MuAgent HPC settings — source before submit/run on cluster:",
+        "#   source deliverables/pre_run/config/hpc.env",
+        f"# execution mode: {mode}",
+        "",
+    ]
+    key_map = {
+        "pbs_queue": "PMA_PBS_QUEUE",
+        "pbs_project": "PMA_PBS_PROJECT",
+        "slurm_partition": "PMA_SLURM_PARTITION",
+        "slurm_account": "PMA_SLURM_ACCOUNT",
+        "notify_email": "PMA_NOTIFY_EMAIL",
+        "resources_scale": "PMA_RESOURCES_SCALE",
+        "conda_env": "PMA_CONDA_ENV",
+    }
+    for field, env_key in key_map.items():
+        val = settings.get(field)
+        if val:
+            lines.append(f"export {env_key}={val!r}")
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def load_execution_mode(parameters_path: Path | str) -> Executor:
+    """Read execution.mode from parameters.yaml; default local."""
+    import yaml
+    p = Path(parameters_path)
+    if not p.exists():
+        return "local"
+    with p.open() as f:
+        params = yaml.safe_load(f) or {}
+    entry = params.get("execution.mode") or {}
+    mode = entry.get("value") if isinstance(entry, dict) else entry
+    if mode in ("local", "pbs", "slurm"):
+        return mode
+    return "local"
+
+
+def parse_hpc_env(path: Path | str) -> dict[str, str]:
+    """Parse export PMA_*=... lines from an hpc.env shell snippet."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("export PMA_"):
+            continue
+        body = line[len("export ") :]
+        if "=" not in body:
+            continue
+        key, _, raw = body.partition("=")
+        val = raw.strip().strip("'\"")
+        out[key] = val
+    return out
+
+
+def load_execution_settings(run_dir: Path | str) -> dict[str, object]:
+    """Execution mode + HPC settings recorded for this run (for plan review)."""
+    from .run_paths import RunPaths
+
+    paths = RunPaths(Path(run_dir))
+    mode = load_execution_mode(paths.parameters_yaml)
+    hpc_env_path = paths.hpc_env_sh
+    from_file = parse_hpc_env(hpc_env_path) if hpc_env_path.exists() else {}
+    live = env_diagnostics()
+
+    def _get(env_key: str, field: str) -> str | None:
+        return from_file.get(env_key) or live.get(env_key)
+
+    settings: dict[str, str | None] = {
+        "pbs_queue": _get("PMA_PBS_QUEUE", "pbs_queue"),
+        "pbs_project": _get("PMA_PBS_PROJECT", "pbs_project"),
+        "slurm_partition": _get("PMA_SLURM_PARTITION", "slurm_partition"),
+        "slurm_account": _get("PMA_SLURM_ACCOUNT", "slurm_account"),
+        "notify_email": _get("PMA_NOTIFY_EMAIL", "notify_email"),
+        "resources_scale": _get("PMA_RESOURCES_SCALE", "resources_scale"),
+        "conda_env": _get("PMA_CONDA_ENV", "conda_env"),
+    }
+
+    return {
+        "mode": mode,
+        "hpc_env_path": "deliverables/pre_run/config/hpc.env"
+        if hpc_env_path.exists() else None,
+        "settings": settings,
+        "s0_policy": (
+            "S0 ingest runs on the login node first; on OOM/walltime (or very large "
+            "inputs) it is retried as a cluster job before P2 continues."
+        ),
+    }
+
+
+_RESOURCE_FAILURE_MARKERS = (
+    "out of memory",
+    "oom",
+    "memoryerror",
+    "cannot allocate memory",
+    "killed",
+    "signal 9",
+    "sigkill",
+    "walltime",
+    "time limit",
+    "exceeded memory",
+    "std::bad_alloc",
+    "memory allocation failed",
+)
+
+
+def looks_like_resource_failure(text: str) -> bool:
+    """True when stderr/log output suggests OOM or walltime rather than a logic error."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in _RESOURCE_FAILURE_MARKERS)
