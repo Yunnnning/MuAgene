@@ -1,0 +1,89 @@
+"""Top-level Snakefile for Processing-MuAgent.
+
+Rule DAG: p1_context -> p2_plan -> plan_review -> s0_ingest -> s1a_ambient ->
+          s1_rna_qc -> s2_atac_qc -> s3_doublets -> post_qc_review ->
+          s4_rna_norm -> s5_atac_lsi -> s6_dimred -> s7_clustering -> s8_umap -> manifest
+
+Each stage has a _propose / _execute pair (see rules/*.smk); the execute rule
+depends on checkpoints/<stage>.approved written by `Processing-MuAgent approve <stage>`.
+
+Direct-write layout:
+    INTERNAL     = <run_dir>/internal               — artifacts, proposals, checkpoints,
+                                                      parameters.yaml, state.yaml, log.jsonl
+    DELIVERABLES = <run_dir>/deliverables           — user-facing, split by phase:
+      PRE_RUN    = deliverables/pre_run             — config + approval-support materials
+                                                      (run.yaml, biological_context.md,
+                                                       context_summary.md, plan_review.md,
+                                                       plan_review.md)
+      CHECKPOINT = deliverables/checkpoint          — intermediate review artifacts
+                                                      (qc_review/, resolution_review/)
+      POST_RUN   = deliverables/post_run            — final results only (flat:
+                                                      UMAP figures, processed data,
+                                                      review notebook, manifest)
+Rule outputs land directly at their canonical location; no mirroring.
+"""
+from pathlib import Path
+
+RUN_DIR = Path(config["run_dir"])
+INTERNAL = RUN_DIR / "internal"
+DELIVERABLES = RUN_DIR / "deliverables"
+PRE_RUN = DELIVERABLES / "pre_run"
+CHECKPOINT = DELIVERABLES / "checkpoint"
+POST_RUN = DELIVERABLES / "post_run"
+
+STAGES = [
+    "p1_context", "p2_plan", "plan_review",
+    "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
+    "post_qc_review",
+    "s4_rna_norm", "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap",
+]
+
+
+include: "resources.smk"
+
+include: "rules/p1_context.smk"
+include: "rules/p2_plan.smk"
+include: "rules/plan_review.smk"
+include: "rules/s0_ingest.smk"
+include: "rules/s1a_ambient.smk"
+include: "rules/s1_rna_qc.smk"
+include: "rules/s2_atac_qc.smk"
+include: "rules/s3_doublets.smk"
+include: "rules/post_qc_review.smk"
+include: "rules/s4_rna_norm.smk"
+include: "rules/s5_atac_lsi.smk"
+include: "rules/s6_dimred.smk"
+include: "rules/s7_clustering.smk"
+include: "rules/s8_umap.smk"
+include: "rules/manifest.smk"
+
+
+# Rules that always run on the orchestrator host (login node or runner head-job),
+# never submitted as cluster jobs. These are:
+#   - all *_propose rules (cheap I/O + sentinel-writing)
+#   - planning execute rules (P1/P2/plan_review; light, interactive)
+#   - manifest (assembly of summaries + handoff JSON)
+#
+# s0_ingest_execute is NOT local — large inputs may need a cluster job. The agent
+# tries S0 on the login node first; on OOM/timeout it retries with --executor pbs|slurm.
+localrules:
+    p1_context_propose, p1_context_execute,
+    p2_plan_propose, p2_plan_execute,
+    plan_review_propose,
+    s0_ingest_propose,
+    s1a_ambient_propose,
+    s1_rna_qc_propose,
+    s2_atac_qc_propose,
+    s3_doublets_propose,
+    post_qc_review_propose,
+    s4_rna_norm_propose,
+    s5_atac_lsi_propose,
+    s6_dimred_propose,
+    s7_clustering_propose,
+    s8_umap_propose,
+    manifest,
+
+
+rule all:
+    input:
+        str(POST_RUN / "run_manifest.json"),

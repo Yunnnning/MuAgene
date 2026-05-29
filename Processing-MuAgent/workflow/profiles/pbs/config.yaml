@@ -1,0 +1,44 @@
+# PBS Pro Snakemake profile.
+#
+# Submits each non-local rule as a separate PBS job via qsub. Per-rule resources
+# (cpus, mem, walltime) come from workflow/resources.smk and are referenced as
+# {threads}, {resources.mem_mb}, {resources.runtime} below.
+#
+# Optional env vars read by pbs-submit.sh:
+#   PMA_PBS_QUEUE     → -q <queue>
+#   PMA_PBS_PROJECT   → -P <project>
+#   PMA_LOG_DIR       → log directory (default: ./logs)
+#
+# The submit/status script paths are relative to snakemake's working directory.
+# Always invoke snakemake from the Processing-MuAgent/ repo root (the
+# launch_runner.sh wrapper handles this).
+
+executor: cluster-generic
+
+cluster-generic-submit-cmd: >-
+  workflow/profiles/pbs/pbs-submit.sh
+  {rule} {jobid} {threads} {resources.mem_mb} {resources.runtime}
+
+cluster-generic-status-cmd: workflow/profiles/pbs/pbs-status.sh
+
+# Cap concurrent submitted jobs (per-site polite default).
+jobs: 8
+max-jobs-per-second: 1
+max-status-checks-per-second: 1
+latency-wait: 60
+
+# Retry an OOM-killed / walltime-exceeded job once with attempt-scaled memory
+# (see mem_mb_for() in resources.smk).
+restart-times: 1
+rerun-incomplete: true
+keep-going: false
+
+# Fallback resources for rules that don't declare their own. runtime is in
+# MINUTES (snakemake-standard); the PBS submit script converts to HH:MM:SS.
+default-resources:
+  - mem_mb=4000
+  - runtime=60
+
+# Conda envs are not managed by snakemake in v1 — the runner wrapper activates
+# the project env (`grn`) and child jobs inherit it.
+use-conda: false
