@@ -22,6 +22,22 @@ restart-times: 1
 rerun-incomplete: true
 keep-going: false
 
+# Tell Snakemake 9 that the entire workflow runs on a shared NFS filesystem.
+# Without this, snakemake-executor-plugin-slurm-jobstep (remote_exec=True)
+# runs store_storage_outputs() and cleanup_storage_objects() after every child
+# job, which consistently blocks ~30 min on shared network filesystems even
+# when no files need to be transferred.  Setting all shared-fs-usage options
+# tells Snakemake that inputs, outputs, provenance, sources and local storage
+# copies are all on the shared FS — no remote staging needed.
+shared-fs-usage:
+  - input-output
+  - persistence
+  - software-deployment
+  - software-deployment-cache
+  - source-cache
+  - sources
+  - storage-local-copies
+
 # Fallback resources for rules without their own (per-rule values are declared
 # in resources.smk and inherited via the rule's resources: directive).
 # runtime is in MINUTES (snakemake-standard; the slurm plugin accepts minutes).

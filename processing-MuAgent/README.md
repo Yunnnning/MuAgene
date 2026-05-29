@@ -162,11 +162,15 @@ export PMA_RESOURCES_SCALE=2
 
 `PMA_NOTIFY_EMAIL` is optional but recommended: you receive mail when a submitted batch finishes or pauses at a review checkpoint. For larger datasets, increase `PMA_RESOURCES_SCALE` (e.g. `2` for ~30k cells, `4` for ~100k). Per-stage CPU, memory, and walltime defaults live in `workflow/resources.smk`; OOM-killed jobs are retried once at double memory.
 
+### Requirements
+
+- **SLURM:** Requires Snakemake version 9 or higher. PBS Pro does not have this requirement.
+
 ### How the HPC run proceeds
 
 | Step | Stages | Executes on | You |
 |------|--------|-------------|-----|
-| Planning | P1 → P2 | Login node | — |
+| Planning | P1 → P2 | Login node (default), or `srun` on a compute node if the login node memory is limited| — |
 | S0 ingest | S0 | Login node (default); Cluster if local fails for large dataset | — |
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S1 → S2 → S3 | Cluster | — |
@@ -175,9 +179,42 @@ export PMA_RESOURCES_SCALE=2
 | Checkpoint **#3** | s7_clustering | — | Review resolution |
 | Finish | S7 (labels) → S8 → manifest | Cluster | — |
 
-**Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2 on the login node. Logic errors (pairing conflicts, bad paths) stay on the login node.
+**Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2.
 
 Each heavy `_execute` stage runs as its own scheduler job. Gates between your reviews are auto-approved; email notification fires when a batch pauses or completes (if `PMA_NOTIFY_EMAIL` is set).
+
+### Submit workflow
+
+After checkpoint **#1** (`plan_review`), source `deliverables/pre_run/config/hpc.env`, then use `processing-muagent submit` (not `run`) to dispatch the Snakemake head-job. **`submit` auto-infers the Snakemake target** from checkpoint state — you do not need to pick `post_qc_review_propose`, `s7_clustering_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
+
+| Checkpoint state | Inferred target | Runs through |
+|------------------|-----------------|--------------|
+| `post_qc_review` not approved | `post_qc_review_propose` | S1a → S3 + QC summary, then pauses |
+| `s7_clustering` not approved | `s7_clustering_propose` | S4 → S6 + resolution sweep, then pauses |
+| Both approved | `all` | S7 labels → S8 → manifest |
+
+Override with `--target <name>` only when debugging.
+
+```bash
+CFG=<run_dir>/deliverables/pre_run/config/run.yaml
+source <run_dir>/deliverables/pre_run/config/hpc.env
+
+# First heavy batch after plan review (honours QC + resolution checkpoints):
+processing-muagent submit --config $CFG --executor slurm \
+  --auto-approve --auto-approve-except post_qc_review \
+  --auto-approve-except s7_clustering
+
+# After QC review:
+processing-muagent approve post_qc_review --config $CFG
+processing-muagent submit --config $CFG --executor slurm \
+  --auto-approve --auto-approve-except s7_clustering
+
+# After resolution review:
+processing-muagent approve s7_clustering --config $CFG
+processing-muagent submit --config $CFG --executor slurm
+```
+
+Poll with `processing-muagent status --watch --config $CFG`. `--auto-approve-except` syntax is unchanged; repeat the flag for each gate you want to keep interactive.
 
 
 ## Run directory layout
@@ -306,7 +343,10 @@ Other useful commands:
 processing-muagent revise s7_clustering s7_clustering.rna.resolution=1.2 --config $CFG
 processing-muagent resolution-compare --config $CFG --rna 1.0,1.2 --atac 0.6,0.8
 processing-muagent run --config $CFG --no-context   # explicit opt-out of biological context
+processing-muagent hpc-info                         # probe queues/partitions on login node
 ```
+
+On HPC after plan review, use `submit` (see **Submit workflow** above) instead of `run`. `submit` auto-infers the phase target; `--auto-approve-except post_qc_review --auto-approve-except s7_clustering` keeps the two QC/resolution checkpoints interactive.
 
 
 ## Environment

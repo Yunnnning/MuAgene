@@ -33,8 +33,17 @@ def _scaled_mem(mem_mb: int) -> int:
 
 
 def _scaled_runtime_min(minutes: int) -> int:
-    """Scale a walltime (minutes) by PMA_RESOURCES_SCALE."""
-    return int(minutes * _scale_factor() + 0.999)
+    """Scale a walltime (minutes) by PMA_RESOURCES_SCALE and add an NFS overhead buffer.
+
+    On shared network filesystems Snakemake 9's post-job storage scan can add
+    ~30 min of overhead per child job even when no files need to be transferred
+    (snakemake-executor-plugin-slurm-jobstep + store_storage_outputs on NFS).
+    A 60-min buffer absorbs this cost without setting PMA_RESOURCES_SCALE.
+    PMA_RESOURCES_SCALE still multiplies the *base* compute time; the buffer
+    is added afterwards so large-dataset scaling doesn't double the buffer.
+    """
+    _NFS_OVERHEAD_MIN = int(os.environ.get("PMA_RUNTIME_OVERHEAD_MIN", "60"))
+    return int(minutes * _scale_factor() + _NFS_OVERHEAD_MIN)
 
 
 # Base resource table. Edit here; both PBS and SLURM profiles pick this up.
