@@ -37,7 +37,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 > Three user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan before heavy compute.
-> 2. **QC review** — inspect QC figures and `checkpoint/qc_review/qc_summary.md`; revise thresholds if needed. On **paired**, this checkpoint also covers the S3 cross-modal doublet policy (union vs intersection).
+> 2. **QC review** — inspect QC figures and `checkpoint/qc_review/qc_summary.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the S3 union doublet policy.
 > 3. **Resolution review** — choose Leiden resolution from sweep metrics. On **separate**, this sets final cluster labels; on **paired**, diagnostic labels for UMAP only.
 >
 > Ready to send me the paths?

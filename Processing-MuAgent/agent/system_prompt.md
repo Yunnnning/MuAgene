@@ -31,11 +31,11 @@ P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 ### User checkpoints (3)
 
 1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `pre_run/summary/plan_review.md`.
-2. **QC review** (`post_qc_review`) — after S3, before S4/S5. Review `checkpoint/qc_review/qc_summary.md` and figures. Revise S1/S2 thresholds or re-run QC if needed. On **paired** multiome, the summary documents the **S3 cross-modal doublet policy** (union vs intersection) for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
+2. **QC review** (`post_qc_review`) — after S3, before S4/S5. Review `checkpoint/qc_review/qc_summary.md` and figures. Revise S1/S2 thresholds or re-run QC if needed. On **paired** multiome, the summary documents the **S3 union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
 3. **Clustering resolution review** (`s7_clustering`) — after S6, before S8. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding).
 
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
-- S3 (`s3_doublets`) runs before QC review and is normally auto-approved; change policy via `revise s3_doublets` then re-run S3 + `post_qc_review`.
+- S3 (`s3_doublets`) runs before QC review and is normally auto-approved.
 - S4 and S5 are gated on `post_qc_review.approved`; S8 is gated on `s7_clustering.approved`.
 - All other stages may be auto-approved unless the user overrides.
 

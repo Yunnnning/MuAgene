@@ -6,7 +6,7 @@ Generates QC figures and writes the QC review summary at
 
 This is the single user-facing QC checkpoint: inspect S1/S2 QC figures, S3
 doublet histograms, and the cell-count waterfall; adjust S1/S2 thresholds or
-(paired only) the S3 cross-modal doublet policy if needed; then approve to
+(paired only) the S3 union doublet policy if needed; then approve to
 continue. S3 executes before this stage — paired doublet policy is surfaced
 here, not at a separate S3 gate.
 """
@@ -129,8 +129,20 @@ def _plot_cell_count_waterfall(run_dir: Path, figs_dir: Path) -> list[Path]:
 
     _fig._apply_style()
     fig, ax = plt.subplots(figsize=(8.5, 5.0))
-    ax.bar(x - width / 2, rna_h, width, label="RNA", color="#3b82f6", alpha=0.85)
-    ax.bar(x + width / 2, atac_h, width, label="ATAC", color="#f97316", alpha=0.85)
+    bars_rna = ax.bar(x - width / 2, rna_h, width, label="RNA", color="#3b82f6", alpha=0.85)
+    bars_atac = ax.bar(x + width / 2, atac_h, width, label="ATAC", color="#f97316", alpha=0.85)
+    ax.bar_label(
+        bars_rna,
+        labels=[f"{v:,}" if v > 0 else "" for v in rna_h],
+        padding=3,
+        fontsize=_fig.FONT_SIZE - 2,
+    )
+    ax.bar_label(
+        bars_atac,
+        labels=[f"{v:,}" if v > 0 else "" for v in atac_h],
+        padding=3,
+        fontsize=_fig.FONT_SIZE - 2,
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(labels, ha="center")
     ax.set_ylabel("cells")

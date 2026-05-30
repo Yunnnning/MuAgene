@@ -177,13 +177,11 @@ def assemble_plan(
                 "atac_doublet_threshold": p(0.5, "recommended",
                                               "SnapATAC2 scrublet doublet-probability threshold.", "medium"),
                 "removal_policy_recommendation": p(
-                    "independent" if workflow_branch == "separate" else (
-                        "union" if (study_goal or "").lower() != "rare_populations" else "intersection"
-                    ),
+                    "independent" if workflow_branch == "separate" else "union",
                     "derived" if workflow_branch == "separate" else "recommended",
                     ("separate branch: each modality's doublets removed independently; "
                      "no cross-modal reconciliation." if workflow_branch == "separate" else
-                     "Based on study_goal; user must confirm at S3 checkpoint."),
+                     "Paired multiome: union of RNA and ATAC doublet calls (remove if either detector flags)."),
                     "high",
                 ),
                 "study_goal": p(study_goal or "clustering_inference", "user" if study_goal else "default",

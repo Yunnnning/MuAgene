@@ -123,24 +123,11 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     goal = param("s3_doublets", "study_goal")
 
     def _paired_doublet_policy_detail(recommended: str) -> list[str]:
-        alt = "intersection" if recommended == "union" else "union"
         return [
             "- paired-multiome policy: Each modality runs its own doublet detector. "
-            "You choose how to merge the two call lists before joint analysis:",
-            "  - `union` — remove a cell if *either* modality flags it "
-            "(stricter; more cells dropped).",
-            "  - `intersection` — remove a cell only if *both* modalities flag it "
-            "(more lenient; keeps cells where only one modality is suspicious).",
-            f"- recommended: `{recommended}` — "
-            + (
-                "better when the priority is clean clustering and cell-type inference; "
-                f"choose `{alt}` if retaining rare populations matters more than "
-                "aggressively filtering ambiguous cells."
-                if recommended == "union"
-                else "better when retaining rare populations matters more than "
-                "aggressively filtering ambiguous cells; "
-                f"choose `{alt}` if the priority is clean clustering and cell-type inference."
-            ),
+            "Cells flagged by **either** detector are removed (union). Detectors are "
+            "prone to false negatives, so union minimises doublet contamination.",
+            f"- applied policy: `{recommended}`",
         ]
 
     if branch == "paired":
@@ -149,8 +136,8 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "label": "Doublet removal policy",
             "value": policy_val,
             "detail": _paired_doublet_policy_detail(policy_val),
-            "reason": "",
-            "certainty": "needs confirmation",
+            "reason": "Paired multiome always uses union: remove if either detector flags.",
+            "certainty": "certain",
         })
     elif branch == "separate":
         items.append({

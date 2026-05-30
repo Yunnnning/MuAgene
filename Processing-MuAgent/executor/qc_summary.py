@@ -198,8 +198,12 @@ def _stage_counts(run_dir: Path) -> dict[str, Any]:
 # Section builders
 # ---------------------------------------------------------------------------
 
-def _flow_section(counts: dict[str, Any]) -> str:
-    """Cell-count flow across stages; makes transitions visible end-to-end."""
+def _flow_section(counts: dict[str, Any], *, include_final_stage: bool = True) -> str:
+    """Cell-count flow across stages; makes transitions visible end-to-end.
+
+    QC review checkpoint summaries stop at S3 (``include_final_stage=False``);
+    the post-run manifest summary includes S4–S8 when those stages have run.
+    """
     def fmt(v):
         return "n/a" if v is None else str(int(v))
 
@@ -209,14 +213,6 @@ def _flow_section(counts: dict[str, Any]) -> str:
     # Derived gaps
     snap_drop = (atac_raw - atac_after_import) if (atac_raw is not None and atac_after_import is not None) else None
 
-    rna_inter = (
-        (counts["rna_post_doublet"] - counts["rna_final"])
-        if (counts["rna_post_doublet"] is not None and counts["rna_final"] is not None) else None
-    )
-    atac_inter = (
-        (counts["atac_post_doublet"] - counts["atac_final"])
-        if (counts["atac_post_doublet"] is not None and counts["atac_final"] is not None) else None
-    )
     joint = counts.get("n_cells_joint")
 
     rows = [
@@ -227,26 +223,38 @@ def _flow_section(counts: dict[str, Any]) -> str:
         ["3. after S1a ambient correction",
          fmt(counts["rna_after_ambient"]), fmt(atac_raw),
          "RNA: DecontX/SoupX correction (cells preserved; per-cell counts adjusted)"],
-        ["4. after SnapATAC2 `import_fragments`",
+        ["4. after fragments import (min-fragment pre-filter)",
          fmt(counts["rna_after_ambient"] if counts["rna_after_ambient"] is not None else counts["rna_ingest"]),
          fmt(atac_after_import),
-         f"ATAC: SnapATAC2 `min_num_fragments` default drops {fmt(snap_drop)} cells"
-         if snap_drop else "ATAC: SnapATAC2 import"],
-        ["5. after S1 RNA QC  /  S2 ATAC QC",
+         (f"ATAC: barcodes with too few fragments dropped at import ({fmt(snap_drop)} cells)"
+          if snap_drop else "ATAC: fragments imported into cell matrix")],
+        ["5. after RNA / ATAC quality filtering",
          fmt(counts["rna_qc_post"]), fmt(counts["atac_qc_post"]),
-         "explicit QC filters (RNA: MAD on counts/genes/mt + ribo ceiling; ATAC: TSS + n_frag + nucleosome_signal)"],
-        ["6. after S3 doublet removal + paired intersection",
+         ("RNA: MAD outlier bounds on UMI/gene counts + MT/ribo fraction ceilings; "
+          "ATAC: fragment-count MAD + TSS enrichment + nucleosome-signal filters")],
+        ["6. after S3 doublet removal + paired barcode join",
          fmt(counts["rna_post_doublet"]), fmt(counts["atac_post_doublet"]),
-         (f"paired: union/intersection doublet policy then RNA∩ATAC ⇒ n_joint={fmt(joint)}"
+         (f"paired: union doublet policy then joint RNA+ATAC barcodes ⇒ n_joint={fmt(joint)}"
           if joint is not None
-          else "union/intersection doublet policy, applied per modality")],
-        ["7. after S4–S8 (final)",
-         fmt(counts["rna_final"]), fmt(counts["atac_final"]),
-         (f"paired: S8 assembly is a no-op intersection; RNA lost {fmt(rna_inter)}, "
-          f"ATAC lost {fmt(atac_inter)} downstream of S3"
-          if joint is not None
-          else "per-modality final outputs (no joint object on this branch)")],
+          else "union doublet policy, applied per modality")],
     ]
+    if include_final_stage:
+        rna_inter = (
+            (counts["rna_post_doublet"] - counts["rna_final"])
+            if (counts["rna_post_doublet"] is not None and counts["rna_final"] is not None) else None
+        )
+        atac_inter = (
+            (counts["atac_post_doublet"] - counts["atac_final"])
+            if (counts["atac_post_doublet"] is not None and counts["atac_final"] is not None) else None
+        )
+        rows.append(
+            ["7. after S4–S8 (final)",
+             fmt(counts["rna_final"]), fmt(counts["atac_final"]),
+             (f"paired: S8 assembly is a no-op intersection; RNA lost {fmt(rna_inter)}, "
+              f"ATAC lost {fmt(atac_inter)} downstream of S3"
+              if joint is not None
+              else "per-modality final outputs (no joint object on this branch)")]
+        )
     return (
         "## Cell-count flow across stages\n\n"
         "Each row's RNA and ATAC columns describe the cell count _entering the "
@@ -349,16 +357,20 @@ def _rna_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) 
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else ""
 
     return (
-        "## RNA QC (S1)\n"
+        "## RNA quality filtering\n"
         "\n"
-        f"- Cells entering S1 (post-ingest, paired intersection): **{n_pre}**\n"
-        f"- Cells retained after S1:                             **{n_post}**\n"
-        f"- Removed by S1 filters:                               **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+        "Removes outliers and low-quality cells using MAD-based bounds on total UMI "
+        "counts and detected genes, plus ceilings on mitochondrial (MT) and ribosomal "
+        "read fractions.\n"
+        "\n"
+        f"- Cells before filtering: **{n_pre}**\n"
+        f"- Cells retained:         **{n_post}**\n"
+        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
         "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
         "\n"
-        "### Summary statistics (post-S1, RNA-only cells)\n\n"
+        "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
     )
 
@@ -414,23 +426,26 @@ def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any])
     import_note = ""
     if snap_drop is not None and snap_drop > 0:
         import_note = (
-            f"- **SnapATAC2 import-stage drop (hidden pre-filter):** "
-            f"{snap_drop} cells ({atac_raw} → {n_pre}), due to SnapATAC2's "
-            f"`snap.pp.import_fragments` default `min_num_fragments`.\n"
+            f"- **Fragment-count pre-filter (at import):** {snap_drop} barcodes removed "
+            f"({atac_raw} → {n_pre}) — cells with too few fragments are dropped before "
+            f"quality metrics are computed.\n"
         )
 
     return (
-        "## ATAC QC (S2)\n"
+        "## ATAC quality filtering\n"
+        "\n"
+        "Removes low-quality cells using MAD-based bounds on fragment counts, plus "
+        "TSS enrichment and nucleosome-signal thresholds.\n"
         "\n"
         f"{import_note}"
-        f"- Cells entering S2 (post-SnapATAC2 import): **{n_pre}**\n"
-        f"- Cells retained after S2:                   **{n_post}**\n"
-        f"- Removed by S2 filters:                     **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+        f"- Cells before filtering: **{n_pre}**\n"
+        f"- Cells retained:         **{n_post}**\n"
+        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
         "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
         "\n"
-        "### Summary statistics (post-S2, ATAC cells)\n\n"
+        "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
         f"{warn_block}"
     )
@@ -450,27 +465,26 @@ def _qc_review_intro(branch: str) -> str:
         "# QC review checkpoint",
         "",
         "Review the QC figures in `deliverables/checkpoint/qc_review/` alongside this "
-        "summary. Approve when satisfied, or revise thresholds / doublet policy and "
+        "summary. Approve when satisfied, or revise thresholds and "
         "re-run the affected stages before approving.",
         "",
-        "**Figures to inspect:** RNA QC violins (pre/post S1), ATAC fragment-size "
-        "distribution (S2), doublet-score histograms (S3), and the S0–S3 cell-count "
-        "waterfall.",
+        "**Figures to inspect:** RNA QC violins (pre/post filtering), ATAC fragment-size "
+        "distribution, doublet-score histograms, and the cell-count waterfall across "
+        "preprocessing.",
         "",
     ]
     if branch == "paired":
         lines += [
-            "**Paired multiome:** this checkpoint also covers the **S3 cross-modal "
-            "doublet removal policy** (union vs intersection) and the joint barcode "
-            "intersection after doublet filtering. Confirm both the QC metrics and "
-            "the policy below before approving.",
+            "**Paired multiome:** this checkpoint also documents the **S3 cross-modal "
+            "doublet removal policy** (union) and the joint barcode set after doublet "
+            "filtering. Confirm the QC metrics and policy below before approving.",
             "",
         ]
     else:
         lines += [
             f"**`{branch}` branch:** RNA and ATAC doublets are removed **independently** "
-            "per modality. There is no cross-modal union/intersection policy to confirm "
-            "on unpaired / separate analyses.",
+            "per modality. There is no cross-modal doublet policy on unpaired / separate "
+            "analyses.",
             "",
         ]
     return "\n".join(lines)
@@ -481,9 +495,10 @@ def _qc_review_actions(branch: str) -> str:
     lines = [
         "## How to approve or revise",
         "",
-        "### Adjust RNA / ATAC QC thresholds",
+        "### Adjust RNA / ATAC quality-filter thresholds",
         "",
-        "If violin plots or the cell-count waterfall look wrong, revise S1/S2 parameters "
+        "If violin plots or the cell-count waterfall look wrong, revise the RNA or ATAC "
+        "filter parameters (UMI/gene/MT bounds, fragment count, TSS enrichment, etc.) "
         "and re-run from the affected stage, then re-open this checkpoint:",
         "",
         "```bash",
@@ -495,21 +510,6 @@ def _qc_review_actions(branch: str) -> str:
         "```",
         "",
     ]
-    if branch == "paired":
-        lines += [
-            "### Change paired doublet removal policy (S3)",
-            "",
-            "Default recommendation follows `study_goal`: **union** for "
-            "`clustering_inference`, **intersection** for `rare_populations`. "
-            "To override, revise and re-run S3 before re-approving this checkpoint:",
-            "",
-            "```bash",
-            f"Processing-MuAgent revise s3_doublets s3_doublets.removal_policy=intersection --config {cfg}",
-            f"Processing-MuAgent run --config {cfg} --target s3_doublets_execute",
-            f"Processing-MuAgent run --config {cfg} --target post_qc_review_propose",
-            "```",
-            "",
-        ]
     lines += [
         "### Approve and continue to dimensionality reduction",
         "",
@@ -582,7 +582,6 @@ def _doublet_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
               or overlap_summary.get("chosen_policy")
               or overlap_summary.get("policy") or "unspecified")
     branch = _workflow_branch(run_dir, params)
-    rationale = overlap_summary.get("rationale", "")
 
     policy_note = ""
     if branch == "paired":
@@ -590,14 +589,11 @@ def _doublet_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
             "\n"
             "### Cross-modal policy (paired — confirm at this checkpoint)\n"
             "\n"
-            f"- Applied policy: **{policy}**\n"
-            + (f"- Rationale: {rationale}\n" if rationale else "")
-            + f"- Joint barcodes after RNA∩ATAC intersection: "
-            f"**{counts.get('n_cells_joint', 'n/a')}**\n"
-            "\n"
-            "Union removes a cell if **either** detector flags it; intersection "
-            "removes only when **both** flag it. Revise `s3_doublets.removal_policy` "
-            "and re-run S3 if you disagree (see **How to approve or revise** below).\n"
+            "- Applied policy: **union**\n"
+            "- Meaning: a cell is removed if **either** the RNA (Scrublet) or ATAC "
+            "(SnapATAC2) detector flags it as a doublet. Detectors are prone to false "
+            "negatives, so union minimises doublet contamination.\n"
+            + f"- Joint paired barcodes after S3: **{counts.get('n_cells_joint', 'n/a')}**\n"
         )
     elif branch == "separate":
         policy_note = (
@@ -605,7 +601,7 @@ def _doublet_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
             "### Per-modality removal (`separate` branch)\n"
             "\n"
             "RNA and ATAC doublet calls are applied **independently** — no cross-modal "
-            "union/intersection reconciliation. Each modality keeps its own survivor set.\n"
+            "reconciliation. Each modality keeps its own survivor set.\n"
         )
     else:
         policy_note = (
@@ -729,7 +725,7 @@ def build_qc_review(run_dir: Path | str) -> str:
 
     sections = [
         _qc_review_intro(branch),
-        _flow_section(counts),
+        _flow_section(counts, include_final_stage=False),
         _ambient_section(run_dir, params, counts),
         _rna_section(run_dir, params, counts),
         _atac_section(run_dir, params, counts),

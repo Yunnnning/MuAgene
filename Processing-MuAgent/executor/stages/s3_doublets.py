@@ -200,7 +200,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     if workflow_branch == "separate":
         # Independent per-modality removal.
         # RNA and ATAC are from independent samples with disjoint barcodes;
-        # cross-modal union/intersection policies are undefined here.
+        # cross-modal union policy is undefined here.
         rna_df = pd.DataFrame({
             "barcode": rna.obs_names.to_numpy() if rna is not None else np.array([], dtype=object),
             "scrublet_score": scores,
@@ -241,7 +241,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                         rationale=("separate branch: modalities are from independent samples "
                                    "with disjoint barcodes. Each modality's doublets are removed "
                                    "by its own detector (Scrublet for RNA, SnapATAC2 for ATAC). "
-                                   "Cross-modal reconciliation (union/intersection) does not apply."),
+                                   "Cross-modal union reconciliation does not apply."),
                         method={"name": "s3.independent_per_modality",
                                 "code_ref": "executor/stages/s3_doublets.py"})
 

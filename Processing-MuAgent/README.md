@@ -24,7 +24,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 | # | Checkpoint | Gate stage | When | What you decide |
 |---|------------|------------|------|-----------------|
 | **1** | **Plan review** | `plan_review` | After S0 + P2, before S1 | Approve the preprocessing plan (`pre_run/summary/plan_review.md`) |
-| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md`; revise **S1/S2 thresholds** and re-run if needed; on **paired** multiome, also confirm the **S3 cross-modal doublet removal policy** (union vs intersection) documented in the summary |
+| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md` (plain-language filter summary); revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
 | **3** | **Clustering resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
 
 **Snakemake approval gates:** 14 stages require an internal `*.approved` sentinel (including the three checkpoints above). On HPC, all gates except checkpoints **#2** and **#3** are normally auto-approved so the batch job runs unattended between your reviews.
@@ -64,8 +64,8 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **ATAC:** SnapATAC2 scrublet (thresholds configurable in the preprocessing plan).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
-  - **paired branch:** Also performs joint barcode intersection after doublet removal; the applied cross-modal policy (union vs intersection) is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_summary.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and dimensionality reduction. Generates doublet histograms, cell-count waterfall, and `checkpoint/qc_review/qc_summary.md` (S1–S3 metrics + paired S3 policy). Revise S1/S2 thresholds or `s3_doublets.removal_policy` and re-run affected stages before approving.
+  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_summary.md`).
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and dimensionality reduction. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_summary.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, union doublet policy). Revise quality-filter thresholds and re-run affected stages before approving.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC TF-IDF + LSI and peak matrix export** — TF-IDF normalization and spectral embedding (LSI) on the SnapATAC2 tile matrix (`bin_size=500`, unified with S3). In parallel, exports a feature (cell-by-feature) matrix using this priority order:
   0. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
@@ -110,7 +110,7 @@ If you select paired mode but the automatic check does not support it, you will 
 
 **Doublet removal in paired data:**
 
-Doublets are detected separately in RNA and ATAC; their results are combined during S3 reconciliation. By default (**union mode**), a cell is removed if either detector (RNA or ATAC) flags it as a doublet (`study_goal=clustering_inference` or unset). For `study_goal=rare_populations`, **intersection mode** is recommended: remove only if both detectors flag the cell. Detector scores and flags are saved in `calls.parquet` for later review.
+Doublets are detected separately in RNA and ATAC; their results are combined during S3 reconciliation using **union** policy: a cell is removed if either detector (RNA or ATAC) flags it as a doublet. Detectors are prone to false negatives, so union minimises contamination. Detector scores and flags are saved in `calls.parquet` for later review.
 
 ### Diagnostic vs final clustering
 
