@@ -267,15 +267,19 @@ def _ambient_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
     from .run_paths import RunPaths
     s1a = RunPaths(run_dir).stage_dir("s1a_ambient")
     summary_p = s1a / "summary.json"
-    contam_p = s1a / "contamination.parquet"
 
     method = _param(params, "s1a_ambient.method")
-    if method in (None, "none", "skipped_empty"):
+    if method in (None, "none", "skipped_empty", "skipped_no_r"):
         note = {
             None: "_(stage did not run; legacy run or RNA absent)_",
             "none": "_disabled in preprocessing plan (method=none); "
                     "no ambient correction applied._",
             "skipped_empty": "_RNA AnnData empty (atac_only branch); pass-through._",
+            "skipped_no_r": (
+                "**SKIPPED — R packages unavailable at runtime.** "
+                "Counts are uncorrected (pass-through). "
+                "Install missing R packages and re-run S1a before approving QC."
+            ),
         }[method]
         return "## Ambient RNA correction (S1a)\n\n" + note + "\n"
 
@@ -286,39 +290,55 @@ def _ambient_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
         except Exception:
             summary = {}
 
+    median_rho = (
+        summary.get("median_contamination")
+        if summary.get("median_contamination") is not None
+        else _param(params, "s1a_ambient.median_contamination")
+    )
+    pre_total = summary.get("total_counts_pre")
+    post_total = summary.get("total_counts_post")
+    pct_removed = ""
+    if pre_total and post_total and int(pre_total) > 0:
+        pct_removed = f" ({_pct(int(pre_total) - int(post_total), int(pre_total))} of UMIs removed)"
+
+    rho_note = ""
+    if median_rho is not None:
+        rho_note = (
+            f"**rho** (median {_fmt(median_rho)}): estimated fraction of each cell's "
+            "counts attributed to ambient RNA before correction "
+            "(SoupX/DecontX often apply one global or cluster-level estimate to all cells).\n"
+        )
+
+    counts_note = ""
+    if pre_total is not None and post_total is not None:
+        counts_note = (
+            f"**Total UMI counts** (sum over all cells): {_fmt(pre_total)} pre-correction → "
+            f"{_fmt(post_total)} post-correction{pct_removed}. "
+            "Per-cell depth: `deliverables/checkpoint/qc_review/s1a_ambient_counts_before_after.png`.\n"
+        )
+
     rows = [
         ["method", method],
-        ["median contamination", _param(params, "s1a_ambient.median_contamination")],
+        ["rho (median)", median_rho],
         ["high-contamination cells (rho>0.20)",
          _param(params, "s1a_ambient.n_high_contamination_cells")],
         ["max-contamination cap",
          summary.get("max_contam_cap", _param(params, "s1a_ambient.max_contamination"))],
-        ["pre-correction total counts (sum)", summary.get("total_counts_pre")],
-        ["post-correction total counts (sum)", summary.get("total_counts_post")],
+        ["pre-correction total counts (sum)", pre_total],
+        ["post-correction total counts (sum)", post_total],
     ]
-
-    contam_stats = ""
-    if contam_p.exists():
-        try:
-            df = pd.read_parquet(contam_p)
-            v = df["contamination"].to_numpy()
-            contam_stats = _md_table(
-                ["metric", "mean", "median", "min", "max"],
-                [_stats_row("contamination", v)],
-            )
-        except Exception:
-            pass
 
     return (
         "## Ambient RNA correction (S1a)\n"
         "\n"
+        + rho_note
+        + counts_note
+        + "\n"
         "Decontaminated counts overwrite `.X` and `.layers['counts']`; the "
         "original counts are preserved in `.layers['counts_raw']`. Per-cell "
         "rho is in `.obs['ambient_contamination']` and `contamination.parquet`.\n"
         "\n"
         f"{_md_table(['parameter', 'value'], rows)}\n"
-        "\n"
-        + (("### Per-cell contamination distribution\n\n" + contam_stats + "\n") if contam_stats else "")
     )
 
 
@@ -468,9 +488,9 @@ def _qc_review_intro(branch: str) -> str:
         "summary. Approve when satisfied, or revise thresholds and "
         "re-run the affected stages before approving.",
         "",
-        "**Figures to inspect:** RNA QC violins (pre/post filtering), ATAC fragment-size "
-        "distribution, doublet-score histograms, and the cell-count waterfall across "
-        "preprocessing.",
+        "**Figures to inspect:** ambient counts pre/post scatter (when S1a ran), RNA QC "
+        "violins (pre/post filtering), ATAC fragment-size distribution, doublet-score "
+        "histograms, and the cell-count waterfall across preprocessing.",
         "",
     ]
     if branch == "paired":

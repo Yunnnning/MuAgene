@@ -17,6 +17,11 @@
 # - R + DecontX (celda) + SoupX are required for S1a ambient correction on
 #   RNA branches. Whether correction runs is decided by the preprocessing plan
 #   (workflow branch, sample type, inputs) — not by optional R installs.
+# - SoupX 1.6.2 (r-soupx) imports Seurat::Read10X in its NAMESPACE, so r-seurat
+#   must be installed even though our soupx.R wrapper never calls Read10X.
+#   If conda's env-solve OOM's, install r-seurat + r-ggplot2 + r-farver separately
+#   via `mamba install -n grn -c conda-forge r-seurat r-ggplot2 r-farver --no-deps`
+#   after a minimal env create, then install transitive R deps as needed.
 name: grn
 channels:
   - conda-forge
@@ -24,6 +29,7 @@ channels:
 dependencies:
   - python>=3.10,<3.13
   - r-base>=4.3
+  - r-seurat
   - bioconductor-celda
   - r-soupx
   - pip
@@ -52,7 +58,12 @@ dependencies:
       - snakemake>=7.32
       - snakemake-executor-plugin-cluster-generic
       # Pin SLURM plugin to 2.7.0, then run scripts/apply_nfs_patch.py (in Recreate
-      # steps above). The patch replaces child-job --executor slurm-jobstep with
-      # --executor local so store_storage_outputs() is skipped on shared NFS.
+      # steps above). The patch makes three changes:
+      #   1. additional_general_args(): --executor slurm-jobstep → --executor local
+      #   2. ExecMode import added to settings import block
+      #   3. get_exec_mode(): override to return ExecMode.SUBPROCESS (not REMOTE)
+      # SUBPROCESS is critical: it skips store_storage_outputs(), cleanup_workdir(),
+      # and NFS log file writes in child jobs — all of which hang indefinitely on
+      # slow NFS, killing otherwise-fast child jobs at their SLURM wall time limit.
       - snakemake-executor-plugin-slurm==2.7.0
       - papermill

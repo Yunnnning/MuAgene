@@ -1,0 +1,167 @@
+Using profile workflow/profiles/slurm for setting default command line arguments.
+host: compute004.jex
+Building DAG of jobs...
+You are running snakemake in a SLURM job context. This is not recommended, as it may lead to unexpected behavior. If possible, please run Snakemake directly on the login node.
+SLURM run ID: abdb46c9-ff7b-41b3-8a2c-9c193bfb31c4
+Using shell: /usr/bin/bash
+Provided remote nodes: 8
+Job stats:
+job                       count
+----------------------  -------
+p1_context_execute            1
+s0_ingest_propose             1
+s0_ingest_execute             1
+p2_plan_propose               1
+p2_plan_execute               1
+plan_review_propose           1
+s1a_ambient_propose           1
+s1a_ambient_execute           1
+s1_rna_qc_propose             1
+s1_rna_qc_execute             1
+s2_atac_qc_propose            1
+s2_atac_qc_execute            1
+s3_doublets_propose           1
+s3_doublets_execute           1
+post_qc_review_propose        1
+total                        15
+
+Select jobs to execute...
+Execute 2 jobs...
+
+[Sat May 30 14:44:32 2026]
+localrule s0_ingest_propose:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/p1_context.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s0_ingest.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s0_ingest.awaiting_approval
+    jobid: 10
+    reason: Updated input files: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/p1_context.approved
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Sat May 30 14:44:32 2026]
+localrule p1_context_execute:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/p1_context.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/p1_context.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p1_context/context_extraction.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/deliverables/pre_run/summary/context_summary.md
+    jobid: 7
+    reason: Updated input files: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/p1_context.approved
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Sat May 30 14:44:32 2026]
+Finished jobid: 10 (Rule: s0_ingest_propose)
+1 of 15 steps (7%) done
+Select jobs to execute...
+Execute 1 jobs...
+[Sat May 30 14:44:32 2026]
+Finished jobid: 7 (Rule: p1_context_execute)
+2 of 15 steps (13%) done
+Job 9 has been submitted with SLURM jobid 991906 (log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s0_ingest_execute/991906.log).
+[Sat May 30 14:48:12 2026]
+Finished jobid: 9 (Rule: s0_ingest_execute)
+3 of 15 steps (20%) done
+Select jobs to execute...
+Execute 1 jobs...
+
+[Sat May 30 14:48:12 2026]
+localrule p2_plan_propose:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p1_context/context_extraction.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s0_ingest/validation_report.json
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/p2_plan.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/p2_plan.awaiting_approval
+    jobid: 6
+    reason: Input files updated by another job: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p1_context/context_extraction.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s0_ingest/validation_report.json
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Sat May 30 14:48:12 2026]
+Finished jobid: 6 (Rule: p2_plan_propose)
+4 of 15 steps (27%) done
+Select jobs to execute...
+Execute 1 jobs...
+
+[Sat May 30 14:48:12 2026]
+localrule p2_plan_execute:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/p2_plan.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/p2_plan.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json
+    jobid: 5
+    reason: Input files updated by another job: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/p2_plan.yaml
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Sat May 30 14:48:12 2026]
+Finished jobid: 5 (Rule: p2_plan_execute)
+5 of 15 steps (33%) done
+Select jobs to execute...
+Execute 1 jobs...
+
+[Sat May 30 14:48:12 2026]
+localrule plan_review_propose:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s0_ingest/validation_report.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p1_context/context_extraction.json
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/deliverables/pre_run/summary/plan_review.md, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/plan_review.awaiting_approval
+    jobid: 13
+    reason: Input files updated by another job: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p1_context/context_extraction.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s0_ingest/validation_report.json
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Sat May 30 14:48:12 2026]
+Finished jobid: 13 (Rule: plan_review_propose)
+6 of 15 steps (40%) done
+Select jobs to execute...
+Execute 1 jobs...
+
+[Sat May 30 14:48:12 2026]
+localrule s1a_ambient_propose:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s0_ingest/rna_ingest.h5ad, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/plan_review.approved, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/deliverables/pre_run/summary/plan_review.md
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s1a_ambient.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s1a_ambient.awaiting_approval
+    jobid: 12
+    reason: Input files updated by another job: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/deliverables/pre_run/summary/plan_review.md, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s0_ingest/rna_ingest.h5ad
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Sat May 30 14:48:12 2026]
+Finished jobid: 12 (Rule: s1a_ambient_propose)
+7 of 15 steps (47%) done
+Select jobs to execute...
+Execute 1 jobs...
+Job 11 has been submitted with SLURM jobid 991907 (log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s1a_ambient_execute/991907.log).
+[Sat May 30 14:53:13 2026]
+Finished jobid: 11 (Rule: s1a_ambient_execute)
+8 of 15 steps (53%) done
+Select jobs to execute...
+Execute 1 jobs...
+
+[Sat May 30 14:53:13 2026]
+localrule s1_rna_qc_propose:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s1a_ambient/rna_decontaminated.h5ad, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/plan_review.approved, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/deliverables/pre_run/summary/plan_review.md
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s1_rna_qc.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s1_rna_qc.awaiting_approval
+    jobid: 4
+    reason: Input files updated by another job: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s1a_ambient/rna_decontaminated.h5ad, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/deliverables/pre_run/summary/plan_review.md
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1189, mem=1.19 GB, mem_mib=1134, disk_mb=1189, disk=1.19 GB, disk_mib=1134, slurm_account=vaquerizas
+[Sat May 30 14:53:13 2026]
+Finished jobid: 4 (Rule: s1_rna_qc_propose)
+9 of 15 steps (60%) done
+Select jobs to execute...
+Execute 1 jobs...
+Job 3 has been submitted with SLURM jobid 991908 (log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s1_rna_qc_execute/991908.log).
+[Sat May 30 16:23:47 2026]
+Error in rule s1_rna_qc_execute:
+    message: SLURM-job '991908' failed, SLURM status is: 'TIMEOUT'. Reason: Unknown.For further error details see the cluster/cloud log and the log files of the involved rule(s).
+    jobid: 3
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s1_rna_qc.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/s1_rna_qc.approved, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/plan_review.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s1_rna_qc/rna_qc.h5ad
+    log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s1_rna_qc_execute/991908.log (check log file(s) for error details)
+    external_jobid: 991908
+Removing output files of failed job s1_rna_qc_execute since they might be corrupted:
+/home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s1_rna_qc/rna_qc.h5ad
+Trying to restart job 3.
+Select jobs to execute...
+Execute 1 jobs...
+Job 3 has been submitted with SLURM jobid 991909 (log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s1_rna_qc_execute/991909.log).
+[Sat May 30 17:56:51 2026]
+Error in rule s1_rna_qc_execute:
+    message: SLURM-job '991909' failed, SLURM status is: 'TIMEOUT'. Reason: Unknown.For further error details see the cluster/cloud log and the log files of the involved rule(s).
+    jobid: 3
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s1_rna_qc.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/s1_rna_qc.approved, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/plan_review.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s1_rna_qc/rna_qc.h5ad
+    log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s1_rna_qc_execute/991909.log (check log file(s) for error details)
+    external_jobid: 991909
+Removing output files of failed job s1_rna_qc_execute since they might be corrupted:
+/home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s1_rna_qc/rna_qc.h5ad
+Shutting down, this might take some time.
+Cleaning up SLURM log files older than 10 day(s).
+Exiting because a job execution failed. Look below for error messages
+[Sat May 30 17:59:51 2026]
+Error in rule s1_rna_qc_execute:
+    message: None
+    jobid: 3
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/proposals/s1_rna_qc.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/s1_rna_qc.approved, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/p2_plan/preprocessing_plan.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/checkpoints/plan_review.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1_v2/internal/artifacts/s1_rna_qc/rna_qc.h5ad
+Complete log(s): /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/log/2026-05-30T144431.940411.snakemake.log
+WorkflowError:
+At least one job did not complete successfully.
+slurmstepd: error: Pid 1170119 is still in the cpuset cgroup.  It might be left uncleaned after the job.

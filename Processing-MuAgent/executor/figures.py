@@ -109,32 +109,6 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
     return save_figure(fig, out_dir, stem)
 
 
-def plot_contamination_hist(contamination: np.ndarray, *, out_dir: Path | str,
-                              stem: str, title: str) -> list[Path]:
-    """Histogram of per-cell ambient-RNA contamination fractions in [0, 1]."""
-    _apply_style()
-    import matplotlib.pyplot as plt
-    v = np.asarray(contamination, dtype=float)
-    v = v[np.isfinite(v)]
-    fig, ax = plt.subplots(figsize=(7.0, 4.5))
-    if v.size == 0:
-        ax.set_title(title + " (no data)")
-        return save_figure(fig, out_dir, stem)
-    bins = np.linspace(0.0, max(0.5, float(np.max(v)) * 1.05), 41)
-    ax.hist(v, bins=bins, color="#3b82f6", alpha=0.85, edgecolor="white")
-    med = float(np.median(v))
-    p90 = float(np.quantile(v, 0.90))
-    ax.axvline(med, color="black", linestyle="--", linewidth=1.0, label=f"median={med:.2f}")
-    ax.axvline(p90, color="firebrick", linestyle=":", linewidth=1.0, label=f"p90={p90:.2f}")
-    ax.set_xlabel("contamination fraction (rho)")
-    ax.set_ylabel("cells")
-    ax.set_title(title)
-    ax.legend(fontsize=FONT_SIZE - 1, loc="upper right")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    return save_figure(fig, out_dir, stem)
-
-
 def plot_fragment_size_distribution(distr: np.ndarray, *, out_dir: Path | str,
                                      stem: str, title: str) -> list[Path]:
     """Plot a 1D fragment-size histogram (counts per fragment length).

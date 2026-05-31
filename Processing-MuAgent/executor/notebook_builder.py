@@ -162,7 +162,6 @@ def _show_umap(stem: str) -> None:
 
 _CELL_QC_FIGS = """\
 # Ambient RNA correction (S1a) — shown only when the stage actually ran.
-_show_qc("s1a_ambient_contamination_hist")
 _show_qc("s1a_ambient_counts_before_after")
 
 # RNA QC plots (pre + post filter)

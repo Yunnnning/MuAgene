@@ -140,9 +140,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         from ..run_paths import RunPaths
         figs_dir = RunPaths(run_dir).deliv_qc_review
         figs_dir.mkdir(parents=True, exist_ok=True)
-        _fig.plot_contamination_hist(contam, out_dir=figs_dir,
-                                      stem="s1a_ambient_contamination_hist",
-                                      title=f"Ambient RNA contamination ({result.method})")
         # Before/after counts comparison (per-cell totals).
         pre_counts = np.asarray(a.layers.get("counts", a.X).sum(axis=1)).ravel()
         post_counts = np.asarray(result.corrected_counts.sum(axis=1)).ravel()
