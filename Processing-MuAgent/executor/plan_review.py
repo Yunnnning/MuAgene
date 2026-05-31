@@ -293,15 +293,6 @@ def _render_concise_section(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def render_summary_text(items: list[dict[str, Any]]) -> str:
-    """Concise review bullets only (legacy helper for tests / partial display)."""
-    return (
-        "# Preprocessing plan review — summary\n\n"
-        + _render_concise_section(items)
-        + "\n"
-    )
-
-
 def render_merged_markdown(run_dir: Path | str) -> str:
     """Full plan-review deliverable: concise summary + parameter appendix."""
     from .plan_assembler import render_plan_appendix
@@ -333,13 +324,11 @@ def render_merged_markdown(run_dir: Path | str) -> str:
 
 
 def write_summary(run_dir: Path | str) -> Path:
-    """Write merged plan-review markdown and concise plan_summary.md."""
+    """Write merged plan-review markdown (summary + parameter appendix)."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     paths = RunPaths(run_dir)
-    items = build_summary(run_dir)
     merged = render_merged_markdown(run_dir)
     paths.plan_review_md.parent.mkdir(parents=True, exist_ok=True)
     paths.plan_review_md.write_text(merged)
-    paths.plan_summary_md.write_text(render_summary_text(items))
     return paths.plan_review_md

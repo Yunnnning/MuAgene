@@ -152,11 +152,6 @@ class RunPaths:
         """pre_run/summary/plan_review.md — merged summary + full parameter appendix."""
         return self.deliv_pre_summary / "plan_review.md"
 
-    @property
-    def plan_summary_md(self) -> Path:
-        """pre_run/summary/plan_summary.md — concise review bullets (includes execution)."""
-        return self.deliv_pre_summary / "plan_summary.md"
-
     # checkpoint/qc_review/*
     @property
     def qc_review_summary_md(self) -> Path:

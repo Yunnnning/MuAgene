@@ -230,8 +230,7 @@ Per-run state lives under `run_dir` from your config — never inside the source
         biological_context.md     ← Biological Context Report
       summary/
         context_summary.md        ← P1 output
-        plan_summary.md           ← P2 output
-        plan_review.md            ← plan review gate
+        plan_review.md            ← plan review gate (summary + parameter appendix)
     checkpoint/
       qc_review/                  ← QC review checkpoint (#2): figures + qc_summary.md
       resolution_review/          ← resolution_summary.md + resolution_review.{html,ipynb}
@@ -320,7 +319,7 @@ Processing-MuAgent propose s0_ingest --config $CONFIG
 Processing-MuAgent approve s0_ingest --config $CONFIG
 
 Processing-MuAgent propose p2_plan --config $CONFIG
-# review: <run_dir>/deliverables/pre_run/summary/plan_summary.md
+# review: <run_dir>/internal/proposals/p2_plan.yaml
 Processing-MuAgent approve p2_plan --config $CONFIG
 
 Processing-MuAgent plan-review --config $CONFIG

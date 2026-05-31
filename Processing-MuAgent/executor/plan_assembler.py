@@ -325,11 +325,3 @@ def _render_execution_appendix(exec_block: dict[str, Any]) -> list[str]:
     if exec_block.get("s0_policy"):
         lines.append(f"- **S0 policy**: {exec_block['s0_policy']}")
     return lines
-
-
-def render_plan_summary(plan: dict[str, Any]) -> str:
-    """Legacy standalone plan summary (superseded by merged plan_review.md)."""
-    return (
-        "# Preprocessing Plan Summary\n\n"
-        + render_plan_appendix(plan).replace("## Appendix: full parameters\n\n", "", 1)
-    )

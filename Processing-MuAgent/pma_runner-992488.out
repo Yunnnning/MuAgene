@@ -1,0 +1,53 @@
+Using profile workflow/profiles/slurm for setting default command line arguments.
+host: compute001.jex
+Building DAG of jobs...
+You are running snakemake in a SLURM job context. This is not recommended, as it may lead to unexpected behavior. If possible, please run Snakemake directly on the login node.
+SLURM run ID: e0bc0748-2a5c-4e58-8611-e547565dddcc
+Using shell: /usr/bin/bash
+Provided remote nodes: 8
+Job stats:
+job                       count
+----------------------  -------
+p1_context_execute            1
+s0_ingest_propose             1
+s0_ingest_execute             1
+p2_plan_propose               1
+p2_plan_execute               1
+plan_review_propose           1
+s1a_ambient_propose           1
+s1a_ambient_execute           1
+s1_rna_qc_propose             1
+s1_rna_qc_execute             1
+s2_atac_qc_propose            1
+s2_atac_qc_execute            1
+s3_doublets_propose           1
+s3_doublets_execute           1
+post_qc_review_propose        1
+total                        15
+
+Select jobs to execute...
+Execute 2 jobs...
+
+[Mon Jun  1 00:31:32 2026]
+localrule s0_ingest_propose:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/checkpoints/p1_context.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/proposals/s0_ingest.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/proposals/s0_ingest.awaiting_approval
+    jobid: 10
+    reason: Updated input files: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/checkpoints/p1_context.approved
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Mon Jun  1 00:31:32 2026]
+localrule p1_context_execute:
+    input: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/proposals/p1_context.yaml, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/checkpoints/p1_context.approved
+    output: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/artifacts/p1_context/context_extraction.json, /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/deliverables/pre_run/summary/context_summary.md
+    jobid: 7
+    reason: Updated input files: /home/yyuan25/mnt/storage/vaquerizas/yunning/runs/Mouse1/internal/checkpoints/p1_context.approved
+    resources: tmpdir=/home/yyuan25/mnt/scratch/yyuan25/claude-375612913, mem_mb=1000, mem=1 GB, mem_mib=954, disk_mb=1000, disk=1 GB, disk_mib=954, slurm_account=vaquerizas
+[Mon Jun  1 00:31:32 2026]
+Finished jobid: 10 (Rule: s0_ingest_propose)
+1 of 15 steps (7%) done
+Select jobs to execute...
+Execute 1 jobs...
+[Mon Jun  1 00:31:32 2026]
+Finished jobid: 7 (Rule: p1_context_execute)
+2 of 15 steps (13%) done
+Job 9 has been submitted with SLURM jobid 992489 (log: /home/yyuan25/mnt/storage/vaquerizas/yunning/MuAgene/Processing-MuAgent/.snakemake/slurm_logs/rule_s0_ingest_execute/992489.log).
