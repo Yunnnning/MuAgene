@@ -441,16 +441,16 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         # joint barcode intersection after doublet removal.
         rna_ingest = rna.copy()
         rna_ingest.layers["counts"] = rna_ingest.X.copy()
-        rna_ingest.write_h5ad(rna_out)
+        _io.write_h5ad_safe(rna_ingest, rna_out)
     else:
         import scipy.sparse as sp
         import anndata as _ad
-        _ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(rna_out)
+        _io.write_h5ad_safe(_ad.AnnData(X=sp.csr_matrix((0, 0))), rna_out)
 
     # --- Optional companion raw matrix (used by SoupX in S1a) ------------
     rna_raw_out = artifacts / "rna_raw.h5ad"
     if rna_raw_full is not None:
-        rna_raw_full.write_h5ad(rna_raw_out)
+        _io.write_h5ad_safe(rna_raw_full, rna_raw_out)
 
     # --- ATAC ingest metadata (only if ATAC present) ---------------------
     if atac_frag_path is not None:

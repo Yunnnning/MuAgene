@@ -10,6 +10,7 @@ import numpy as np
 import scanpy as sc
 
 from ..methods import mad_thresholds as _mad
+from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
 
@@ -129,7 +130,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         log_event(run_dir, {"stage": "s1_rna_qc", "event": "plot_failed", "error": str(e)})
 
-    a_f.write_h5ad(art / "rna_qc.h5ad")
+    _io.write_h5ad_safe(a_f, art / "rna_qc.h5ad")
     log_event(run_dir, {"stage": "s1_rna_qc", "event": "done",
                          "n_cells_pre": int(a.n_obs), "n_cells_post": int(a_f.n_obs),
                          "thresholds": {"total_counts": [c_lo, c_hi],

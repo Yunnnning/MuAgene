@@ -31,5 +31,8 @@ results/
 # Per-run output dirs when created at repo root
 run_*/
 
+# Processing-MuAgent scheduler logs (head PBS/SLURM jobs)
+Processing-MuAgent/logs/
+
 # Presentation materials
 *.pptx

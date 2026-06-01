@@ -16,6 +16,7 @@ import anndata as ad
 import numpy as np
 import scanpy as sc
 
+from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
 
@@ -117,7 +118,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     np.array([]))[:n_pcs] if isinstance(a.uns["pca"].get("variance"), np.ndarray) else a.uns["pca"].get("variance")
 
         sc.pp.neighbors(a, n_neighbors=n_neighbors, n_pcs=n_pcs)
-        a.write_h5ad(art / "rna_dimred.h5ad")
+        _io.write_h5ad_safe(a, art / "rna_dimred.h5ad")
         _prov.set_param(params_path, "s6_dimred.rna_n_pcs", int(n_pcs),
                         source="derived", confidence="high",
                         rationale=rationale,
@@ -132,7 +133,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     else:
         # atac_only — produce an empty placeholder so the Snakemake output exists.
         import scipy.sparse as sp
-        ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(art / "rna_dimred.h5ad")
+        _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), art / "rna_dimred.h5ad")
         n_pcs = 0
 
     # --- ATAC ---

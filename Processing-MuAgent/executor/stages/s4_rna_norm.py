@@ -7,6 +7,7 @@ from typing import Any
 import anndata as ad
 import scanpy as sc
 
+from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
 
@@ -48,7 +49,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     rationale=f"min({n_top_cap}, 0.1 * n_genes={int(0.1*a.n_vars)})",
                     method={"name": "hvg_cap", "code_ref": "executor/stages/s4_rna_norm.py"})
 
-    a.write_h5ad(art / "rna_norm.h5ad")
+    _io.write_h5ad_safe(a, art / "rna_norm.h5ad")
     log_event(run_dir, {"stage": "s4_rna_norm", "event": "done",
                          "n_cells": int(a.n_obs), "n_hvg": int(a.var.get("highly_variable", 0).sum()) if "highly_variable" in a.var else None})
     return {"n_cells": int(a.n_obs)}

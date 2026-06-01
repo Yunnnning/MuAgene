@@ -16,16 +16,16 @@
 executor: cluster-generic
 
 cluster-generic-submit-cmd: >-
-  workflow/profiles/pbs/pbs-submit.sh
+  ${PMA_REPO_ROOT}/workflow/profiles/pbs/pbs-submit.sh
   {rule} {jobid} {threads} {resources.mem_mb} {resources.runtime}
 
-cluster-generic-status-cmd: workflow/profiles/pbs/pbs-status.sh
+cluster-generic-status-cmd: ${PMA_REPO_ROOT}/workflow/profiles/pbs/pbs-status.sh
 
 # Cap concurrent submitted jobs (per-site polite default).
 jobs: 8
 max-jobs-per-second: 1
 max-status-checks-per-second: 1
-latency-wait: 60
+latency-wait: 300
 
 # Retry an OOM-killed / walltime-exceeded job once with attempt-scaled memory
 # (see mem_mb_for() in resources.smk).
@@ -37,7 +37,7 @@ keep-going: false
 # MINUTES (snakemake-standard); the PBS submit script converts to HH:MM:SS.
 default-resources:
   - mem_mb=4000
-  - runtime=60
+  - runtime=120
 
 # Conda envs are not managed by snakemake in v1 — the runner wrapper activates
 # the project env (`grn`) and child jobs inherit it.

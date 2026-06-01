@@ -7,10 +7,9 @@
 #   micromamba env create -n grn -f workflow/envs/processing.yaml
 #   micromamba activate grn
 #   pip install -e .              # Processing-MuAgent itself
-#   python scripts/apply_nfs_patch.py   # idempotent SLURM plugin fix (see below)
 #
 # Notes:
-# - Snakemake + scheduler executor plugins live here so the runner wrapper
+# - Snakemake + the generic cluster executor plugin live here so the runner wrapper
 #   doesn't need a separate snakemake env.
 # - nbconvert + papermill are included for the S7 resolution-review notebook
 #   deliverable.
@@ -57,13 +56,7 @@ dependencies:
       - scrublet>=0.2
       - snakemake>=7.32
       - snakemake-executor-plugin-cluster-generic
-      # Pin SLURM plugin to 2.7.0, then run scripts/apply_nfs_patch.py (in Recreate
-      # steps above). The patch makes three changes:
-      #   1. additional_general_args(): --executor slurm-jobstep → --executor local
-      #   2. ExecMode import added to settings import block
-      #   3. get_exec_mode(): override to return ExecMode.SUBPROCESS (not REMOTE)
-      # SUBPROCESS is critical: it skips store_storage_outputs(), cleanup_workdir(),
-      # and NFS log file writes in child jobs — all of which hang indefinitely on
-      # slow NFS, killing otherwise-fast child jobs at their SLURM wall time limit.
-      - snakemake-executor-plugin-slurm==2.7.0
+      # NFS write-back hang: executor/io.py:_write_via_tmp fsync's output files
+      # after copy to NFS so Snakemake's post-rule touch/stat don't block behind
+      # pending write-back for large (400-600 MB) h5ad files.
       - papermill

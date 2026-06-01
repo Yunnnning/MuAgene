@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Execution-MuAgent"
+version = "0.1.0"
+description = "Central execution and HPC monitoring agent for MuAgene subagents."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6",
+]
+
+[project.scripts]
+Execution-MuAgent = "execution_muagent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["execution_muagent*"]

@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
+export PMA_REPO_ROOT="${PMA_REPO_ROOT:-$REPO_ROOT}"
 
 # Activate the project conda env. Allow override via PMA_CONDA_ENV.
 CONDA_ENV="${PMA_CONDA_ENV:-grn}"
@@ -40,6 +41,37 @@ export NUMBA_NUM_THREADS="${NUMBA_NUM_THREADS:-1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 
+configfile=""
+has_directory_arg=0
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "--configfile" ]; then
+        configfile="$arg"
+    fi
+    if [ "$arg" = "--directory" ] || [[ "$arg" == --directory=* ]]; then
+        has_directory_arg=1
+    fi
+    prev="$arg"
+done
+
+directory_args=()
+if [ "$has_directory_arg" -eq 0 ] && [ -n "$configfile" ]; then
+    run_dir="$(python - "$configfile" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+with Path(sys.argv[1]).open() as fh:
+    cfg = yaml.safe_load(fh) or {}
+print(Path(cfg["run_dir"]).expanduser().resolve())
+PY
+)"
+    snakemake_workdir="${run_dir}/internal/snakemake"
+    mkdir -p "$snakemake_workdir"
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${snakemake_workdir}/cache}"
+    directory_args=(--directory "$snakemake_workdir")
+fi
+
 # Add site-specific --default-resources for SLURM partition / account if the
 # user has set the env vars. Detected from the --profile arg below.
 extra_args=()
@@ -55,4 +87,4 @@ for arg in "$@"; do
     fi
 done
 
-exec python -m snakemake -s workflow/Snakefile "$@" "${extra_args[@]}"
+exec python -m snakemake -s "$REPO_ROOT/workflow/Snakefile" "${directory_args[@]}" "$@" "${extra_args[@]}"

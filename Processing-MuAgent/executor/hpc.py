@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -28,6 +29,27 @@ RUNNER_SCRIPT = {
 }
 
 LAUNCHER = REPO_ROOT / "scripts" / "launch_runner.sh"
+
+# Default directory for head-job and PBS child-job stdout/stderr (see pbs-submit.sh).
+DEFAULT_LOG_DIR = REPO_ROOT / "logs"
+
+
+def resolve_log_dir() -> Path:
+    """Return the scheduler log directory, creating it if needed."""
+    raw = os.environ.get("PMA_LOG_DIR", "logs")
+    log_dir = Path(raw)
+    if not log_dir.is_absolute():
+        log_dir = REPO_ROOT / log_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def head_job_log_path(executor: Executor) -> Path:
+    """Default head-job log path for the given scheduler."""
+    log_dir = resolve_log_dir()
+    if executor == "slurm":
+        return log_dir / "pma_runner-%j.out"
+    return log_dir
 
 
 def profile_path(executor: Executor) -> Path:
@@ -79,6 +101,19 @@ def submit_head_job(
     if not runner.exists():
         raise FileNotFoundError(f"head-job script missing: {runner}")
 
+    if output_log is None:
+        output_log = head_job_log_path(executor)
+    else:
+        output_log = Path(output_log)
+        if not output_log.is_absolute():
+            output_log = REPO_ROOT / output_log
+        if executor == "slurm":
+            output_log.parent.mkdir(parents=True, exist_ok=True)
+        elif output_log.suffix:
+            output_log.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            output_log.mkdir(parents=True, exist_ok=True)
+
     env_vars = {
         "PMA_CONFIG": str(config_path),
         "PMA_TARGET": target,
@@ -92,8 +127,7 @@ def submit_head_job(
         # Plus explicit pass-through of the run-specific vars (more reliable
         # than relying on -V across all PBS Pro configurations).
         cmd += ["-v", ",".join(f"{k}={v}" for k, v in env_vars.items())]
-        if output_log is not None:
-            cmd += ["-o", str(output_log), "-j", "oe"]
+        cmd += ["-o", str(output_log), "-j", "oe"]
         # Optional queue / project from env vars.
         if os.environ.get("PMA_PBS_QUEUE"):
             cmd += ["-q", os.environ["PMA_PBS_QUEUE"]]
@@ -104,16 +138,127 @@ def submit_head_job(
     else:  # slurm
         export_list = "ALL," + ",".join(f"{k}={v}" for k, v in env_vars.items())
         cmd = ["sbatch", "--parsable", f"--export={export_list}"]
-        if output_log is not None:
-            cmd += ["--output", str(output_log)]
+        cmd += ["--output", str(output_log)]
         if os.environ.get("PMA_SLURM_PARTITION"):
             cmd += ["--partition", os.environ["PMA_SLURM_PARTITION"]]
         if os.environ.get("PMA_SLURM_ACCOUNT"):
             cmd += ["--account", os.environ["PMA_SLURM_ACCOUNT"]]
         cmd += [str(runner)]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    try:
+        submit_timeout = int(os.environ.get("PMA_SUBMIT_TIMEOUT_SEC", "60"))
+    except ValueError:
+        submit_timeout = 60
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=submit_timeout, check=True)
     return result.stdout.strip()
+
+
+def submitted_log_path(executor: Executor, output_log: Path | str, job_id: str) -> Path:
+    """Return the concrete scheduler log path after scheduler id substitution."""
+    path = Path(output_log)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if executor == "slurm":
+        rendered = str(path).replace("%j", str(job_id)).replace("%A", str(job_id))
+        return Path(rendered)
+    return path
+
+
+def _execution_muagent_env() -> dict[str, str] | None:
+    """Return an environment that can import sibling Execution-MuAgent, if present."""
+    exec_root = REPO_ROOT.parent / "Execution-MuAgent"
+    if not (exec_root / "execution_muagent").exists():
+        return None
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(exec_root) if not existing else f"{exec_root}:{existing}"
+    return env
+
+
+def register_with_execution_muagent(
+    *,
+    executor: Executor,
+    job_id: str,
+    run_dir: Path | str,
+    config_path: Path | str,
+    target: str,
+    log_path: Path | str,
+) -> Path | None:
+    """Register an HPC job with sibling Execution-MuAgent when available.
+
+    The processing workflow must not depend hard on the execution monitor: a
+    failed registration should not make a successfully submitted HPC job vanish.
+    """
+    if executor not in ("pbs", "slurm"):
+        return None
+    env = _execution_muagent_env()
+    if env is None:
+        return None
+    cmd = [
+        sys.executable, "-m", "execution_muagent.cli", "register",
+        "--agent", "Processing-MuAgent",
+        "--executor", executor,
+        "--job-id", str(job_id),
+        "--run-dir", str(Path(run_dir).resolve()),
+        "--config", str(Path(config_path).resolve()),
+        "--target", target,
+        "--repo-root", str(REPO_ROOT),
+        "--log-path", str(Path(log_path).resolve()),
+    ]
+    try:
+        subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=10, check=True)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return Path(run_dir).resolve() / "internal" / "hpc_monitor" / "submissions.jsonl"
+
+
+def start_execution_monitor(
+    *,
+    executor: Executor,
+    job_id: str,
+    run_dir: Path | str,
+    stale_minutes: float | None = None,
+    interval_s: float | None = None,
+    kill_on_hang: bool | None = None,
+) -> Path | None:
+    """Start Execution-MuAgent's watcher in the background, if available."""
+    if executor not in ("pbs", "slurm"):
+        return None
+    env = _execution_muagent_env()
+    if env is None:
+        return None
+    run_dir = Path(run_dir).resolve()
+    monitor_dir = run_dir / "internal" / "hpc_monitor"
+    monitor_dir.mkdir(parents=True, exist_ok=True)
+    safe_job_id = str(job_id).replace("/", "_").replace(";", "_")
+    daemon_log = monitor_dir / f"monitor-{safe_job_id}.log"
+    stale = stale_minutes if stale_minutes is not None else float(os.environ.get("PMA_HPC_MONITOR_STALE_MIN", "20"))
+    interval = interval_s if interval_s is not None else float(os.environ.get("PMA_HPC_MONITOR_INTERVAL", "60"))
+    if kill_on_hang is None:
+        kill_on_hang = os.environ.get("PMA_HPC_MONITOR_KILL_ON_HANG", "0") == "1"
+    cmd = [
+        sys.executable, "-m", "execution_muagent.cli", "monitor",
+        "--run-dir", str(run_dir),
+        "--job-id", str(job_id),
+        "--watch",
+        "--stale-minutes", str(stale),
+        "--interval", str(interval),
+    ]
+    if kill_on_hang:
+        cmd.append("--kill-on-hang")
+    try:
+        with daemon_log.open("ab") as out:
+            subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+    except OSError:
+        return None
+    return daemon_log
 
 
 def env_diagnostics() -> dict[str, str | None]:

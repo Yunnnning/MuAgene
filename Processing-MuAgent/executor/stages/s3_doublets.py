@@ -17,6 +17,7 @@ import scipy.sparse as sp
 import scrublet as scr
 
 from ..methods import doublet_policy as _pol
+from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
 
@@ -353,14 +354,14 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     if has_rna and rna is not None:
         keep_rna = rna.obs_names.isin(rna_survivors)
         rna_f = rna[keep_rna].copy()
-        rna_f.write_h5ad(rna_out)
+        _io.write_h5ad_safe(rna_f, rna_out)
         n_rna_post = int(rna_f.n_obs)
     else:
         # atac_only — write an empty placeholder AnnData so Snakemake's declared
         # output exists. Downstream stages consult workflow_branch and skip the
         # RNA path entirely.
         import scipy.sparse as sp
-        ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(rna_out)
+        _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), rna_out)
 
     # ATAC: subset via SnapATAC2 to surviving cells (only if ATAC path ran).
     atac_out = art / "atac_post_doublet.h5ad"
@@ -387,7 +388,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             # Empty survivor set (extreme edge: zero joint cells). Write a tiny
             # placeholder so the declared Snakemake output exists.
             import scipy.sparse as sp
-            ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(atac_out)
+            _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), atac_out)
         if atac is not None:
             try:
                 atac.close()
@@ -397,7 +398,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         # rna_only — empty placeholder so downstream rules that rglob the
         # artifacts dir don't crash. s6/s7/s8 consult workflow_branch directly.
         import scipy.sparse as sp
-        ad.AnnData(X=sp.csr_matrix((0, 0))).write_h5ad(atac_out)
+        _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), atac_out)
 
     log_event(run_dir, {"stage": "s3_doublets", "event": "done",
                          "overlap": overlap, "policy": chosen_policy,

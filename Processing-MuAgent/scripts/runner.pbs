@@ -3,7 +3,7 @@
 #PBS -l walltime=24:00:00
 #PBS -N pma_runner
 #PBS -j oe
-# Output filename can be overridden with `qsub -o <path>` at submission time.
+# Output goes to logs/ (directory); overridden with `qsub -o <path>` at submit time.
 #
 # Head-job: runs the snakemake orchestrator that submits each per-stage child
 # job to PBS. Exits when the DAG completes or stops at a missing-approval gate.
@@ -22,8 +22,8 @@ cd "${PMA_REPO_ROOT}"
 # scripts/launch_runner.sh activates the conda env and invokes snakemake.
 SNAKE_ARGS=(
     --profile "workflow/profiles/pbs"
-    --configfile "${PMA_CONFIG}"
     "${PMA_TARGET:-all}"
+    --configfile "${PMA_CONFIG}"
 )
 
 # Trap exit so we always send the notification email (success or failure).
@@ -45,7 +45,7 @@ artifact at <run_dir>/internal/proposals/<stage>.yaml, then
 again to resume.
 
 Run dir: $(awk '/^run_dir:/ {print $2}' "${PMA_CONFIG}")
-Log:     ${PBS_O_WORKDIR:-?}/${PBS_JOBNAME:-pma_runner}.o${PBS_JOBID:-?}
+Log:     ${PMA_REPO_ROOT:-?}/logs/${PBS_JOBNAME:-pma_runner}.o${PBS_JOBID:-?}
 "
     if command -v mail >/dev/null 2>&1; then
         printf '%s\n' "$body" | mail -s "$subject" "$PMA_NOTIFY_EMAIL" || true

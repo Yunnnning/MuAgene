@@ -11,12 +11,13 @@ if [ "$#" -lt 1 ]; then
 fi
 
 jobid="$1"
+query_timeout="${PMA_SCHEDULER_QUERY_TIMEOUT:-5}"
 
 # Try the live queue first; if absent, try the finished-job history (-x).
 state=""
-state=$(qstat -f "$jobid" 2>/dev/null | awk -F= '/job_state/ {gsub(/ /, "", $2); print $2; exit}') || true
+state=$(timeout "$query_timeout" qstat -f "$jobid" 2>/dev/null | awk -F= '/job_state/ {gsub(/ /, "", $2); print $2; exit}') || true
 if [ -z "$state" ]; then
-    state=$(qstat -fx "$jobid" 2>/dev/null | awk -F= '/job_state/ {gsub(/ /, "", $2); print $2; exit}') || true
+    state=$(timeout "$query_timeout" qstat -fx "$jobid" 2>/dev/null | awk -F= '/job_state/ {gsub(/ /, "", $2); print $2; exit}') || true
 fi
 
 case "$state" in
@@ -25,7 +26,7 @@ case "$state" in
         ;;
     F)
         # Finished — check Exit_status (only present after job completes).
-        ec=$(qstat -fx "$jobid" 2>/dev/null | awk -F= '/Exit_status/ {gsub(/ /, "", $2); print $2; exit}') || true
+        ec=$(timeout "$query_timeout" qstat -fx "$jobid" 2>/dev/null | awk -F= '/Exit_status/ {gsub(/ /, "", $2); print $2; exit}') || true
         if [ "${ec:-0}" = "0" ]; then
             echo success
         else
@@ -33,12 +34,9 @@ case "$state" in
         fi
         ;;
     "")
-        # Job not visible in either live queue or history → assume it finished
-        # cleanly and was purged from history (some sites have short retention).
-        # Returning "failed" here would cause snakemake to mark the rule failed
-        # even though the output may exist; let snakemake decide by checking the
-        # output files. "success" is the safer default when state is unknown.
-        echo success
+        # Unknown state can mean scheduler lag or a timed-out query. Keep
+        # polling rather than falsely accepting a failed or cancelled job.
+        echo running
         ;;
     *)
         echo failed

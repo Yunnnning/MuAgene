@@ -3,7 +3,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH --time=24:00:00
-#SBATCH --output=pma_runner-%j.out
+#SBATCH --output=logs/pma_runner-%j.out
 #
 # Head-job: runs the snakemake orchestrator that submits each per-stage child
 # job to SLURM. Exits when the DAG completes or stops at a missing-approval gate.

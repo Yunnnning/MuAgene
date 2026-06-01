@@ -94,7 +94,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                    max_contamination=max_contam)
 
     a_corr = _amb.apply_correction(a, result)
-    a_corr.write_h5ad(dst)
+    _io.write_h5ad_safe(a_corr, dst)
 
     # --- Persist diagnostics + provenance --------------------------------
     contam = np.asarray(result.contamination, dtype=float)

@@ -35,14 +35,13 @@ def _scaled_mem(mem_mb: int) -> int:
 def _scaled_runtime_min(minutes: int) -> int:
     """Scale a walltime (minutes) by PMA_RESOURCES_SCALE and add an NFS overhead buffer.
 
-    On shared network filesystems Snakemake 9's post-job storage scan can add
-    ~30 min of overhead per child job even when no files need to be transferred
-    (snakemake-executor-plugin-slurm-jobstep + store_storage_outputs on NFS).
-    A 60-min buffer absorbs this cost without setting PMA_RESOURCES_SCALE.
-    PMA_RESOURCES_SCALE still multiplies the *base* compute time; the buffer
-    is added afterwards so large-dataset scaling doesn't double the buffer.
+    Shared network filesystems can add slow post-job visibility/write-back
+    overhead around large h5ad outputs. The buffer absorbs this cost without
+    setting PMA_RESOURCES_SCALE. PMA_RESOURCES_SCALE still multiplies the base
+    compute time; the buffer is added afterwards so large-dataset scaling
+    doesn't double the buffer.
     """
-    _NFS_OVERHEAD_MIN = int(os.environ.get("PMA_RUNTIME_OVERHEAD_MIN", "60"))
+    _NFS_OVERHEAD_MIN = int(os.environ.get("PMA_RUNTIME_OVERHEAD_MIN", "90"))
     return int(minutes * _scale_factor() + _NFS_OVERHEAD_MIN)
 
 
@@ -72,9 +71,9 @@ _BASE_RUNTIME_MIN: dict[str, int] = {
     "plan_review":    10,
     "s0_ingest":      30,
     "s1a_ambient":    60,
-    "s1_rna_qc":      30,
-    "s2_atac_qc":     60,
-    "s3_doublets":   120,
+    "s1_rna_qc":     120,
+    "s2_atac_qc":    240,
+    "s3_doublets":   240,
     "s4_rna_norm":    30,
     "s5_atac_lsi":   120,
     "s6_dimred":      45,

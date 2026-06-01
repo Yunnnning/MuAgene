@@ -164,7 +164,7 @@ export PMA_RESOURCES_SCALE=2
 
 ### Requirements
 
-- **SLURM:** Requires Snakemake version 9 or higher. PBS Pro does not have this requirement.
+- **SLURM:** Uses Snakemake's generic cluster executor plus `sbatch`/`sacct`/`squeue`; every heavy rule is submitted as a separate `sbatch` job, even when the Snakemake head-job itself runs under SLURM.
 
 ### How the HPC run proceeds
 
@@ -200,14 +200,11 @@ CFG=<run_dir>/deliverables/pre_run/config/run.yaml
 source <run_dir>/deliverables/pre_run/config/hpc.env
 
 # First heavy batch after plan review (honours QC + resolution checkpoints):
-Processing-MuAgent submit --config $CFG --executor slurm \
-  --auto-approve --auto-approve-except post_qc_review \
-  --auto-approve-except s7_clustering
+Processing-MuAgent submit --config $CFG --executor slurm
 
 # After QC review:
 Processing-MuAgent approve post_qc_review --config $CFG
-Processing-MuAgent submit --config $CFG --executor slurm \
-  --auto-approve --auto-approve-except s7_clustering
+Processing-MuAgent submit --config $CFG --executor slurm
 
 # After resolution review:
 Processing-MuAgent approve s7_clustering --config $CFG
@@ -215,6 +212,27 @@ Processing-MuAgent submit --config $CFG --executor slurm
 ```
 
 Poll with `Processing-MuAgent status --watch --config $CFG`. `--auto-approve-except` syntax is unchanged; repeat the flag for each gate you want to keep interactive.
+
+### Execution-MuAgent monitor
+
+When the sibling `Execution-MuAgent` package is present, `Processing-MuAgent submit`
+automatically registers the scheduler head-job and starts a background watcher.
+Monitor state and reports are written under:
+
+```text
+<run_dir>/internal/hpc_monitor/
+```
+
+The watcher detects scheduler failures, Snakemake errors, stale logs/artifacts,
+and stuck scheduler polling. By default it reports problems without cancelling
+jobs. To let the watcher cancel a detected stale or failed head-job, set:
+
+```bash
+export PMA_HPC_MONITOR_KILL_ON_HANG=1
+```
+
+Use `--no-monitor` on `Processing-MuAgent submit` to skip registration for a
+debug run.
 
 
 ## Run directory layout
@@ -347,7 +365,7 @@ Processing-MuAgent run --config $CFG --no-context   # explicit opt-out of biolog
 Processing-MuAgent hpc-info                         # probe queues/partitions on login node
 ```
 
-On HPC after plan review, use `submit` (see **Submit workflow** above) instead of `run`. `submit` auto-infers the phase target; `--auto-approve-except post_qc_review --auto-approve-except s7_clustering` keeps the two QC/resolution checkpoints interactive.
+On HPC after plan review, use `submit` (see **Submit workflow** above) instead of `run`. `submit` auto-infers the phase target, prepares internal stage approvals for that phase, and keeps the QC/resolution checkpoints interactive.
 
 
 ## Environment
@@ -355,8 +373,7 @@ On HPC after plan review, use `submit` (see **Submit workflow** above) instead o
 Recreate the canonical conda env:
 
 ```bash
-micromamba env create -n preprocess -f workflow/envs/processing.yaml
-micromamba activate preprocess
+micromamba env create -n grn -f workflow/envs/processing.yaml
+micromamba activate grn
 pip install -e .
-python scripts/apply_nfs_patch.py   # only for SLURM/NFS setups
 ```

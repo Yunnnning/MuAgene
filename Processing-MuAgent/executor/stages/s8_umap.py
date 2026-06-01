@@ -8,6 +8,7 @@ import anndata as ad
 import numpy as np
 import scanpy as sc
 
+from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
 
@@ -261,17 +262,17 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             atac_adata = atac_adata[common_sorted].copy()
         import mudata as mu
         mdata = mu.MuData({"rna": rna, "atac": atac_adata})
-        mdata.write(str(paths.processed_h5mu))
+        _io.write_mudata_safe(mdata, paths.processed_h5mu)
         outpath = str(paths.processed_h5mu)
     elif workflow_branch == "separate":
-        rna.write_h5ad(paths.rna_processed_h5ad)
-        atac_adata.write_h5ad(paths.atac_processed_h5ad)
+        _io.write_h5ad_safe(rna, paths.rna_processed_h5ad)
+        _io.write_h5ad_safe(atac_adata, paths.atac_processed_h5ad)
         outpath = f"{paths.rna_processed_h5ad},{paths.atac_processed_h5ad}"
     elif workflow_branch == "rna_only":
-        rna.write_h5ad(paths.rna_processed_h5ad)
+        _io.write_h5ad_safe(rna, paths.rna_processed_h5ad)
         outpath = str(paths.rna_processed_h5ad)
     elif workflow_branch == "atac_only":
-        atac_adata.write_h5ad(paths.atac_processed_h5ad)
+        _io.write_h5ad_safe(atac_adata, paths.atac_processed_h5ad)
         outpath = str(paths.atac_processed_h5ad)
     else:
         raise ValueError(f"S8: unknown workflow_branch={workflow_branch!r}")

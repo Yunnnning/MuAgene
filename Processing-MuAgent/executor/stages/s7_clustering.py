@@ -22,6 +22,7 @@ import pandas as pd
 import scanpy as sc
 
 from ..methods import resolution_sweep as _rs
+from .. import io as _io
 from .. import provenance as _prov
 from .. import resolution_compare as _rcmp
 from ..log import log_event
@@ -307,7 +308,7 @@ def execute(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s6_dimred" / "rna_dimred.h5ad")
     sc.tl.leiden(rna, resolution=float(rna_res), random_state=seeds[0],
                  key_added="leiden_rna")
-    rna.write_h5ad(art / "rna_clustered.h5ad")
+    _io.write_h5ad_safe(rna, art / "rna_clustered.h5ad")
 
     # --- ATAC final labels ---
     if atac_res is not None:

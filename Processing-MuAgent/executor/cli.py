@@ -390,6 +390,82 @@ def _infer_submit_target(run_dir: Path) -> str:
     return "all"
 
 
+_PHASE_INTERNAL_APPROVALS: dict[str, tuple[str, ...]] = {
+    "post_qc_review_propose": (
+        "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
+    ),
+    "s7_clustering_propose": (
+        "s4_rna_norm", "s5_atac_lsi", "s6_dimred",
+    ),
+    "all": (
+        "s8_umap",
+    ),
+}
+
+_PHASE_REQUIRED_HUMAN_APPROVALS: dict[str, tuple[str, ...]] = {
+    "post_qc_review_propose": (
+        "plan_review",
+    ),
+    "s7_clustering_propose": (
+        "plan_review", "post_qc_review",
+    ),
+    "all": (
+        "plan_review", "post_qc_review", "s7_clustering",
+    ),
+}
+
+
+def _missing_approvals(run_dir: Path, stages: tuple[str, ...]) -> list[str]:
+    paths = RunPaths(run_dir)
+    return [stage for stage in stages if not paths.approved_sentinel(stage).exists()]
+
+
+def _prepare_submit_approvals(
+    run_dir: Path,
+    target: str,
+    *,
+    inferred_target: bool,
+    auto_approve: bool,
+    auto_except: tuple[str, ...],
+) -> list[str]:
+    """Seed internal phase approvals or fail fast for explicit unsafe targets."""
+    internal = _PHASE_INTERNAL_APPROVALS.get(target, ())
+    human = _PHASE_REQUIRED_HUMAN_APPROVALS.get(target, ())
+    missing_human = _missing_approvals(run_dir, human)
+    if missing_human:
+        raise click.ClickException(
+            f"Target {target!r} requires human approval sentinel(s): "
+            f"{', '.join(missing_human)}. Review/approve these gates before submitting."
+        )
+
+    if auto_approve:
+        return []
+
+    if inferred_target:
+        kept = set(auto_except)
+        seeded: list[str] = []
+        for stage in internal:
+            if stage in kept:
+                continue
+            if stage in _PHASE_REQUIRED_HUMAN_APPROVALS.get("all", ()):
+                continue
+            approval.approve(run_dir, stage, note=f"phase-auto-approved for {target}")
+            seeded.append(stage)
+        if seeded:
+            os.environ["PMA_AUTO_APPROVE"] = "1"
+        return seeded
+
+    missing_internal = _missing_approvals(run_dir, internal)
+    if missing_internal:
+        raise click.ClickException(
+            f"Explicit target {target!r} requires internal approval sentinel(s): "
+            f"{', '.join(missing_internal)}. Use --auto-approve for an unattended "
+            "batch, approve those stages, or omit --target so submit can infer and "
+            "prepare the current phase."
+        )
+    return []
+
+
 @main.command()
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--executor", type=EXECUTOR_CHOICE, required=True,
@@ -404,9 +480,11 @@ def _infer_submit_target(run_dir: Path) -> str:
               help="With --auto-approve, keep these gates honoured. Repeatable.")
 @click.option("--output", "output_log", type=click.Path(), default=None,
               help="Scheduler output-log path for the head-job (optional).")
+@click.option("--no-monitor", is_flag=True,
+              help="Do not auto-register/start the Execution-MuAgent HPC monitor.")
 def submit(config_path: str, executor: str, target: str | None,
            auto_approve: bool, auto_except: tuple[str, ...],
-           output_log: str | None) -> None:
+           output_log: str | None, no_monitor: bool) -> None:
     """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
 
     The head-job runs on a compute node, activates the project conda env, and
@@ -446,18 +524,69 @@ def submit(config_path: str, executor: str, target: str | None,
         # Tell the head-job's propose rules not to revoke pre-seeded approvals.
         os.environ["PMA_AUTO_APPROVE"] = "1"
 
+    inferred_target = target is None
     resolved_target = target if target is not None else _infer_submit_target(run_dir)
+    phase_seeded = _prepare_submit_approvals(
+        run_dir,
+        resolved_target,
+        inferred_target=inferred_target,
+        auto_approve=auto_approve,
+        auto_except=auto_except,
+    )
 
-    out_path = Path(output_log) if output_log else None
-    job_id = hpc.submit_head_job(executor, paths.run_yaml, target=resolved_target,
-                                  output_log=out_path)
+    out_path = Path(output_log) if output_log else hpc.head_job_log_path(executor)
+    try:
+        job_id = hpc.submit_head_job(executor, paths.run_yaml, target=resolved_target,
+                                      output_log=out_path)
+    except subprocess.TimeoutExpired as exc:
+        raise click.ClickException(
+            f"{executor} head-job submission timed out after {exc.timeout}s. "
+            "The scheduler command is not responding; retry later or contact HPC support."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        raise click.ClickException(
+            f"{executor} head-job submission failed"
+            + (f": {detail}" if detail else ".")
+        ) from exc
+    submitted_log_path = hpc.submitted_log_path(executor, out_path, job_id)
+    monitor_registry = None
+    monitor_log = None
+    if not no_monitor:
+        monitor_registry = hpc.register_with_execution_muagent(
+            executor=executor,
+            job_id=job_id,
+            run_dir=run_dir,
+            config_path=paths.run_yaml,
+            target=resolved_target,
+            log_path=submitted_log_path,
+        )
+        if monitor_registry is not None:
+            monitor_log = hpc.start_execution_monitor(
+                executor=executor,
+                job_id=job_id,
+                run_dir=run_dir,
+            )
     log_event(run_dir, {"stage": "submit", "event": "head_job_submitted",
                         "executor": executor, "target": resolved_target,
                         "job_id": job_id, "auto_approve": auto_approve,
-                        "kept_gates": sorted(set(auto_except))})
+                        "kept_gates": sorted(set(auto_except)),
+                        "phase_auto_approved": phase_seeded,
+                        "head_job_log": str(submitted_log_path),
+                        "hpc_monitor_registry": str(monitor_registry) if monitor_registry else None,
+                        "hpc_monitor_log": str(monitor_log) if monitor_log else None})
     click.echo(f"Submitted {executor} head-job: {job_id}")
     click.echo(f"  config:  {paths.run_yaml}")
     click.echo(f"  target:  {resolved_target}")
+    if phase_seeded:
+        click.echo(f"  phase-auto-approved: {', '.join(phase_seeded)}")
+    click.echo(f"  log:     {submitted_log_path}")
+    if monitor_registry:
+        click.echo(f"  monitor: {monitor_registry}")
+        if monitor_log:
+            click.echo(f"  watcher: {monitor_log}")
+    elif not no_monitor:
+        click.echo("  monitor: unavailable (Execution-MuAgent not importable)")
     if os.environ.get("PMA_NOTIFY_EMAIL"):
         click.echo(f"  notify:  {os.environ['PMA_NOTIFY_EMAIL']}")
     click.echo("\nPoll progress with: Processing-MuAgent status --watch "
@@ -476,6 +605,10 @@ def _snakemake(args: list[str], run_dir: Path, *, executor: str = "local") -> No
     """
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(PACKAGE_DIR))
+    env.setdefault("PMA_REPO_ROOT", str(PACKAGE_DIR))
+    paths = RunPaths(run_dir)
+    paths.snakemake_workdir.mkdir(parents=True, exist_ok=True)
+    env.setdefault("XDG_CACHE_HOME", str(paths.snakemake_workdir / "cache"))
     # Single-thread for reproducibility (UMAP / numba) — unchanged on local;
     # cluster jobs inherit these unless the user overrides in their shell.
     env.setdefault("NUMBA_NUM_THREADS", "1")
@@ -496,8 +629,12 @@ def _snakemake(args: list[str], run_dir: Path, *, executor: str = "local") -> No
         else:
             targets.append(a)
 
-    cmd = [sys.executable, "-m", "snakemake", "-s", str(SNAKEFILE),
-           "--rerun-incomplete", *targets, *rest]
+    cmd = [
+        sys.executable, "-m", "snakemake",
+        "-s", str(SNAKEFILE),
+        "--directory", str(paths.snakemake_workdir),
+        "--rerun-incomplete", *targets, *rest,
+    ]
     if executor == "local":
         cmd += ["--cores", "1"]
     else:

@@ -93,6 +93,16 @@ class RunPaths:
     def log_jsonl(self) -> Path:
         return self.internal / "log.jsonl"
 
+    @property
+    def snakemake_workdir(self) -> Path:
+        """Run-local Snakemake state directory.
+
+        Snakemake writes locks, metadata, and scheduler logs under `.snakemake`
+        in its working directory. Keeping that directory inside each run avoids
+        cross-run lock contention when multiple datasets run concurrently.
+        """
+        return self.internal / "snakemake"
+
     # --- Deliverable phase roots ------------------------------------------
     @property
     def deliv_pre_run(self) -> Path:
@@ -238,7 +248,7 @@ class RunPaths:
         """Create both the internal and deliverables scaffold (idempotent)."""
         for p in (
             self.internal,
-            self.artifacts, self.proposals, self.checkpoints,
+            self.artifacts, self.proposals, self.checkpoints, self.snakemake_workdir,
             self.deliverables,
             self.deliv_pre_run, self.deliv_config, self.deliv_pre_summary,
             self.deliv_checkpoint, self.deliv_qc_review, self.deliv_resolution_review,

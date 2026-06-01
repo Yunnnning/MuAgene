@@ -1,49 +1,36 @@
 # SLURM Snakemake profile.
 #
-# Uses snakemake-executor-plugin-slurm. The plugin maps the `threads:` directive
-# to `--cpus-per-task=<threads>` automatically, and accepts `mem_mb` / `runtime`
-# / `slurm_partition` / `slurm_account` as resources. Per-rule values come from
-# workflow/resources.smk; site-specific defaults (partition, account) are
-# injected by scripts/launch_runner.sh from env vars:
-#
-#   PMA_SLURM_PARTITION   → --default-resources slurm_partition=<...>
-#   PMA_SLURM_ACCOUNT     → --default-resources slurm_account=<...>
-#
-# The launcher appends those flags if the env vars are non-empty.
+# Uses the generic cluster executor instead of snakemake-executor-plugin-slurm.
+# This is deliberate: `Processing-MuAgent submit --executor slurm` runs the
+# Snakemake orchestrator as a small SLURM head-job.  The native SLURM executor
+# switches behavior when Snakemake itself is already inside a SLURM allocation
+# and can execute children as job steps, which makes per-rule resources and
+# output accounting unreliable on shared HPC filesystems.  The generic submit
+# script always sends each non-local rule through `sbatch`.
 
-executor: slurm
+executor: cluster-generic
+
+cluster-generic-submit-cmd: >-
+  ${PMA_REPO_ROOT}/workflow/profiles/slurm/slurm-submit.sh
+  {rule} {jobid} {threads} {resources.mem_mb} {resources.runtime}
+
+cluster-generic-status-cmd: ${PMA_REPO_ROOT}/workflow/profiles/slurm/slurm-status.sh
 
 jobs: 8
 max-jobs-per-second: 1
 max-status-checks-per-second: 1
-latency-wait: 60
+latency-wait: 300
 
 restart-times: 1
 rerun-incomplete: true
 keep-going: false
 
-# Tell Snakemake 9 that the entire workflow runs on a shared NFS filesystem.
-# Without this, snakemake-executor-plugin-slurm-jobstep (remote_exec=True)
-# runs store_storage_outputs() and cleanup_storage_objects() after every child
-# job, which consistently blocks ~30 min on shared network filesystems even
-# when no files need to be transferred.  Setting all shared-fs-usage options
-# tells Snakemake that inputs, outputs, provenance, sources and local storage
-# copies are all on the shared FS — no remote staging needed.
-shared-fs-usage:
-  - input-output
-  - persistence
-  - software-deployment
-  - software-deployment-cache
-  - source-cache
-  - sources
-  - storage-local-copies
-
 # Fallback resources for rules without their own (per-rule values are declared
 # in resources.smk and inherited via the rule's resources: directive).
-# runtime is in MINUTES (snakemake-standard; the slurm plugin accepts minutes).
+# runtime is in MINUTES (snakemake-standard; slurm-submit.sh passes it to sbatch).
 default-resources:
   - mem_mb=4000
-  - runtime=60
+  - runtime=120
 
 # Conda envs are not managed by snakemake in v1 — the runner wrapper activates
 # the project env (`grn`) and child jobs inherit it.

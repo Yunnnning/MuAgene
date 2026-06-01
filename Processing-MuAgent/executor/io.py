@@ -702,6 +702,60 @@ def fragment_size_metrics(
     return out
 
 
+def _write_via_tmp(write_fn, path: Path | str, suffix: str) -> None:
+    """Write any HDF5-backed file via /tmp to avoid NFS file-locking and write-back hangs.
+
+    Two NFS hazards addressed:
+
+    1. HDF5 file locking: HDF5's fcntl locks hang indefinitely on NFS mounts.
+       Writing to /tmp (local disk) first lets HDF5 complete without NFS
+       involvement; shutil.copy2 then copies raw bytes to NFS — no HDF5
+       locking needed.
+
+    2. NFS write-back hang: after copy2 returns, the large file sits in the
+       NFS client's write-back buffer (dirty pages). Snakemake's post-rule
+       check_and_touch_output() immediately calls os.utime() (touch) and
+       os.stat() on the output file. The NFS server serialises these behind
+       the pending write flush, blocking for 60-90 minutes. os.fsync() on the
+       destination file forces the NFS client to commit all dirty pages to the
+       server via a COMMIT RPC before returning, so subsequent touch/stat are
+       fast.
+    """
+    import os
+    import tempfile
+    path = Path(path)
+    nfs_tmp = path.with_suffix(path.suffix + ".writing")
+    fd, local_tmp = tempfile.mkstemp(suffix=suffix, dir="/tmp")
+    os.close(fd)
+    local_tmp_path = Path(local_tmp)
+    try:
+        write_fn(local_tmp_path)
+        # Copy to NFS staging path, then fsync to flush write-back to server
+        shutil.copy2(str(local_tmp_path), str(nfs_tmp))
+        local_tmp_path.unlink(missing_ok=True)
+        dst_fd = os.open(str(nfs_tmp), os.O_WRONLY | os.O_APPEND)
+        try:
+            os.fsync(dst_fd)
+        finally:
+            os.close(dst_fd)
+        # Atomic rename: Snakemake sees a complete file or nothing
+        os.rename(str(nfs_tmp), str(path))
+    except Exception:
+        local_tmp_path.unlink(missing_ok=True)
+        nfs_tmp.unlink(missing_ok=True)
+        raise
+
+
+def write_h5ad_safe(adata: ad.AnnData, path: Path | str) -> None:
+    """Write AnnData h5ad via /tmp to avoid HDF5/NFS file-locking deadlocks."""
+    _write_via_tmp(lambda p: adata.write_h5ad(p), path, ".h5ad")
+
+
+def write_mudata_safe(mdata: Any, path: Path | str) -> None:
+    """Write MuData h5mu via /tmp to avoid HDF5/NFS file-locking deadlocks."""
+    _write_via_tmp(lambda p: mdata.write(str(p)), path, ".h5mu")
+
+
 def nucleosome_signal_per_cell(
     path: Path | str,
     barcodes: list[str],
