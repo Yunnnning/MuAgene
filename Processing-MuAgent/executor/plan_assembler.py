@@ -18,12 +18,12 @@ from .hpc import load_execution_settings
 # {paired, separate, rna_only, atac_only}.
 _STAGES_BY_BRANCH = {
     "paired":    {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-                   "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"},
+                   "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap"},
     "separate":  {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-                   "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"},
+                   "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap"},
     "rna_only":  {"s1a_ambient", "s1_rna_qc", "s3_doublets", "s4_rna_norm",
                    "s6_dimred", "s7_clustering", "s8_umap"},
-    "atac_only": {"s2_atac_qc", "s3_doublets", "s5_atac_lsi",
+    "atac_only": {"s2_atac_qc", "s3_doublets", "s5_atac_spectral",
                    "s6_dimred", "s7_clustering", "s8_umap"},
 }
 
@@ -195,10 +195,13 @@ def assemble_plan(
                 "hvg_n_top_genes": p(2000, "default", "Cap; actual count min(2000, 0.1 * n_genes_after_qc).", "high"),
             }
         },
-        "s5_atac_lsi": {
+        "s5_atac_spectral": {
             "parameters": {
-                "n_components": p(50, "default", "Standard LSI dimensionality.", "high"),
-                "drop_first": p(True, "default", "First LSI component is depth-correlated.", "high"),
+                "n_components": p(50, "default",
+                                   "Number of spectral components from snap.tl.spectral.", "high"),
+                "drop_first": p(True, "default",
+                                "Drop the first spectral component (depth-correlated); "
+                                "applied to obsm['X_spectral'].", "high"),
                 "max_top_peaks": p(50000, "recommended", "Cap on feature selection.", "medium"),
             }
         },
@@ -244,7 +247,7 @@ def assemble_plan(
     }
 
     # Filter stages by branch — single-modality branches drop the irrelevant
-    # per-modality stages (e.g. rna_only drops s2_atac_qc + s5_atac_lsi).
+    # per-modality stages (e.g. rna_only drops s2_atac_qc + s5_atac_spectral).
     keep = _stages_for_branch(workflow_branch)
     stages = {k: v for k, v in stages.items() if k in keep}
 

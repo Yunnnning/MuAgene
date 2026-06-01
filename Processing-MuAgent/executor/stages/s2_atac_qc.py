@@ -6,7 +6,7 @@ Imports fragments into a SnapATAC2-backed AnnData and applies per-cell filters:
   - nucleosome signal (max)
 
 Note: tile-matrix construction is NOT part of S2. It happens later in S5 alongside
-the LSI/spectral step. S2 only computes QC metrics and subsets cells.
+spectral embedding. S2 only computes QC metrics and subsets cells.
 """
 from __future__ import annotations
 

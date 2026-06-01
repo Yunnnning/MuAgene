@@ -27,6 +27,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # in `.layers["counts"]` and `.X`.
     s1a_path = run_dir / "internal" / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"
     s0_path = run_dir / "internal" / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"
+    branch = _prov.current_branch(str(params_path))
+    if branch in ("paired", "separate", "rna_only") and not s1a_path.exists():
+        raise FileNotFoundError(
+            f"S1 RNA QC expected upstream S1a artifact at {s1a_path} but it is missing. "
+            "Refusing to fall back to S0 ingest — that would skip ambient correction."
+        )
     in_path = s1a_path if s1a_path.exists() else s0_path
     a = ad.read_h5ad(in_path)
 

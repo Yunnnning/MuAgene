@@ -24,7 +24,7 @@ EXECUTOR_CHOICE = click.Choice(["local", "pbs", "slurm"])
 STAGES = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
           "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
           "post_qc_review",
-          "s4_rna_norm", "s5_atac_lsi", "s6_dimred", "s7_clustering", "s8_umap"]
+          "s4_rna_norm", "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap"]
 
 
 def _resolve_run_dir(config_path: Path | str) -> Path:
@@ -395,7 +395,7 @@ _PHASE_INTERNAL_APPROVALS: dict[str, tuple[str, ...]] = {
         "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
     ),
     "s7_clustering_propose": (
-        "s4_rna_norm", "s5_atac_lsi", "s6_dimred",
+        "s4_rna_norm", "s5_atac_spectral", "s6_dimred",
     ),
     "all": (
         "s8_umap",

@@ -24,6 +24,7 @@ rule s4_rna_norm_execute:
         plan               = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done   = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         qc_review_done     = str(INTERNAL / "checkpoints" / "post_qc_review.approved"),
+        rna_post           = str(INTERNAL / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"),
     output:
         h5ad = str(INTERNAL / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad"),
     params:

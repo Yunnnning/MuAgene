@@ -1,4 +1,4 @@
-"""S6 — Dim reduction + neighbors (RNA PCA + neighbors; ATAC neighbors on LSI already present).
+"""S6 — Dim reduction + neighbors (RNA PCA + neighbors; ATAC neighbors on spectral embedding from S5).
 
 Standard scanpy preprocessing path (rev. 2026-04):
     log-normalize → HVG → optional sc.pp.scale → PCA → neighbors
@@ -139,13 +139,15 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # --- ATAC ---
     if has_atac:
         import snapatac2 as snap
-        atac_h5 = run_dir / "internal" / "artifacts" / "s5_atac_lsi" / "atac_lsi.h5ad"
+        from ..atac_latent import ATAC_LATENT_KEY
+        atac_h5 = run_dir / "internal" / "artifacts" / "s5_atac_spectral" / "atac_spectral.h5ad"
         if not atac_h5.exists():
             atac_h5 = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
         if atac_h5.exists():
             adata = snap.read(str(atac_h5))
             try:
-                snap.pp.knn(adata, n_neighbors=n_neighbors)
+                # SnapATAC2 default use_rep='X_spectral' (trimmed in S5 when drop_first=True).
+                snap.pp.knn(adata, n_neighbors=n_neighbors, use_rep=ATAC_LATENT_KEY)
             except Exception as e:
                 log_event(run_dir, {"stage": "s6_dimred", "event": "atac_knn_failed", "error": str(e)})
             try:

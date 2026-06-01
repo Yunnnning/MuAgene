@@ -1,6 +1,6 @@
 """Side-by-side Leiden resolution comparison helper.
 
-Given an existing run directory with S6 dim-reduced RNA + S5 LSI ATAC, re-cluster
+Given an existing run directory with S6 dim-reduced RNA + S5 spectral ATAC, re-cluster
 each modality at two user-specified resolutions and render a side-by-side UMAP
 figure + summary table. Writes to <run_dir>/internal/artifacts/s7_clustering/
 and surfaces comparison figures in deliverables/checkpoint/resolution_review/.
@@ -26,6 +26,7 @@ import pandas as pd
 import scanpy as sc
 
 from . import figures as _fig
+from .atac_latent import ATAC_LATENT_KEY
 
 
 FIGSIZE = (13, 5.5)
@@ -123,7 +124,7 @@ def compare_rna(run_dir: Path | str, resolutions: tuple[float, float], seed: int
 def compare_atac(run_dir: Path | str, resolutions: tuple[float, float], seed: int = 0) -> dict[str, Any]:
     import snapatac2 as snap
     run_dir = Path(run_dir)
-    atac_path = run_dir / "internal" / "artifacts" / "s5_atac_lsi" / "atac_lsi.h5ad"
+    atac_path = run_dir / "internal" / "artifacts" / "s5_atac_spectral" / "atac_spectral.h5ad"
     if not atac_path.exists():
         atac_path = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
     adata = snap.read(str(atac_path))
@@ -134,7 +135,7 @@ def compare_atac(run_dir: Path | str, resolutions: tuple[float, float], seed: in
         coords = None
     if coords is None:
         try:
-            snap.tl.umap(adata, random_state=seed)
+            snap.tl.umap(adata, random_state=seed, use_rep=ATAC_LATENT_KEY)
             coords = np.asarray(adata.obsm["X_umap"])
         except Exception:
             coords = None
@@ -396,7 +397,7 @@ def adjacency_comparison(run_dir: Path | str, *, modality: str, grid: list[float
         umap_for_plot = coords
     elif modality == "atac":
         import snapatac2 as snap
-        atac_path = run_dir / "internal" / "artifacts" / "s5_atac_lsi" / "atac_lsi.h5ad"
+        atac_path = run_dir / "internal" / "artifacts" / "s5_atac_spectral" / "atac_spectral.h5ad"
         if not atac_path.exists():
             atac_path = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
         adata = snap.read(str(atac_path))
@@ -409,7 +410,7 @@ def adjacency_comparison(run_dir: Path | str, *, modality: str, grid: list[float
             umap_for_plot = None
         if umap_for_plot is None:
             try:
-                snap.tl.umap(adata, random_state=seed)
+                snap.tl.umap(adata, random_state=seed, use_rep=ATAC_LATENT_KEY)
                 umap_for_plot = np.asarray(adata.obsm["X_umap"])
             except Exception:
                 umap_for_plot = None

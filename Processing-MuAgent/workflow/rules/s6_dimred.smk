@@ -5,7 +5,7 @@ def _s6_inputs(wildcards):
     if branch in ("paired", "separate", "rna_only"):
         paths["rna_norm"] = str(INTERNAL / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad")
     if branch in ("paired", "separate", "atac_only"):
-        paths["atac_lsi"] = str(INTERNAL / "artifacts" / "s5_atac_lsi" / "lsi_summary.json")
+        paths["atac_spectral"] = str(INTERNAL / "artifacts" / "s5_atac_spectral" / "spectral_summary.json")
     return paths
 
 
@@ -23,13 +23,14 @@ rule s6_dimred_propose:
         from executor import approval
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s6_dimred",
-            "action": "RNA PCA + neighbors; ATAC neighbors on spectral/LSI components 2..N",
+            "action": "RNA PCA + neighbors; ATAC KNN on snap.tl.spectral embedding (X_spectral)",
         }))
         approval.mark_awaiting(params.run_dir, "s6_dimred")
 
 
 rule s6_dimred_execute:
     input:
+        unpack(_s6_inputs),
         proposal         = str(INTERNAL / "proposals" / "s6_dimred.yaml"),
         approved         = str(INTERNAL / "checkpoints" / "s6_dimred.approved"),
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),

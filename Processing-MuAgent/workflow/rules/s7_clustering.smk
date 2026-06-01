@@ -55,6 +55,7 @@ rule s7_clustering_execute:
         approved         = str(INTERNAL / "checkpoints" / "s7_clustering.approved"),
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
+        rna_dimred       = str(INTERNAL / "artifacts" / "s6_dimred" / "rna_dimred.h5ad"),
     output:
         rna_clustered = str(INTERNAL / "artifacts" / "s7_clustering" / "rna_clustered.h5ad"),
     params:

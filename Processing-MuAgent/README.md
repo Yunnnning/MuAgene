@@ -11,7 +11,7 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
 ```
   P1 context extraction → S0 ingest validation → P2 preprocessing plan → (CHECKPOINT 1) plan_review
   → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → (CHECKPOINT 2) post_qc_review
-  → S4 RNA normalization + HVG → S5 ATAC TF-IDF + LSI → S6 dimensionality reduction + neighbors graph
+  → S4 RNA normalization + HVG → S5 ATAC spectral embedding → S6 dimensionality reduction + neighbors graph
   → S7 clustering → (CHECKPOINT 3) resolution_review → S8 UMAP → outputs
 ```
 
@@ -67,14 +67,14 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_summary.md`).
 - **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and dimensionality reduction. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_summary.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, union doublet policy). Revise quality-filter thresholds and re-run affected stages before approving.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
-- **S5 ATAC TF-IDF + LSI and peak matrix export** — TF-IDF normalization and spectral embedding (LSI) on the SnapATAC2 tile matrix (`bin_size=500`, unified with S3). In parallel, exports a feature (cell-by-feature) matrix using this priority order:
+- **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order:
   0. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
   1. **ARC peak matrix** — pre-called peaks from a combined Cell Ranger ARC `.h5` detected at S0 (`arc_h5` mode).
   2. **MACS3 from fragments** — SnapATAC2 MACS3 integration (`macs3_from_fragments` mode).
   3. **Tile-matrix fallback** — verified SnapATAC2 tile matrix (`tile_matrix_fallback` mode).
 
-  LSI embedding (used by S6–S8) is always computed from the tile matrix regardless of peak-export mode.
-- **S6 Dim reduction + neighbors** — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** SnapATAC2 LSI embedding from S5; neighbor graph on LSI.
+  Spectral embedding in `obsm['X_spectral']` (with `X_lsi` as a backward-compat alias) is always computed from the tile matrix regardless of peak-export mode. When `drop_first=True`, the first component is removed before S6–S8.
+- **S6 Dim reduction + neighbors** — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** KNN graph on the S5 spectral embedding (`X_spectral` via `snap.pp.knn`).
 - **S7 Clustering** — Leiden resolution sweep with per-modality grid and stable-region knee picker. **Resolution review checkpoint (#3):** `checkpoint/resolution_review/resolution_review.html` / `.ipynb`. Separate branch: chosen resolutions become final labels. Paired branch: diagnostic per-modality labels for UMAP only.
 - **S8 UMAP** — Per-modality UMAP. **Paired** → `processed.h5mu`; **separate** → `rna_processed.h5ad` + `atac_processed.h5ad`. On the paired branch, S8 expects matching barcodes from S3; final assembly includes a defensive re-intersection logged only when it filters cells.
 - **manifest** — `run_manifest.json` handoff contract (v1.0.0), final `qc_summary.md`, and `layout.json`.
@@ -346,7 +346,7 @@ Processing-MuAgent approve plan_review --config $CONFIG
 
 # S1a → S8:
 for STAGE in s1a_ambient s1_rna_qc s2_atac_qc \
-             s3_doublets post_qc_review s4_rna_norm s5_atac_lsi \
+             s3_doublets post_qc_review s4_rna_norm s5_atac_spectral \
              s6_dimred s7_clustering s8_umap; do
     Processing-MuAgent propose $STAGE --config $CONFIG
     # review: <run_dir>/internal/proposals/$STAGE.yaml

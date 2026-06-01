@@ -1,14 +1,16 @@
-"""S5 — ATAC TF-IDF + LSI (spectral) via SnapATAC2, plus flexible feature export.
+"""S5 — ATAC spectral embedding via SnapATAC2, plus flexible feature export.
 
 SnapATAC2 backed AnnData writes in-place on the file it was opened from. To preserve
 the S3 output unchanged and make S6+ work on a distinct artifact, we COPY the S3
-output to s5/atac_lsi.h5ad then modify that copy in place.
+output to s5/atac_spectral.h5ad then modify that copy in place.
 
 S5 performs two independent operations:
 
-  (1) CLUSTERING LATENT: tile matrix → feature selection → spectral
-      embedding → `adata.obsm['X_lsi']`. This is what S7/S8 use for clustering
-      and UMAP. 
+  (1) CLUSTERING LATENT: tile matrix → feature selection → snap.tl.spectral
+      (Laplacian eigenmaps with IDF feature weights) → `adata.obsm['X_spectral']`.
+      When `drop_first=True`, the first component is removed from X_spectral so
+      SnapATAC2 defaults (knn, umap, leiden) see the trimmed embedding. A copy
+      is also stored as `X_lsi` for backward compatibility.
 
   (2) FEATURE EXPORT: prefer a peak-by-cell matrix for downstream data
       integration. The preferred path is the Cell Ranger ARC h5 (fast shortcut
@@ -19,7 +21,7 @@ S5 performs two independent operations:
       spectral step. Only if that fallback also fails does S5 emit no feature
       matrix and let S8 surface a latent-only ATAC AnnData.
 
-  Outputs written to `s5_atac_lsi/`:
+  Outputs written to `s5_atac_spectral/`:
     feature_matrix.npz   — scipy.sparse.csr_matrix (cells × peaks or tiles).
     feature_names.tsv    — one interval per line.
     feature_kind.txt     — "peak_matrix" | "tile_matrix" | "".
@@ -31,26 +33,27 @@ from pathlib import Path
 from typing import Any
 
 from .. import provenance as _prov
+from ..atac_latent import ATAC_LATENT_ALIAS, ATAC_LATENT_KEY
 from ..log import log_event
 
 
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     import snapatac2 as snap
     run_dir = Path(run_dir)
-    art = run_dir / "internal" / "artifacts" / "s5_atac_lsi"
+    art = run_dir / "internal" / "artifacts" / "s5_atac_spectral"
     art.mkdir(parents=True, exist_ok=True)
     params_path = run_dir / "internal" / "parameters.yaml"
 
     src = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
     if not src.exists():
         src = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
-    dst = art / "atac_lsi.h5ad"
+    dst = art / "atac_spectral.h5ad"
     if dst.exists():
         dst.unlink()
     shutil.copy(src, dst)
     adata = snap.read(str(dst))
 
-    p = plan["stages"]["s5_atac_lsi"]["parameters"]
+    p = plan["stages"]["s5_atac_spectral"]["parameters"]
     n_components = int(p["n_components"]["value"])
     max_top_peaks = int(p["max_top_peaks"]["value"])
     drop_first = bool(p["drop_first"]["value"])
@@ -59,7 +62,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     try:
         snap.pp.add_tile_matrix(adata, bin_size=500)
     except Exception as e:
-        log_event(run_dir, {"stage": "s5_atac_lsi", "event": "tile_matrix_failed", "error": str(e)})
+        log_event(run_dir, {"stage": "s5_atac_spectral", "event": "tile_matrix_failed", "error": str(e)})
 
     # Feature selection (note: `select_features` lives under snap.pp in 2.8; verify before use).
     sel_fn = getattr(snap.pp, "select_features", None)
@@ -67,39 +70,40 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         try:
             sel_fn(adata, n_features=min(max_top_peaks, adata.n_vars))
         except Exception as e:
-            log_event(run_dir, {"stage": "s5_atac_lsi", "event": "select_features_failed", "error": str(e)})
+            log_event(run_dir, {"stage": "s5_atac_spectral", "event": "select_features_failed", "error": str(e)})
     else:
-        log_event(run_dir, {"stage": "s5_atac_lsi", "event": "select_features_missing",
+        log_event(run_dir, {"stage": "s5_atac_spectral", "event": "select_features_missing",
                              "note": "snap.pp.select_features not found; using all features."})
 
-    # Spectral embedding (LSI-like).
+    # Spectral embedding via SnapATAC2 (not classical TF-IDF + SVD LSI).
     snap.tl.spectral(adata, n_comps=n_components)
 
-    # If drop_first, make X_lsi = X_spectral[:, 1:]; SnapATAC2 writes obsm via
-    # adata.obsm["X_lsi"] = ...  (this triggers a backed write)
     try:
         import numpy as np
-        emb = adata.obsm["X_spectral"] if "X_spectral" in adata.obsm else None
-        if emb is not None:
-            emb = np.asarray(emb)
-            if drop_first and emb.shape[1] > 1:
-                adata.obsm["X_lsi"] = emb[:, 1:]
-            else:
-                adata.obsm["X_lsi"] = emb
+        if ATAC_LATENT_KEY not in adata.obsm:
+            raise RuntimeError(f"snap.tl.spectral did not write obsm['{ATAC_LATENT_KEY}']")
+        emb = np.asarray(adata.obsm[ATAC_LATENT_KEY])
+        if drop_first and emb.shape[1] > 1:
+            emb = emb[:, 1:]
+        # Overwrite X_spectral so SnapATAC2 defaults (knn, umap) respect drop_first.
+        adata.obsm[ATAC_LATENT_KEY] = emb
+        adata.obsm[ATAC_LATENT_ALIAS] = emb
     except Exception as e:
-        log_event(run_dir, {"stage": "s5_atac_lsi", "event": "lsi_copy_failed", "error": str(e)})
+        log_event(run_dir, {"stage": "s5_atac_spectral", "event": "spectral_postprocess_failed",
+                             "error": str(e)})
+        raise
 
-    _prov.set_param(params_path, "s5_atac_lsi.n_components", n_components,
+    _prov.set_param(params_path, "s5_atac_spectral.n_components", n_components,
                     source="default", confidence="high",
-                    rationale="Plan default; standard LSI dimensionality")
-    _prov.set_param(params_path, "s5_atac_lsi.drop_first", drop_first,
+                    rationale="Plan default; snap.tl.spectral output dimensionality")
+    _prov.set_param(params_path, "s5_atac_spectral.drop_first", drop_first,
                     source="default", confidence="high",
                     rationale="First spectral component correlates with depth")
 
     # Flexible feature export. Prefer a peak matrix (ARC h5, then MACS3 from
     # fragments), but if peak generation fails do NOT interrupt preprocessing:
     # fall back to the verified tile matrix that fed the spectral step above.
-    # Tile matrix and X_lsi remain the clustering latent either way. If even
+    # Tile matrix and X_spectral remain the clustering latent either way. If even
     # the fallback cannot be exported, we leave feature_kind empty and S8 emits
     # a latent-only ATAC AnnData.
     import numpy as np
@@ -116,7 +120,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # ---- Priority 0: user-supplied peaks BED ----------------------------
     # When the user provides `atac_peaks_path` in run.yaml, S5 trusts it and
     # builds the peak-by-cell matrix from those intervals via SnapATAC2's
-    # `make_peak_matrix`. The LSI/spectral clustering latent above is unchanged.
+    # `make_peak_matrix`. The spectral clustering latent above is unchanged.
     try:
         import yaml as _yaml
         from ..run_paths import RunPaths as _RunPaths
@@ -170,7 +174,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             except Exception:
                 pass
     except Exception as e:
-        log_event(run_dir, {"stage": "s5_atac_lsi",
+        log_event(run_dir, {"stage": "s5_atac_spectral",
                              "event": "user_peaks_path_skipped", "reason": str(e)})
 
     # ---- Priority 1: Cell Ranger ARC h5 peak matrix ---------------------
@@ -212,7 +216,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     peak_X, peak_names = X, names
                     peak_source, peak_source_h5 = "arc_h5", str(rna_path)
         except Exception as e:
-            log_event(run_dir, {"stage": "s5_atac_lsi",
+            log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "arc_peak_path_skipped", "reason": str(e)})
 
     # ---- Priority 2: MACS3 peak calling from fragments ------------------
@@ -314,14 +318,14 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 pass
         except Exception as e:
             macs3_failures.append(str(e))
-            log_event(run_dir, {"stage": "s5_atac_lsi",
+            log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "macs3_peak_path_failed", "reason": str(e)})
 
-    # ---- Sanity: spectral must have computed X_lsi ---------------------
-    if "X_lsi" not in adata.obsm:
+    # ---- Sanity: spectral must have computed X_spectral ----------------
+    if ATAC_LATENT_KEY not in adata.obsm:
         raise RuntimeError(
-            "X_lsi missing from adata.obsm — the tile/LSI clustering path failed. "
-            "Refusing to emit an ATAC output without a clustering latent."
+            f"{ATAC_LATENT_KEY} missing from adata.obsm — the tile/spectral clustering "
+            "path failed. Refusing to emit an ATAC output without a clustering latent."
         )
 
     feature_kind: str | None = None
@@ -355,12 +359,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             peak_X, peak_names = X, names
             peak_source = "tile_matrix_fallback"
             feature_kind = "tile_matrix"
-            log_event(run_dir, {"stage": "s5_atac_lsi",
+            log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "tile_matrix_fallback_engaged",
                                  "note": "peak generation failed; exporting verified tile matrix",
                                  "macs3_errors": macs3_failures})
         except Exception as e:
-            log_event(run_dir, {"stage": "s5_atac_lsi",
+            log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "tile_matrix_fallback_failed",
                                  "error": str(e), "macs3_errors": macs3_failures})
 
@@ -378,15 +382,17 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             export_reason = (
                 f"Exported peak_matrix ({n_obs_expected}×{n_features}, source={peak_source}"
                 f"{f', h5={peak_source_h5}' if peak_source_h5 else ''}) to "
-                "s5_atac_lsi/{feature_matrix.npz, feature_names.tsv}. "
-                "Clustering latent X_lsi (tile-derived) is preserved in .obsm and is unchanged."
+                "s5_atac_spectral/{feature_matrix.npz, feature_names.tsv}. "
+                f"Clustering latent {ATAC_LATENT_KEY} (tile-derived) is preserved in "
+                ".obsm and is unchanged."
             )
         else:
             export_reason = (
                 f"Exported tile_matrix fallback ({n_obs_expected}×{n_features}) — "
                 f"peak generation failed (macs3_errors={macs3_failures}). Downstream "
                 "consumers will see uns['atac_feature_kind']='tile_matrix'. "
-                "Clustering latent X_lsi (tile-derived) is preserved in .obsm and is unchanged."
+                f"Clustering latent {ATAC_LATENT_KEY} (tile-derived) is preserved in "
+                ".obsm and is unchanged."
             )
     else:
         # All three paths failed — empty sidecar → S8 emits latent_only.
@@ -394,37 +400,40 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         export_reason = (
             "Feature-level ATAC export failed on all paths (ARC, MACS3, tile fallback). "
             f"macs3_errors={macs3_failures}. S8 will emit a latent_only AnnData with "
-            "zero-column .X and preserved X_lsi."
+            f"zero-column .X and preserved {ATAC_LATENT_KEY}."
         )
         feature_kind = ""
 
-    _prov.set_param(params_path, "s5_atac_lsi.feature_matrix_exported", feature_exported,
+    _prov.set_param(params_path, "s5_atac_spectral.feature_matrix_exported", feature_exported,
                     source="derived", confidence="high",
                     rationale=export_reason,
                     method={"name": f"s5.feature_export.{peak_source or 'none'}",
-                            "code_ref": "executor/stages/s5_atac_lsi.py"})
-    _prov.set_param(params_path, "s5_atac_lsi.feature_kind", feature_kind or "",
+                            "code_ref": "executor/stages/s5_atac_spectral.py"})
+    _prov.set_param(params_path, "s5_atac_spectral.feature_kind", feature_kind or "",
                     source="derived", confidence="high",
                     rationale=("peak_matrix | tile_matrix | '' (latent-only) — the actual "
                                "feature representation exported by S5."),
-                    method={"name": "literal", "code_ref": "executor/stages/s5_atac_lsi.py"})
-    _prov.set_param(params_path, "s5_atac_lsi.peak_source", peak_source,
+                    method={"name": "literal", "code_ref": "executor/stages/s5_atac_spectral.py"})
+    _prov.set_param(params_path, "s5_atac_spectral.peak_source", peak_source,
                     source="derived", confidence="high",
                     rationale=("arc_h5: Cell Ranger ARC pre-called peaks; "
                                 "macs3_from_fragments: MACS3 called globally on S5 cells; "
                                 "tile_matrix_fallback: both peak paths failed, fell back to "
                                 "the verified tile matrix."),
                     method={"name": "peak_source_selector",
-                            "code_ref": "executor/stages/s5_atac_lsi.py"})
+                            "code_ref": "executor/stages/s5_atac_spectral.py"})
     if peak_source_h5 is not None:
-        _prov.set_param(params_path, "s5_atac_lsi.peak_source_h5", peak_source_h5,
+        _prov.set_param(params_path, "s5_atac_spectral.peak_source_h5", peak_source_h5,
                         source="derived", confidence="high",
                         rationale="10x ARC h5 from which peaks were extracted.",
                         method={"name": "io.load_atac_from_10x_h5",
                                 "code_ref": "executor/io.py"})
 
     import json as _json
-    (art / "lsi_summary.json").write_text(_json.dumps({
+    (art / "spectral_summary.json").write_text(_json.dumps({
+        "method": "snap.tl.spectral",
+        "embedding_key": ATAC_LATENT_KEY,
+        "embedding_alias": ATAC_LATENT_ALIAS,
         "n_components": int(n_components),
         "drop_first": bool(drop_first),
         "n_cells": int(adata.n_obs),
@@ -438,7 +447,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         adata.close()
     except Exception:
         pass
-    log_event(run_dir, {"stage": "s5_atac_lsi", "event": "done",
+    log_event(run_dir, {"stage": "s5_atac_spectral", "event": "done",
                          "n_components": n_components, "drop_first": drop_first,
                          "feature_matrix_exported": feature_exported,
                          "n_features_selected": n_features})

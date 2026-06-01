@@ -20,6 +20,7 @@ from typing import Any
 import anndata as ad
 import numpy as np
 
+from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
 from ..methods import ambient as _amb

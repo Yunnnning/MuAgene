@@ -26,6 +26,7 @@ rule s1_rna_qc_execute:
         approved          = str(INTERNAL / "checkpoints" / "s1_rna_qc.approved"),
         plan              = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done  = str(INTERNAL / "checkpoints" / "plan_review.approved"),
+        rna_decontaminated = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
     output:
         h5ad = str(INTERNAL / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad"),
     params:

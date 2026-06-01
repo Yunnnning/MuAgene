@@ -6,10 +6,12 @@ from typing import Any
 
 import anndata as ad
 import numpy as np
+import pandas as pd
 import scanpy as sc
 
 from .. import io as _io
 from .. import provenance as _prov
+from ..atac_latent import ATAC_LATENT_ALIAS, ATAC_LATENT_KEY, get_atac_latent
 from ..log import log_event
 
 
@@ -126,16 +128,23 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     atac_adata = None
     if has_atac:
         import snapatac2 as snap
-        atac_h5 = run_dir / "internal" / "artifacts" / "s5_atac_lsi" / "atac_lsi.h5ad"
+        atac_h5 = run_dir / "internal" / "artifacts" / "s5_atac_spectral" / "atac_spectral.h5ad"
         if not atac_h5.exists():
             atac_h5 = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
         atac = snap.read(str(atac_h5))
         try:
-            snap.tl.umap(atac, min_dist=min_dist, random_state=seed)
+            snap.tl.umap(atac, min_dist=min_dist, random_state=seed, use_rep=ATAC_LATENT_KEY)
         except Exception as e:
             log_event(run_dir, {"stage": "s8_umap", "event": "atac_umap_failed", "error": str(e)})
 
         atac_obs_df = atac.obs[:].to_pandas()
+        atac_barcodes = list(atac.obs_names)
+        atac_obs_df.index = atac_barcodes
+        leiden_sidecar = (run_dir / "internal" / "artifacts" / "s7_clustering"
+                          / "atac_leiden_labels.parquet")
+        if "leiden_atac" not in atac_obs_df.columns and leiden_sidecar.exists():
+            leiden_df = pd.read_parquet(leiden_sidecar).set_index("barcode")
+            atac_obs_df = atac_obs_df.join(leiden_df, how="left")
         try:
             if "X_umap" in atac.obsm and "leiden_atac" in list(atac_obs_df.columns):
                 _fig.plot_umap(np.asarray(atac.obsm["X_umap"]),
@@ -150,25 +159,23 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         except Exception:
             atac_umap = None
         try:
-            atac_lsi = np.asarray(atac.obsm["X_lsi"]) if "X_lsi" in atac.obsm else None
+            atac_emb = get_atac_latent(atac.obsm)
         except Exception:
-            atac_lsi = None
-        atac_barcodes = list(atac.obs_names)
+            atac_emb = None
         try:
             atac.close()
         except Exception:
             pass
 
         import scipy.sparse as sp
-        atac_obs_df.index = atac_barcodes
 
         # Feature-level ATAC representation exported by S5. `load_exported_atac_features`
         # returns (None, None) if anything is wrong (missing / shape mismatch / name-count
         # mismatch / bad npz). On (None, None) we build an honest latent-only AnnData
         # with an explicit zero-column .X — we do NOT fabricate a 1-column placeholder
-        # that could be mistaken for a real feature. `.obsm['X_lsi']` carries the
-        # spectral latent either way.
-        s5_dir = run_dir / "internal" / "artifacts" / "s5_atac_lsi"
+        # that could be mistaken for a real feature. `.obsm['X_spectral']` carries the
+        # spectral latent either way (with `X_lsi` as a backward-compat alias).
+        s5_dir = run_dir / "internal" / "artifacts" / "s5_atac_spectral"
         feat_path = s5_dir / "feature_matrix.npz"
         names_path = s5_dir / "feature_names.tsv"
         kind_path = s5_dir / "feature_kind.txt"
@@ -193,8 +200,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             atac_adata.uns["atac_feature_kind"] = "latent_only"
         if atac_umap is not None:
             atac_adata.obsm["X_umap_atac"] = atac_umap
-        if atac_lsi is not None:
-            atac_adata.obsm["X_lsi"] = atac_lsi
+        if atac_emb is not None:
+            atac_adata.obsm[ATAC_LATENT_KEY] = atac_emb
+            atac_adata.obsm[ATAC_LATENT_ALIAS] = atac_emb
 
     # --- Optional generic per-cell metadata join (any branch) -----------
     # User-supplied `cell_metadata_path` (TSV with a `barcode` column + arbitrary

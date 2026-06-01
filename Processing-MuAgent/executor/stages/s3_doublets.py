@@ -63,7 +63,7 @@ def _score_atac_doublets_snapatac(atac, *, probability_threshold: float):
     # Scrublet needs a tile matrix or peak matrix; add tile matrix if not
     # present. Using the SnapATAC2-default `bin_size=500` here keeps the
     # doublet-scoring tile matrix consistent with S5's clustering tile
-    # matrix; see s5_atac_lsi.py.
+    # matrix; see s5_atac_spectral.py.
     try:
         snap.pp.add_tile_matrix(atac, bin_size=500)
     except Exception:

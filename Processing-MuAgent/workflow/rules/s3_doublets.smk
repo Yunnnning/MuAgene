@@ -30,6 +30,7 @@ rule s3_doublets_propose:
 
 rule s3_doublets_execute:
     input:
+        unpack(_s3_inputs),
         proposal         = str(INTERNAL / "proposals" / "s3_doublets.yaml"),
         approved         = str(INTERNAL / "checkpoints" / "s3_doublets.approved"),
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
