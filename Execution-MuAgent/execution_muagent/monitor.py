@@ -59,6 +59,17 @@ SCHEDULER_RUNNING_STATES = {
     "SUSPENDED",
 }
 
+SCHEDULER_TERMINAL_STATES = SCHEDULER_FAILED_STATES | {"COMPLETED"}
+
+KILLABLE_FINDING_CODES = {
+    "scheduler_failed",
+    "no_filesystem_progress",
+    "unknown_scheduler_state_no_progress",
+    "unknown_scheduler_state_no_progress_files",
+    "child_job_storage_hang",
+    "workflow_error_marker",
+}
+
 
 @dataclass
 class Submission:
@@ -242,7 +253,11 @@ def _submitted_epoch(submission: Submission) -> float:
 
 
 def snakemake_log_roots(submission: Submission) -> list[Path]:
-    """Return run-local log roots first, with legacy repo-level roots as fallback."""
+    """Return run-local log roots first, with legacy repo-level roots as fallback.
+
+    Repo-level ``logs/`` is intentionally excluded: concurrent runs share that
+    directory and it poisons stale-progress detection.
+    """
     run_dir = Path(submission.run_dir)
     repo_root = Path(submission.repo_root)
     return [
@@ -250,7 +265,6 @@ def snakemake_log_roots(submission: Submission) -> list[Path]:
         run_dir / "internal" / "snakemake" / ".snakemake" / "slurm_logs",
         repo_root / ".snakemake" / "log",
         repo_root / ".snakemake" / "slurm_logs",
-        repo_root / "logs",
     ]
 
 
@@ -285,7 +299,17 @@ def discover_log_files(submission: Submission) -> list[Path]:
     return sorted(set(files), key=lambda p: str(p))
 
 
+def _is_run_scoped_progress_path(submission: Submission, path: Path) -> bool:
+    run_dir = Path(submission.run_dir).resolve()
+    try:
+        path.resolve().relative_to(run_dir)
+        return True
+    except ValueError:
+        return path.resolve() == Path(submission.log_path).resolve()
+
+
 def discover_progress_files(submission: Submission) -> list[Path]:
+    """Progress files used for stale-run detection (scoped to this run)."""
     run_dir = Path(submission.run_dir)
     files = [
         Path(submission.log_path),
@@ -296,7 +320,8 @@ def discover_progress_files(submission: Submission) -> list[Path]:
     for root in (run_dir / "internal" / "artifacts", run_dir / "deliverables"):
         if root.exists():
             files.extend(p for p in root.rglob("*") if p.is_file())
-    return files
+    scoped = [p for p in files if _is_run_scoped_progress_path(submission, p)]
+    return sorted(set(scoped), key=lambda p: str(p))
 
 
 def _read_tail(path: Path, max_bytes: int = 8000) -> str:
@@ -320,13 +345,72 @@ def _extract_markers(text: str) -> list[str]:
 def discover_child_job_ids(submission: Submission) -> list[str]:
     """Extract child scheduler ids from all known head/Snakemake logs."""
     head_id = _normalize_job_id(submission.job_id)
+    submitted_after = max(0.0, _submitted_epoch(submission) - 60.0)
     ids: set[str] = set()
+    slurm_logs = (
+        Path(submission.run_dir) / "internal" / "snakemake" / ".snakemake" / "slurm_logs"
+    )
+    if slurm_logs.exists():
+        for path in slurm_logs.rglob("*.log"):
+            if not path.is_file() or path.stat().st_mtime < submitted_after:
+                continue
+            if path.stem.isdigit():
+                norm = _normalize_job_id(path.stem)
+                if norm and norm != head_id:
+                    ids.add(norm)
     for path in discover_log_files(submission):
         for job_id in parse_job_ids_from_log(path):
             norm = _normalize_job_id(job_id)
             if norm and norm != head_id:
                 ids.add(norm)
     return sorted(ids)
+
+
+def _child_slurm_log(submission: Submission, job_id: str) -> Path | None:
+    root = Path(submission.run_dir) / "internal" / "snakemake" / ".snakemake" / "slurm_logs"
+    if not root.exists():
+        return None
+    matches = [p for p in root.rglob(f"{_normalize_job_id(job_id)}.log") if p.is_file()]
+    return _newest_file(matches)
+
+
+def _log_indicates_postrule_hang(path: Path, stale_minutes: float) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    age_min = (time.time() - path.stat().st_mtime) / 60.0
+    if age_min < stale_minutes:
+        return False
+    tail = _read_tail(path, 4000)
+    return "Finished jobid:" in tail and "Storing output in storage." in tail
+
+
+def _child_job_hang_findings(
+    submission: Submission,
+    child_job_ids: list[str],
+    stale_minutes: float,
+    scheduler_timeout_s: int,
+) -> list[MonitorFinding]:
+    findings: list[MonitorFinding] = []
+    for child_id in child_job_ids:
+        sched = query_scheduler(submission.executor, child_id, scheduler_timeout_s)
+        state = str(sched.get("state") or "").split()[0]
+        if state not in SCHEDULER_RUNNING_STATES:
+            continue
+        child_log = _child_slurm_log(submission, child_id)
+        if child_log is None or not _log_indicates_postrule_hang(child_log, stale_minutes):
+            continue
+        findings.append(
+            MonitorFinding(
+                "error",
+                "child_job_storage_hang",
+                (
+                    f"Child job {child_id} is still {state} in the scheduler but its "
+                    f"Snakemake log ({child_log.name}) finished and is stuck at "
+                    f"'Storing output in storage.' for >= {stale_minutes:.0f} min."
+                ),
+            )
+        )
+    return findings
 
 
 def collect_snapshot(submission: Submission, scheduler_timeout_s: int = 5) -> dict[str, Any]:
@@ -360,8 +444,14 @@ def collect_snapshot(submission: Submission, scheduler_timeout_s: int = 5) -> di
     }
 
 
-def evaluate_snapshot(snapshot: dict[str, Any], stale_minutes: float) -> list[MonitorFinding]:
+def evaluate_snapshot(
+    snapshot: dict[str, Any],
+    stale_minutes: float,
+    *,
+    scheduler_timeout_s: int = 5,
+) -> list[MonitorFinding]:
     findings: list[MonitorFinding] = []
+    submission = Submission(**snapshot["submission"])
     scheduler = snapshot.get("scheduler") or {}
     state_parts = str(scheduler.get("state") or "").split()
     state = state_parts[0] if state_parts else ""
@@ -387,7 +477,7 @@ def evaluate_snapshot(snapshot: dict[str, Any], stale_minutes: float) -> list[Mo
                 MonitorFinding(
                     "error",
                     "no_filesystem_progress",
-                    f"No monitored file changed for {age_min:.1f} min while scheduler state is {state}.",
+                    f"No run-scoped file changed for {age_min:.1f} min while scheduler state is {state}.",
                 )
             )
         elif not state and age_min >= stale_minutes:
@@ -395,13 +485,13 @@ def evaluate_snapshot(snapshot: dict[str, Any], stale_minutes: float) -> list[Mo
                 MonitorFinding(
                     "error",
                     "unknown_scheduler_state_no_progress",
-                    f"Scheduler state is unknown and no monitored file changed for {age_min:.1f} min.",
+                    f"Scheduler state is unknown and no run-scoped file changed for {age_min:.1f} min.",
                 )
             )
     elif state in SCHEDULER_RUNNING_STATES:
         findings.append(MonitorFinding("warning", "no_progress_files", "No progress files found yet."))
     elif not state:
-        age_min = (time.time() - _submitted_epoch(Submission(**snapshot["submission"]))) / 60.0
+        age_min = (time.time() - _submitted_epoch(submission)) / 60.0
         if age_min >= stale_minutes:
             findings.append(
                 MonitorFinding(
@@ -418,7 +508,119 @@ def evaluate_snapshot(snapshot: dict[str, Any], stale_minutes: float) -> list[Mo
                 "Job is in COMPLETING; on this cluster that can indicate epilog or NFS cleanup stall.",
             )
         )
+    child_ids = snapshot.get("child_job_ids") or []
+    findings.extend(
+        _child_job_hang_findings(submission, child_ids, stale_minutes, scheduler_timeout_s)
+    )
     return findings
+
+
+def _finding_codes(findings: list[MonitorFinding]) -> frozenset[str]:
+    return frozenset(f.code for f in findings)
+
+
+def _scheduler_state(info: dict[str, str | None]) -> str:
+    return str(info.get("state") or "").split()[0]
+
+
+def submission_jobs_active(
+    submission: Submission,
+    snapshot: dict[str, Any],
+    scheduler_timeout_s: int = 5,
+) -> bool:
+    """True if the registered head job or any discovered child is still active."""
+    head_state = _scheduler_state(
+        query_scheduler(submission.executor, submission.job_id, scheduler_timeout_s)
+    )
+    if head_state in SCHEDULER_RUNNING_STATES or head_state == "PENDING":
+        return True
+    for child_id in snapshot.get("child_job_ids") or []:
+        child_state = _scheduler_state(
+            query_scheduler(submission.executor, child_id, scheduler_timeout_s)
+        )
+        if child_state in SCHEDULER_RUNNING_STATES or child_state == "PENDING":
+            return True
+    return False
+
+
+def notify_monitor_email(submission: Submission, subject: str, body: str) -> dict[str, Any]:
+    recipient = os.environ.get("PMA_NOTIFY_EMAIL", "").strip()
+    if not recipient:
+        return {"attempted": False, "reason": "PMA_NOTIFY_EMAIL not set"}
+    if shutil.which("mail"):
+        try:
+            result = subprocess.run(
+                ["mail", "-s", subject, recipient],
+                input=body,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            return {
+                "attempted": True,
+                "via": "mail",
+                "returncode": result.returncode,
+                "stderr": result.stderr.strip(),
+            }
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return {"attempted": True, "via": "mail", "error": str(exc)}
+    if shutil.which("sendmail"):
+        try:
+            payload = f"To: {recipient}\nSubject: {subject}\n\n{body}\n"
+            result = subprocess.run(
+                ["sendmail", "-t"],
+                input=payload,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            return {
+                "attempted": True,
+                "via": "sendmail",
+                "returncode": result.returncode,
+                "stderr": result.stderr.strip(),
+            }
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return {"attempted": True, "via": "sendmail", "error": str(exc)}
+    return {"attempted": False, "reason": "no mail or sendmail on PATH"}
+
+
+def notify_hang_detected(
+    submission: Submission,
+    snapshot: dict[str, Any],
+    findings: list[MonitorFinding],
+    cancel_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    sched = snapshot.get("scheduler") or {}
+    lines = [
+        f"Agent: {submission.agent}",
+        f"Run: {submission.run_dir}",
+        f"Head job: {submission.job_id}",
+        f"Target: {submission.target}",
+        f"Scheduler state: {sched.get('state') or 'unknown'}",
+        "",
+        "Findings:",
+    ]
+    for finding in findings:
+        if finding.severity == "error":
+            lines.append(f"- {finding.code}: {finding.message}")
+    child_ids = snapshot.get("child_job_ids") or []
+    if child_ids:
+        lines.extend(["", f"Child jobs: {', '.join(child_ids)}"])
+    if cancel_result is not None:
+        lines.extend(["", "Kill action attempted (children first, then head)."])
+    lines.extend(
+        [
+            "",
+            f"Latest report: {run_monitor_dir(submission.run_dir) / 'latest_report.md'}",
+        ]
+    )
+    subject = (
+        f"{submission.agent}: HPC hang detected (job {submission.job_id})"
+    )
+    return notify_monitor_email(submission, subject, "\n".join(lines) + "\n")
 
 
 def cancel_job(executor: str, job_id: str, timeout_s: int = 5) -> dict[str, Any]:
@@ -517,17 +719,21 @@ def write_report(
     snapshot: dict[str, Any],
     findings: list[MonitorFinding],
     cancel_result: dict[str, Any] | None = None,
+    *,
+    record_history: bool = True,
 ) -> Path:
     report_dir = run_monitor_dir(submission.run_dir) / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    report_path = report_dir / f"{submission.job_id}_{stamp}.md"
     text = render_report(snapshot, findings, cancel_result)
-    report_path.write_text(text, encoding="utf-8")
     latest = run_monitor_dir(submission.run_dir) / "latest_report.md"
     latest.write_text(text, encoding="utf-8")
     state_path = run_monitor_dir(submission.run_dir) / "latest_snapshot.json"
     state_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not record_history:
+        return latest
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    report_path = report_dir / f"{submission.job_id}_{stamp}.md"
+    report_path.write_text(text, encoding="utf-8")
     return report_path
 
 
@@ -537,25 +743,36 @@ def monitor_once(
     stale_minutes: float,
     scheduler_timeout_s: int,
     kill_on_hang: bool,
-) -> tuple[dict[str, Any], list[MonitorFinding], dict[str, Any] | None, Path | None]:
+    previous_finding_codes: frozenset[str] | None = None,
+) -> tuple[dict[str, Any], list[MonitorFinding], dict[str, Any] | None, Path | None, frozenset[str]]:
     snapshot = collect_snapshot(submission, scheduler_timeout_s)
-    findings = evaluate_snapshot(snapshot, stale_minutes)
-    killable = any(
-        f.code in {
-            "scheduler_failed",
-            "no_filesystem_progress",
-            "unknown_scheduler_state_no_progress",
-            "unknown_scheduler_state_no_progress_files",
-        }
-        for f in findings
+    findings = evaluate_snapshot(
+        snapshot,
+        stale_minutes,
+        scheduler_timeout_s=scheduler_timeout_s,
     )
+    finding_codes = _finding_codes(findings)
+    killable = any(f.code in KILLABLE_FINDING_CODES for f in findings)
     child_job_ids = snapshot.get("child_job_ids") or []
     cancel_result = (
         cancel_submission_jobs(submission, child_job_ids, scheduler_timeout_s)
         if kill_on_hang and killable else None
     )
-    report_path = write_report(submission, snapshot, findings, cancel_result) if findings or cancel_result else None
-    return snapshot, findings, cancel_result, report_path
+    report_path: Path | None = None
+    if findings or cancel_result:
+        record_history = (
+            cancel_result is not None
+            or previous_finding_codes is None
+            or finding_codes != previous_finding_codes
+        )
+        report_path = write_report(
+            submission,
+            snapshot,
+            findings,
+            cancel_result,
+            record_history=record_history,
+        )
+    return snapshot, findings, cancel_result, report_path, finding_codes
 
 
 def monitor_watch(
@@ -569,21 +786,28 @@ def monitor_watch(
 ) -> Path | None:
     checks = 0
     last_report: Path | None = None
+    previous_codes: frozenset[str] | None = None
+    notified_codes: frozenset[str] = frozenset()
     while True:
-        snapshot, findings, cancel_result, report_path = monitor_once(
+        snapshot, findings, cancel_result, report_path, finding_codes = monitor_once(
             submission,
             stale_minutes=stale_minutes,
             scheduler_timeout_s=scheduler_timeout_s,
             kill_on_hang=kill_on_hang,
+            previous_finding_codes=previous_codes,
         )
         if report_path is not None:
             last_report = report_path
-        if cancel_result is not None or any(f.severity == "error" for f in findings):
+
+        error_codes = frozenset(f.code for f in findings if f.severity == "error")
+        if error_codes - notified_codes:
+            notify_hang_detected(submission, snapshot, findings, cancel_result)
+            notified_codes = notified_codes | error_codes
+
+        if not submission_jobs_active(submission, snapshot, scheduler_timeout_s):
             return last_report
-        state_parts = str((snapshot.get("scheduler") or {}).get("state") or "").split()
-        state = state_parts[0] if state_parts else ""
-        if state == "COMPLETED":
-            return last_report
+
+        previous_codes = finding_codes
         checks += 1
         if max_checks is not None and checks >= max_checks:
             return last_report
@@ -593,16 +817,18 @@ def monitor_watch(
 def parse_job_ids_from_log(path: Path | str) -> list[str]:
     """Extract scheduler ids from a Snakemake/head-job log."""
     p = Path(path)
+    ids: set[str] = set()
+    if p.suffix == ".log" and p.stem.isdigit():
+        ids.add(p.stem)
     if not p.exists():
-        return []
+        return sorted(ids)
     text = p.read_text(encoding="utf-8", errors="replace")
     patterns = [
+        r"external jobid '([0-9]+)'",
         r"SLURM jobid ([0-9]+)",
         r"Submitted batch job ([0-9]+)",
-        r"Submitted .*head-job: ([0-9A-Za-z_.-]+)",
-        r"Submitted .*: ([0-9A-Za-z_.-]+)",
+        r"Submitted (?:slurm )?head-job: ([0-9]+)",
     ]
-    ids: list[str] = []
     for pat in patterns:
-        ids.extend(re.findall(pat, text))
-    return sorted(set(ids))
+        ids.update(re.findall(pat, text))
+    return sorted(ids)

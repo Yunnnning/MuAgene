@@ -15,19 +15,17 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
   → S7 clustering → (CHECKPOINT 3) resolution_review → S8 UMAP → outputs
 ```
 
-Each stage is a Snakemake `<stage>_propose` + `<stage>_execute` pair (except `post_qc_review`, which is propose-only). Execute rules run only after `internal/checkpoints/<stage>.approved` is written by `Processing-MuAgent approve <stage>`.
+Automated processing stages (`p1_context`, `s0_ingest`, `p2_plan`, `s1a`–`S3`, `S4`–`S6`, `s8_umap`) run from **artifact dependencies** and the three checkpoint boundaries below — they do **not** require per-stage `approve` calls. Optional `<stage>_propose` rules still exist for inspection or debugging, but they are not on the main execution path.
 
 ### User checkpoints (3)
 
-Three deliberate pauses where you review deliverables and decide before heavy downstream work continues. All other stages (`s0_ingest`, `p2_plan`, `s1a`–`S3`, `S4`–`S6`, `S8`) are normally auto-approved on HPC.
+Three deliberate pauses where you review deliverables and decide before heavy downstream work continues. Everything else runs automatically once upstream artifacts exist and the relevant checkpoint is approved.
 
-| # | Checkpoint | Gate stage | When | What you decide |
-|---|------------|------------|------|-----------------|
+| # | CLI name | Internal stage | When | What you decide |
+|---|----------|----------------|------|-----------------|
 | **1** | **Plan review** | `plan_review` | After S0 + P2, before S1 | Approve the preprocessing plan (`pre_run/summary/plan_review.md`) |
-| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md` (plain-language filter summary); revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
-| **3** | **Clustering resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
-
-**Snakemake approval gates:** 14 stages require an internal `*.approved` sentinel (including the three checkpoints above). On HPC, all gates except checkpoints **#2** and **#3** are normally auto-approved so the batch job runs unattended between your reviews.
+| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
+| **3** | **Resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
 
 ## Workflow stages
 
@@ -164,7 +162,7 @@ export PMA_RESOURCES_SCALE=2
 
 ### Requirements
 
-- **SLURM:** Uses Snakemake's generic cluster executor plus `sbatch`/`sacct`/`squeue`; every heavy rule is submitted as a separate `sbatch` job, even when the Snakemake head-job itself runs under SLURM.
+- **SLURM:** Uses Snakemake's generic cluster executor plus `sbatch`/`sacct`/`squeue`; every heavy rule is submitted as a separate `sbatch` job, even when the Snakemake head-job itself runs under SLURM. Child jobscripts are sanitized before submission so Snakemake does not re-enable `storage-local-copies` on shared NFS (a common cause of jobs finishing Python quickly then hanging at `Storing output in storage.`).
 
 ### How the HPC run proceeds
 
@@ -181,7 +179,7 @@ export PMA_RESOURCES_SCALE=2
 
 **Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2.
 
-Each heavy `_execute` stage runs as its own scheduler job. Gates between your reviews are auto-approved; email notification fires when a batch pauses or completes (if `PMA_NOTIFY_EMAIL` is set).
+Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`; email notification fires when a batch pauses or completes (if `PMA_NOTIFY_EMAIL` is set).
 
 ### Submit workflow
 
@@ -195,23 +193,31 @@ After checkpoint **#1** (`plan_review`), source `deliverables/pre_run/config/hpc
 
 Override with `--target <name>` only when debugging.
 
+If a previous run was cancelled or killed, stale Snakemake locks under `<run_dir>/internal/snakemake/` can make the next submit fail immediately with `LockException`. Recover with:
+
+```bash
+Processing-MuAgent unlock --config $CFG
+# or on submit:
+Processing-MuAgent submit --config $CFG --executor slurm --unlock-stale-locks
+```
+
 ```bash
 CFG=<run_dir>/deliverables/pre_run/config/run.yaml
 source <run_dir>/deliverables/pre_run/config/hpc.env
 
-# First heavy batch after plan review (honours QC + resolution checkpoints):
+# First heavy batch after plan review (stops at QC review):
 Processing-MuAgent submit --config $CFG --executor slurm
 
-# After QC review:
-Processing-MuAgent approve post_qc_review --config $CFG
+# After QC review (CLI alias shown; internal stage is post_qc_review):
+Processing-MuAgent approve qc_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 
-# After resolution review:
-Processing-MuAgent approve s7_clustering --config $CFG
+# After resolution review (CLI alias shown; internal stage is s7_clustering):
+Processing-MuAgent approve resolution_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 ```
 
-Poll with `Processing-MuAgent status --watch --config $CFG`. `--auto-approve-except` syntax is unchanged; repeat the flag for each gate you want to keep interactive.
+Poll with `Processing-MuAgent status --watch --config $CFG`. For an unattended batch, pre-seed all three checkpoints with `--auto-approve` on `run` or `submit`. To keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts aliases or internal names).
 
 ### Execution-MuAgent monitor
 
@@ -223,13 +229,17 @@ Monitor state and reports are written under:
 <run_dir>/internal/hpc_monitor/
 ```
 
-The watcher detects scheduler failures, Snakemake errors, stale logs/artifacts,
-and stuck scheduler polling. By default it reports problems without cancelling
-jobs. To let the watcher cancel a detected stale or failed head-job, set:
+The watcher detects scheduler failures, Snakemake errors, stale run-scoped
+logs/artifacts, and Snakemake child jobs stuck at "Storing output in storage."
+By default it **reports and cancels** stuck jobs (children first, then the
+head job). To report only without cancelling:
 
 ```bash
-export PMA_HPC_MONITOR_KILL_ON_HANG=1
+export PMA_HPC_MONITOR_KILL_ON_HANG=0
 ```
+
+Hang alerts also email `PMA_NOTIFY_EMAIL` when set (in addition to the runner
+exit email from `runner.slurm`).
 
 Use `--no-monitor` on `Processing-MuAgent submit` to skip registration for a
 debug run.
@@ -261,8 +271,8 @@ Per-run state lives under `run_dir` from your config — never inside the source
       layout.json
   internal/
     artifacts/sN_<stage>/         ← intermediate stage outputs
-    proposals/                    ← <stage>.yaml + awaiting_approval sentinels
-    checkpoints/                  ← <stage>.approved sentinels
+    proposals/                    ← optional <stage>.yaml (mainly checkpoint review artifacts)
+    checkpoints/                  ← plan_review, post_qc_review, s7_clustering .approved only
     parameters.yaml
     state.yaml
     log.jsonl
@@ -270,7 +280,9 @@ Per-run state lives under `run_dir` from your config — never inside the source
 
 ## CLI
 
-**Step 1 — Install** (from inside `Processing-MuAgent/`):
+Commands below use `$CFG` = `<run_dir>/deliverables/pre_run/config/run.yaml` (written by `init`).
+
+### Install
 
 ```bash
 cd /path/to/Processing-MuAgent
@@ -279,93 +291,85 @@ micromamba activate grn
 pip install -e .
 ```
 
-**Step 2 — Edit the example config** at `config/run.example.yaml`. At minimum:
+### Configure and scaffold a run
 
-```yaml
-run_dir:               /path/to/your/output/run_01
-genome_assembly:       GRCh38   # or mm10
-study_goal:            clustering_inference   # or rare_populations
-
-# --- RNA input (any supported format) -----------------------------------
-rna_path:              /path/to/filtered_feature_bc_matrix.h5
-# rna_raw_path:        /path/to/raw_feature_bc_matrix.h5   # plan auto → SoupX when both filtered+raw
-
-# --- ATAC input ---------------------------------------------------------
-atac_fragments_path:   /path/to/atac_fragments.tsv.gz
-# atac_fragments_path: /path/to/fragments.bed.gz            # auto-converted by S0
-
-# --- Optional paired-multiome inputs ------------------------------------
-barcode_translation_path:  /path/to/barcode_translation.tsv   # rna_barcode, atac_barcode
-atac_peaks_path:           /path/to/peaks.bed                 # highest-priority peak source for S5
-cell_metadata_path:        /path/to/cell_metadata.tsv         # obs join at S8; pairing ladder if rna+atac cols
-```
-
-**Step 3 — Scaffold the run directory:**
+Edit `config/run.example.yaml` (at minimum `run_dir`, `genome_assembly`, `study_goal`, and modality paths). Optional: `rna_raw_path`, `atac_peaks_path`, `barcode_translation_path`, `cell_metadata_path`, `biological_context_path`.
 
 ```bash
 Processing-MuAgent init --config config/run.example.yaml
+CFG=<run_dir>/deliverables/pre_run/config/run.yaml
+Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | rna_only | atac_only
 ```
 
-`init` creates `<run_dir>/` and copies your config to `<run_dir>/deliverables/pre_run/config/run.yaml`. It also writes the Biological Context Report template at `deliverables/pre_run/config/biological_context.md`.
+`init` creates `<run_dir>/`, copies config to `deliverables/pre_run/config/run.yaml`, and writes the Biological Context Report template at `deliverables/pre_run/config/biological_context.md`.
 
-**Step 4 — Declare branch and run:**
+### Command reference
+
+| Command | Purpose |
+|---------|---------|
+| `init` | Create run directory scaffold |
+| `declare-branch` | Record workflow branch in `parameters.yaml` |
+| `configure-execution` | Set `execution.mode` and write `deliverables/pre_run/config/hpc.env` |
+| `hpc-info` | Probe PBS/SLURM queues, partitions, accounts on the login node |
+| `run` | Foreground Snakemake (`--executor local\|pbs\|slurm`) |
+| `submit` | Submit Snakemake head-job to PBS/SLURM (infers phase target by default) |
+| `status` | Show the three human checkpoints only |
+| `approve` | Write `internal/checkpoints/<stage>.approved` (human checkpoints only) |
+| `plan-review` | Render `deliverables/pre_run/summary/plan_review.md` |
+| `revise` | Update one parameter in `parameters.yaml` and reset a checkpoint to awaiting |
+| `resolution-compare` | Side-by-side resolution comparison figures (optional) |
+| `unlock` | Remove stale Snakemake locks after a cancelled/killed run |
+| `propose` | Run a single `*_propose` rule (optional; not required for the main pipeline) |
+
+**Approve aliases:** `qc_review` → `post_qc_review`; `resolution_review` → `s7_clustering`. Parameter keys in `revise` still use internal names (e.g. `s7_clustering.rna.resolution`).
+
+### Local workflow
+
+Planning and QC stages run automatically. Snakemake stops only at the three checkpoints.
 
 ```bash
 CFG=<run_dir>/deliverables/pre_run/config/run.yaml
 
-Processing-MuAgent declare-branch paired --config $CFG   # or separate | rna_only | atac_only
+# Option A — pause at each checkpoint (recommended first time):
+Processing-MuAgent run --config $CFG --executor local
+Processing-MuAgent approve plan_review --config $CFG
+Processing-MuAgent run --config $CFG --executor local
+Processing-MuAgent approve qc_review --config $CFG
+Processing-MuAgent run --config $CFG --executor local
+Processing-MuAgent approve resolution_review --config $CFG
+Processing-MuAgent run --config $CFG --executor local
 
-# Fully automatic (honours all gates unless you exclude them):
-Processing-MuAgent run --config $CFG --auto-approve
+# Option B — pre-seed all three checkpoints (unattended Snakemake; you still review outputs):
+Processing-MuAgent run --config $CFG --executor local --auto-approve
 
-# Check status at any point:
-Processing-MuAgent status --config $CFG
+# Option C — unattended except one gate (example: keep QC review interactive):
+Processing-MuAgent run --config $CFG --executor local --auto-approve --auto-approve-except qc_review
+
+Processing-MuAgent status --watch --config $CFG
 ```
 
-**Interactive / checkpoint-by-checkpoint mode:**
+`run` requires a filled Biological Context Report unless you pass `--no-context`. After `revise`, approve the affected checkpoint again before resuming.
+
+### HPC workflow
+
+After checkpoint **#1**, use `submit` instead of foreground `run`. See **Running on HPC → Submit workflow** for the resume loop, `unlock`, and `--unlock-stale-locks`.
 
 ```bash
-CONFIG=<run_dir>/deliverables/pre_run/config/run.yaml
-
-Processing-MuAgent propose p1_context --config $CONFIG
-# review: <run_dir>/internal/proposals/p1_context.yaml
-Processing-MuAgent approve p1_context --config $CONFIG
-
-Processing-MuAgent propose s0_ingest --config $CONFIG
-# review: <run_dir>/internal/proposals/s0_ingest.yaml
-#         <run_dir>/internal/artifacts/s0_ingest/validation_report.json
-Processing-MuAgent approve s0_ingest --config $CONFIG
-
-Processing-MuAgent propose p2_plan --config $CONFIG
-# review: <run_dir>/internal/proposals/p2_plan.yaml
-Processing-MuAgent approve p2_plan --config $CONFIG
-
-Processing-MuAgent plan-review --config $CONFIG
-# review: <run_dir>/deliverables/pre_run/summary/plan_review.md
-Processing-MuAgent approve plan_review --config $CONFIG
-
-# S1a → S8:
-for STAGE in s1a_ambient s1_rna_qc s2_atac_qc \
-             s3_doublets post_qc_review s4_rna_norm s5_atac_spectral \
-             s6_dimred s7_clustering s8_umap; do
-    Processing-MuAgent propose $STAGE --config $CONFIG
-    # review: <run_dir>/internal/proposals/$STAGE.yaml
-    # post_qc_review (QC review #2): deliverables/checkpoint/qc_review/qc_summary.md
-    # s7_clustering (resolution review #3): deliverables/checkpoint/resolution_review/resolution_review.html
-    Processing-MuAgent approve $STAGE --config $CONFIG
-done
+source <run_dir>/deliverables/pre_run/config/hpc.env
+Processing-MuAgent submit --config $CFG --executor slurm
+Processing-MuAgent status --watch --config $CFG
 ```
 
-Other useful commands:
+### Optional debugging
 
 ```bash
 Processing-MuAgent revise s7_clustering s7_clustering.rna.resolution=1.2 --config $CFG
 Processing-MuAgent resolution-compare --config $CFG --rna 1.0,1.2 --atac 0.6,0.8
-Processing-MuAgent run --config $CFG --no-context   # explicit opt-out of biological context
-Processing-MuAgent hpc-info                         # probe queues/partitions on login node
+Processing-MuAgent run --config $CFG --no-context
+Processing-MuAgent hpc-info
+Processing-MuAgent propose post_qc_review --config $CFG
+Processing-MuAgent propose s7_clustering --config $CFG
 ```
-
-On HPC after plan review, use `submit` (see **Submit workflow** above) instead of `run`. `submit` auto-infers the phase target, prepares internal stage approvals for that phase, and keeps the QC/resolution checkpoints interactive.
 
 
 ## Environment

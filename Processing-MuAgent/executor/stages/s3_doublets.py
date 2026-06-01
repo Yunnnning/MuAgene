@@ -227,8 +227,8 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             atac_df.assign(scrublet_score=float("nan"), scrublet_is_doublet=False,
                            chosen_policy=chosen_policy),
         ], ignore_index=True)
-        combined.to_parquet(art / "calls.parquet")
-        (art / "overlap_summary.json").write_text(json.dumps({
+        _io.write_parquet_safe(combined, art / "calls.parquet")
+        _io.write_text_safe(art / "overlap_summary.json", json.dumps({
             "branch": "separate",
             "policy": "independent",
             "rationale": ("separate branch: modalities are independent samples with disjoint "
@@ -276,8 +276,8 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         merged["removed"] = removed
         n_removed = int(removed.sum())
 
-        merged.to_parquet(art / "calls.parquet")
-        (art / "overlap_summary.json").write_text(json.dumps({
+        _io.write_parquet_safe(merged, art / "calls.parquet")
+        _io.write_text_safe(art / "overlap_summary.json", json.dumps({
             "overlap": overlap,
             "study_goal": study_goal,
             "recommended_policy": chosen_policy,
@@ -333,7 +333,10 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                                        "set are dropped here rather than at S8 assembly."),
                             method={"name": "s3.paired_intersection",
                                     "code_ref": "executor/stages/s3_doublets.py"})
-            (art / "joint_barcodes.txt").write_text("\n".join(sorted(joint_bc)) + ("\n" if joint_bc else ""))
+            _io.write_text_safe(
+                art / "joint_barcodes.txt",
+                "\n".join(sorted(joint_bc)) + ("\n" if joint_bc else ""),
+            )
 
     # Record ATAC detection method whenever ATAC ran (branch-independent).
     if has_atac:

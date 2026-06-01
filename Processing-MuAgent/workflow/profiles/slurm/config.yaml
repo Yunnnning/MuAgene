@@ -21,6 +21,19 @@ max-jobs-per-second: 1
 max-status-checks-per-second: 1
 latency-wait: 300
 
+# Snakemake 9 defaults shared-fs-usage to ALL (includes storage-local-copies).
+# On this project's shared NFS, child jobs already write outputs to their final
+# paths (executor/io.write_h5ad_safe). storage-local-copies triggers a remote
+# post-job sync ("Storing output in storage.") that can hang while SLURM keeps
+# the child RUNNING. Keep input-output on NFS; omit storage-local-copies.
+shared-fs-usage:
+  - persistence
+  - input-output
+  - software-deployment
+  - software-deployment-cache
+  - sources
+  - source-cache
+
 restart-times: 1
 rerun-incomplete: true
 keep-going: false

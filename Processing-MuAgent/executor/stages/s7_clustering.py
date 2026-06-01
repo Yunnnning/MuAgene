@@ -127,7 +127,7 @@ def propose(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         pd.DataFrame(rna_rows).assign(modality="rna"),
         pd.DataFrame(atac_rows).assign(modality="atac") if atac_rows else pd.DataFrame(),
     ], ignore_index=True)
-    sweep_df.to_parquet(art / "sweep.parquet")
+    _io.write_parquet_safe(sweep_df, art / "sweep.parquet")
 
     # Record recommended resolutions in provenance (source=derived; user can revise)
     if has_rna and rna_pick.get("resolution") is not None:
@@ -175,8 +175,9 @@ def propose(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                 "error": str(e)})
     # Persist machine-readable adjacency report
     import json as _json
-    (art / "adjacency_report.json").write_text(
-        _json.dumps(adjacency_reports, indent=2, default=str)
+    _io.write_text_safe(
+        art / "adjacency_report.json",
+        _json.dumps(adjacency_reports, indent=2, default=str),
     )
 
     # Human-readable recommendation + summary
@@ -296,7 +297,7 @@ def propose(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     from ..run_paths import RunPaths
     summary_out = RunPaths(run_dir).resolution_summary_md
     summary_out.parent.mkdir(parents=True, exist_ok=True)
-    summary_out.write_text("\n".join(summary_lines) + "\n")
+    _io.write_text_safe(summary_out, "\n".join(summary_lines) + "\n")
 
     return {"rna_resolution": rna_pick["resolution"], "atac_resolution": atac_pick["resolution"]}
 
@@ -351,10 +352,10 @@ def execute(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 leiden_col = adata.obs["leiden_atac"]
             except Exception:
                 leiden_col = np.asarray(adata.obs["leiden_atac"])
-            pd.DataFrame({
+            _io.write_parquet_safe(pd.DataFrame({
                 "barcode": [str(x) for x in adata.obs_names],
                 "leiden_atac": np.asarray(leiden_col).astype(str),
-            }).to_parquet(art / "atac_leiden_labels.parquet", index=False)
+            }), art / "atac_leiden_labels.parquet", index=False)
             try:
                 adata.close()
             except Exception:

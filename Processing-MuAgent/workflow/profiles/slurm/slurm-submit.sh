@@ -22,6 +22,15 @@ mem_mb="$4"
 runtime_min="$5"
 jobscript="$6"
 
+if [ "${PMA_DISABLE_STORAGE_LOCAL_COPIES:-1}" != "0" ]; then
+    PYTHONPATH="${PMA_REPO_ROOT}:${PYTHONPATH:-}" python - "$jobscript" <<'PY'
+import sys
+from executor import hpc
+
+hpc.sanitize_snakemake_jobscript(sys.argv[1])
+PY
+fi
+
 log_root="${PMA_LOG_DIR:-.snakemake/slurm_logs}"
 log_dir="${log_root}/rule_${rule}"
 mkdir -p "$log_dir"

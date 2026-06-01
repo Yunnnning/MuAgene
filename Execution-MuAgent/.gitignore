@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.pytest_cache/
+
+# Local scratch / monitor dev runs (never commit)
+run/
+run_*/
+tmp_*/
+
+# Scheduler and Snakemake logs
+logs/
+*.log
+
+# Snakemake state if created under a scratch run dir
+.snakemake/

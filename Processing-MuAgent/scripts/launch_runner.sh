@@ -72,10 +72,13 @@ PY
     directory_args=(--directory "$snakemake_workdir")
 fi
 
-# Add site-specific --default-resources for SLURM partition / account if the
-# user has set the env vars. Detected from the --profile arg below.
+# Cluster profiles: shared-NFS snakemake flags + site-specific SLURM defaults.
 extra_args=()
+using_cluster_profile=0
 for arg in "$@"; do
+    if [[ "$arg" == */profiles/slurm* ]] || [[ "$arg" == */profiles/pbs* ]]; then
+        using_cluster_profile=1
+    fi
     if [[ "$arg" == */profiles/slurm* ]]; then
         if [ -n "${PMA_SLURM_PARTITION:-}" ]; then
             extra_args+=(--default-resources "slurm_partition=$PMA_SLURM_PARTITION")
@@ -83,8 +86,13 @@ for arg in "$@"; do
         if [ -n "${PMA_SLURM_ACCOUNT:-}" ]; then
             extra_args+=(--default-resources "slurm_account=$PMA_SLURM_ACCOUNT")
         fi
-        break
     fi
 done
+if [ "$using_cluster_profile" -eq 1 ]; then
+    extra_args+=(
+        --shared-fs-usage persistence input-output software-deployment
+        software-deployment-cache sources source-cache
+    )
+fi
 
 exec python -m snakemake -s "$REPO_ROOT/workflow/Snakefile" "${directory_args[@]}" "$@" "${extra_args[@]}"

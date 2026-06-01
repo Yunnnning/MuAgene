@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 import yaml
 
-from . import approval, context as _ctx, hpc, plan_review as _pr, provenance
+from . import approval, context as _ctx, hpc, plan_review as _pr, provenance, stage_progress as _sp
 from .log import log_event
 from .run_paths import RunPaths
 
@@ -25,6 +25,25 @@ STAGES = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
           "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
           "post_qc_review",
           "s4_rna_norm", "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap"]
+
+HUMAN_CHECKPOINT_STAGES = ("plan_review", "post_qc_review", "s7_clustering")
+STAGE_ALIASES = {
+    "qc_review": "post_qc_review",
+    "resolution_review": "s7_clustering",
+}
+STAGE_DISPLAY = {
+    "post_qc_review": "qc_review",
+    "s7_clustering": "resolution_review",
+}
+AUTOMATED_STAGES = tuple(s for s in STAGES if s not in HUMAN_CHECKPOINT_STAGES)
+
+
+def _canonical_stage(stage: str) -> str:
+    return STAGE_ALIASES.get(stage, stage)
+
+
+def _display_stage(stage: str) -> str:
+    return STAGE_DISPLAY.get(stage, stage)
 
 
 def _resolve_run_dir(config_path: Path | str) -> Path:
@@ -70,6 +89,7 @@ def init(config_path: str) -> None:
               help="Execution backend: local (default), pbs, or slurm.")
 def propose(stage: str, config_path: str, executor: str) -> None:
     """Run the <stage>_propose rule."""
+    stage = _canonical_stage(stage)
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
     _snakemake(["--configfile", str(paths.run_yaml), f"{stage}_propose"],
@@ -82,10 +102,11 @@ def propose(stage: str, config_path: str, executor: str) -> None:
 @click.option("--note", default="")
 def approve(stage: str, config_path: str, note: str) -> None:
     """Write internal/checkpoints/<stage>.approved to unblock <stage>_execute."""
+    stage = _canonical_stage(stage)
     run_dir = _resolve_run_dir(config_path)
     approval.approve(run_dir, stage, note=note)
     log_event(run_dir, {"stage": stage, "event": "approved", "note": note})
-    click.echo(f"Approved {stage}")
+    click.echo(f"Approved {_display_stage(stage)}")
 
 
 @main.command(name="declare-branch")
@@ -196,6 +217,7 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
 
     PARAM_KV is key=value, e.g. s1_rna_qc.pct_counts_mt_max=10.0
     """
+    stage = _canonical_stage(stage)
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
     if "=" not in param_kv:
@@ -212,57 +234,47 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
     )
     approval.mark_awaiting(run_dir, stage)
     log_event(run_dir, {"stage": stage, "event": "revised", "param": key, "value": value_parsed})
-    click.echo(f"Revised {key} = {value_parsed!r}; {stage} is awaiting_approval.")
+    click.echo(f"Revised {key} = {value_parsed!r}; {_display_stage(stage)} is awaiting_approval.")
 
 
 def _stage_states(paths: RunPaths) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
-    for s in STAGES:
-        proposed = paths.proposal(s).exists()
-        awaiting = paths.awaiting_sentinel(s).exists()
-        approved = paths.approved_sentinel(s).exists()
-        if approved and not awaiting:
-            state = "approved"
-        elif awaiting:
-            state = "awaiting_approval"
-        elif proposed:
-            state = "proposed"
-        else:
-            state = "pending"
-        out.append((s, state))
-    return out
+    return _sp.stage_states(paths)
 
 
 @main.command()
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--watch", is_flag=True,
-              help="Poll until a checkpoint needs approval or manifest completes.")
+              help="Poll until a review gate needs approval or manifest completes.")
 @click.option("--interval", type=float, default=15.0,
               help="Poll interval in seconds when --watch is set.")
 def status(config_path: str, watch: bool, interval: float) -> None:
-    """Print per-stage state. With --watch, polls until something changes."""
+    """Print per-step pipeline state (S1a–S8 + review gates). With --watch, polls until something changes."""
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
 
-    def _print(states: list[tuple[str, str]]) -> None:
-        for s, st in states:
-            click.echo(f"  {s:20s}  {st}")
+    def _print(states: list[tuple[str, str, str]]) -> None:
+        for label, task, st in states:
+            click.echo(f"  {label:18s}  {task:30s}  {st}")
 
     if not watch:
         _print(_stage_states(paths))
         return
 
-    last: list[tuple[str, str]] | None = None
+    last: list[tuple[str, str, str]] | None = None
     while True:
         states = _stage_states(paths)
         if states != last:
             click.echo(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
             _print(states)
             last = states
-        # Stop if any stage is awaiting approval (user must act) or manifest exists.
-        if any(st == "awaiting_approval" for _, st in states):
-            click.echo("\n→ a stage is awaiting approval; review and run "
-                       "`Processing-MuAgent approve <stage>`.")
+        if any(st == "failed" for _, _, st in states):
+            click.echo("\n→ a step failed; inspect logs under "
+                       f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
+                       "then fix and `submit` again (resume target is inferred).")
+            return
+        if any(st == "awaiting_approval" for _, _, st in states):
+            click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
+                       "`Processing-MuAgent approve <stage>` (e.g. qc_review, resolution_review).")
             return
         if paths.run_manifest_json.exists():
             click.echo("\n→ run_manifest.json present; pipeline complete.")
@@ -303,6 +315,46 @@ def resolution_compare_cmd(config_path: str, rna_pair: str, atac_pair: str) -> N
         _layout.reorganise(run_dir)
     click.echo(f"Comparison written: {out}")
     click.echo(out.read_text())
+
+
+def _unlock_snakemake(run_dir: Path, config_path: Path) -> None:
+    paths = RunPaths(run_dir)
+    env = os.environ.copy()
+    env.setdefault("PYTHONPATH", str(PACKAGE_DIR))
+    env.setdefault("PMA_REPO_ROOT", str(PACKAGE_DIR))
+    paths.snakemake_workdir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable, "-m", "snakemake",
+        "-s", str(SNAKEFILE),
+        "--directory", str(paths.snakemake_workdir),
+        "--unlock",
+        "--configfile", str(config_path),
+    ]
+    click.echo(f"$ {' '.join(cmd)}")
+    result = subprocess.run(cmd, env=env, cwd=str(PACKAGE_DIR))
+    if result.returncode != 0:
+        raise click.ClickException(f"snakemake --unlock exited with {result.returncode}")
+
+
+@main.command(name="unlock")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+def unlock_cmd(config_path: str) -> None:
+    """Remove stale Snakemake locks for a run after confirming no active process."""
+    run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
+    locks = hpc.snakemake_lock_files(paths.snakemake_workdir)
+    if not locks:
+        click.echo(f"No Snakemake locks found under {paths.snakemake_workdir}.")
+        return
+    active = hpc.snakemake_processes_for_workdir(paths.snakemake_workdir)
+    if active:
+        detail = "\n".join(f"  pid {pid}: {args}" for pid, args in active)
+        raise click.ClickException(
+            "Refusing to unlock while a local Snakemake process references this workdir:\n"
+            f"{detail}"
+        )
+    _unlock_snakemake(run_dir, Path(config_path))
+    click.echo(f"Unlocked {paths.snakemake_workdir}")
 
 
 @main.command(name="run")
@@ -350,74 +402,47 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
         click.echo("Proceeding WITHOUT biological context (--no-context set). User-declared "
                    "fields will be marked status=missing.", err=True)
 
+    auto_except = tuple(_canonical_stage(s) for s in auto_except)
     if auto_approve:
         # Pre-seed approval sentinels so snakemake can run the DAG end-to-end in a
         # single invocation; --auto-approve-except keeps the listed stages gated.
         kept = set(auto_except)
-        for s in STAGES:
-            if s in kept:
-                continue
-            approval.approve(run_dir, s, note="auto-approved")
-        os.environ["PMA_AUTO_APPROVE"] = "1"
+        _seed_approvals(run_dir, HUMAN_CHECKPOINT_STAGES, note="auto-approved", kept=kept)
         if kept:
-            click.echo(f"Auto-approved all stages except: {sorted(kept)}. "
+            click.echo(f"Auto-approved all stages except: "
+                       f"{sorted(_display_stage(s) for s in kept)}. "
                        "Snakemake will stop at those gates.")
     _snakemake(["--configfile", str(paths.run_yaml), target],
                run_dir, executor=executor)
 
 
 def _infer_submit_target(run_dir: Path) -> str:
-    """Pick the Snakemake target for the current pipeline phase.
-
-    Snakemake 8+ raises MissingInputException when a required checkpoint
-    sentinel (e.g. post_qc_review.approved) doesn't exist and no rule can
-    produce it.  By targeting only up to the next unapproved gate we keep the
-    DAG build valid while still running the maximum useful work in each
-    submission.
-
-    Phase ladder (first unapproved gate wins):
-      - post_qc_review not yet approved → target post_qc_review_propose
-        (runs S1a → S3 → generates QC summary, then stops)
-      - s7_clustering not yet approved  → target s7_clustering_propose
-        (runs S4 → S6 → generates resolution sweep, then stops)
-      - both approved                   → target all (S7 execute → S8 → manifest)
-    """
-    chk = run_dir / "internal" / "checkpoints"
-    if not (chk / "post_qc_review.approved").exists():
-        return "post_qc_review_propose"
-    if not (chk / "s7_clustering.approved").exists():
-        return "s7_clustering_propose"
-    return "all"
-
-
-_PHASE_INTERNAL_APPROVALS: dict[str, tuple[str, ...]] = {
-    "post_qc_review_propose": (
-        "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-    ),
-    "s7_clustering_propose": (
-        "s4_rna_norm", "s5_atac_spectral", "s6_dimred",
-    ),
-    "all": (
-        "s8_umap",
-    ),
-}
-
-_PHASE_REQUIRED_HUMAN_APPROVALS: dict[str, tuple[str, ...]] = {
-    "post_qc_review_propose": (
-        "plan_review",
-    ),
-    "s7_clustering_propose": (
-        "plan_review", "post_qc_review",
-    ),
-    "all": (
-        "plan_review", "post_qc_review", "s7_clustering",
-    ),
-}
+    """Pick the Snakemake target from the first incomplete pipeline step."""
+    return _sp.infer_resume_target(run_dir)
 
 
 def _missing_approvals(run_dir: Path, stages: tuple[str, ...]) -> list[str]:
     paths = RunPaths(run_dir)
     return [stage for stage in stages if not paths.approved_sentinel(stage).exists()]
+
+
+def _seed_approvals(
+    run_dir: Path,
+    stages: tuple[str, ...],
+    *,
+    note: str,
+    kept: set[str] | None = None,
+) -> list[str]:
+    kept = kept or set()
+    seeded: list[str] = []
+    for stage in stages:
+        if stage in kept:
+            continue
+        approval.approve(run_dir, stage, note=note)
+        seeded.append(stage)
+    if seeded:
+        os.environ["PMA_AUTO_APPROVE"] = "1"
+    return seeded
 
 
 def _prepare_submit_approvals(
@@ -429,13 +454,14 @@ def _prepare_submit_approvals(
     auto_except: tuple[str, ...],
 ) -> list[str]:
     """Seed internal phase approvals or fail fast for explicit unsafe targets."""
-    internal = _PHASE_INTERNAL_APPROVALS.get(target, ())
-    human = _PHASE_REQUIRED_HUMAN_APPROVALS.get(target, ())
+    internal: tuple[str, ...] = ()
+    human = _sp.required_human_approvals(target)
     missing_human = _missing_approvals(run_dir, human)
     if missing_human:
         raise click.ClickException(
             f"Target {target!r} requires human approval sentinel(s): "
-            f"{', '.join(missing_human)}. Review/approve these gates before submitting."
+            f"{', '.join(_display_stage(s) for s in missing_human)}. "
+            "Review/approve these gates before submitting."
         )
 
     if auto_approve:
@@ -443,16 +469,12 @@ def _prepare_submit_approvals(
 
     if inferred_target:
         kept = set(auto_except)
-        seeded: list[str] = []
-        for stage in internal:
-            if stage in kept:
-                continue
-            if stage in _PHASE_REQUIRED_HUMAN_APPROVALS.get("all", ()):
-                continue
-            approval.approve(run_dir, stage, note=f"phase-auto-approved for {target}")
-            seeded.append(stage)
-        if seeded:
-            os.environ["PMA_AUTO_APPROVE"] = "1"
+        seeded = _seed_approvals(
+            run_dir,
+            tuple(s for s in internal if s not in _sp.required_human_approvals("all")),
+            note=f"phase-auto-approved for {target}",
+            kept=kept,
+        )
         return seeded
 
     missing_internal = _missing_approvals(run_dir, internal)
@@ -472,19 +494,22 @@ def _prepare_submit_approvals(
               help="Scheduler to submit the head-job to (pbs or slurm). "
                    "Use --executor local with `run` instead for foreground runs.")
 @click.option("--target", default=None,
-              help="Override the Snakemake target. Omit to auto-infer the current "
-                   "phase (post_qc_review_propose → s7_clustering_propose → all).")
+              help="Override the Snakemake target. Omit to auto-infer the first "
+                   "incomplete step (e.g. s2_atac_qc_execute, post_qc_review_propose, all).")
 @click.option("--auto-approve", is_flag=True,
               help="Pre-seed all checkpoint sentinels; head-job runs unattended end-to-end.")
 @click.option("--auto-approve-except", "auto_except", multiple=True,
               help="With --auto-approve, keep these gates honoured. Repeatable.")
 @click.option("--output", "output_log", type=click.Path(), default=None,
               help="Scheduler output-log path for the head-job (optional).")
+@click.option("--unlock-stale-locks", is_flag=True,
+              help="If Snakemake locks exist and no local process owns this workdir, "
+                   "run snakemake --unlock before submitting.")
 @click.option("--no-monitor", is_flag=True,
               help="Do not auto-register/start the Execution-MuAgent HPC monitor.")
 def submit(config_path: str, executor: str, target: str | None,
            auto_approve: bool, auto_except: tuple[str, ...],
-           output_log: str | None, no_monitor: bool) -> None:
+           output_log: str | None, unlock_stale_locks: bool, no_monitor: bool) -> None:
     """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
 
     The head-job runs on a compute node, activates the project conda env, and
@@ -513,14 +538,13 @@ def submit(config_path: str, executor: str, target: str | None,
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
 
+    auto_except = tuple(_canonical_stage(s) for s in auto_except)
     if auto_approve:
         kept = set(auto_except)
-        for s in STAGES:
-            if s in kept:
-                continue
-            approval.approve(run_dir, s, note="auto-approved (submit)")
+        _seed_approvals(run_dir, HUMAN_CHECKPOINT_STAGES, note="auto-approved (submit)", kept=kept)
         if kept:
-            click.echo(f"Auto-approved all stages except: {sorted(kept)}.")
+            click.echo(f"Auto-approved all stages except: "
+                       f"{sorted(_display_stage(s) for s in kept)}.")
         # Tell the head-job's propose rules not to revoke pre-seeded approvals.
         os.environ["PMA_AUTO_APPROVE"] = "1"
 
@@ -533,6 +557,28 @@ def submit(config_path: str, executor: str, target: str | None,
         auto_approve=auto_approve,
         auto_except=auto_except,
     )
+
+    locks = hpc.snakemake_lock_files(paths.snakemake_workdir)
+    if locks:
+        active = hpc.snakemake_processes_for_workdir(paths.snakemake_workdir)
+        if active:
+            detail = "\n".join(f"  pid {pid}: {args}" for pid, args in active)
+            raise click.ClickException(
+                "Snakemake locks exist and a local Snakemake process still references "
+                f"{paths.snakemake_workdir}:\n{detail}"
+            )
+        lock_list = ", ".join(str(p) for p in locks)
+        if not unlock_stale_locks:
+            raise click.ClickException(
+                "Snakemake lock files already exist for this run, so submitting now "
+                "would fail with LockException.\n"
+                f"Locks: {lock_list}\n"
+                "If no scheduler head/child jobs for this run are active, recover with:\n"
+                f"  Processing-MuAgent unlock --config {paths.run_yaml}\n"
+                "or resubmit with `--unlock-stale-locks`."
+            )
+        click.echo(f"Unlocking stale Snakemake locks: {lock_list}")
+        _unlock_snakemake(run_dir, paths.run_yaml)
 
     out_path = Path(output_log) if output_log else hpc.head_job_log_path(executor)
     try:
@@ -640,6 +686,7 @@ def _snakemake(args: list[str], run_dir: Path, *, executor: str = "local") -> No
     else:
         profile = hpc.profile_path(executor)
         cmd += ["--profile", str(profile), "--jobs", "8"]
+        cmd += hpc.snakemake_cluster_cli_args()
         # SLURM site-specific defaults from env vars.
         if executor == "slurm":
             if env.get("PMA_SLURM_PARTITION"):

@@ -4,14 +4,13 @@ rule p2_plan_propose:
         ingest  = str(INTERNAL / "artifacts" / "s0_ingest" / "validation_report.json"),
     output:
         proposal = str(INTERNAL / "proposals" / "p2_plan.yaml"),
-        awaiting = str(INTERNAL / "proposals" / "p2_plan.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
         import json
         import yaml
         from pathlib import Path
-        from executor import plan_assembler as pa, approval, provenance
+        from executor import plan_assembler as pa, provenance
         ctx = json.loads(Path(input.context).read_text())
         ingest = json.loads(Path(input.ingest).read_text())
         # Sample type from context extraction
@@ -41,23 +40,21 @@ rule p2_plan_propose:
             "sample_type": sample_type,
             "plan_hash": plan_hash,
         }))
-        approval.mark_awaiting(params.run_dir, "p2_plan")
 
 
 rule p2_plan_execute:
     input:
-        proposal = str(INTERNAL / "proposals" / "p2_plan.yaml"),
-        approved = str(INTERNAL / "checkpoints" / "p2_plan.approved"),
+        context = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
+        ingest  = str(INTERNAL / "artifacts" / "s0_ingest" / "validation_report.json"),
     output:
         plan     = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
     run:
-        # Plan was written at propose time; re-assemble deterministically so execute has
-        # a real output (plan is pure function of context + ingest + config).
+        # Assemble deterministically from the context and ingest artifacts.
         import json
         from pathlib import Path
         from executor import plan_assembler as pa, provenance
-        ctx_path = Path(input.proposal).parent.parent / "artifacts" / "p1_context" / "context_extraction.json"
-        ingest_path = Path(input.proposal).parent.parent / "artifacts" / "s0_ingest" / "validation_report.json"
+        ctx_path = Path(input.context)
+        ingest_path = Path(input.ingest)
         ctx = json.loads(ctx_path.read_text()) if ctx_path.exists() else {"fields": {}}
         ingest = json.loads(ingest_path.read_text()) if ingest_path.exists() else {}
         sample_type = (ctx.get("fields", {}).get("sample_type") or {}).get("value", "unknown")

@@ -15,13 +15,11 @@ rule s1a_ambient_propose:
         unpack(_s1a_inputs),
     output:
         proposal = str(INTERNAL / "proposals" / "s1a_ambient.yaml"),
-        awaiting = str(INTERNAL / "proposals" / "s1a_ambient.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
         import yaml
         from pathlib import Path
-        from executor import approval
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s1a_ambient",
             "action": (
@@ -29,13 +27,10 @@ rule s1a_ambient_propose:
                 "else DecontX; none = pass-through; confirm method at plan review)"
             ),
         }))
-        approval.mark_awaiting(params.run_dir, "s1a_ambient")
 
 
 rule s1a_ambient_execute:
     input:
-        proposal = str(INTERNAL / "proposals" / "s1a_ambient.yaml"),
-        approved = str(INTERNAL / "checkpoints" / "s1a_ambient.approved"),
         plan     = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         rna      = str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
     output:

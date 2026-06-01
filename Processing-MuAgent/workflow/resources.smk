@@ -36,7 +36,8 @@ def _scaled_runtime_min(minutes: int) -> int:
     """Scale a walltime (minutes) by PMA_RESOURCES_SCALE and add an NFS overhead buffer.
 
     Shared network filesystems can add slow post-job visibility/write-back
-    overhead around large h5ad outputs. The buffer absorbs this cost without
+    overhead around large h5ad outputs. Snakemake 9 cluster child jobs also
+    hang if storage-local-copies is enabled on NFS (see workflow/profiles/). The buffer absorbs this cost without
     setting PMA_RESOURCES_SCALE. PMA_RESOURCES_SCALE still multiplies the base
     compute time; the buffer is added afterwards so large-dataset scaling
     doesn't double the buffer.

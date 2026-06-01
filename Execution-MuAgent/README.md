@@ -27,11 +27,18 @@ Monitor once:
 Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456
 ```
 
-Watch and cancel on detected hang/failure:
+Watch and cancel on detected hang/failure (default):
 
 ```bash
 Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456 \
-  --watch --stale-minutes 20 --interval 60 --kill-on-hang
+  --watch --stale-minutes 20 --interval 60
+```
+
+Report only (no scancel):
+
+```bash
+Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456 \
+  --watch --no-kill-on-hang
 ```
 
 Reports are written under:
@@ -41,5 +48,6 @@ Reports are written under:
 ```
 
 `Processing-MuAgent submit` auto-registers submitted PBS/SLURM head jobs when
-this sibling package is present. Set `PMA_HPC_MONITOR_KILL_ON_HANG=1` if the
-auto-started watcher should cancel jobs after detecting a stale run.
+this sibling package is present. The auto-started watcher cancels hung jobs by
+default (`PMA_HPC_MONITOR_KILL_ON_HANG=0` disables cancellation). Set
+`PMA_NOTIFY_EMAIL` to receive hang alerts in addition to runner exit mail.

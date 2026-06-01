@@ -63,8 +63,9 @@ def register(
 @click.option("--job-id", default=None, help="Specific registered job id. Defaults to latest.")
 @click.option("--stale-minutes", default=20.0, show_default=True, type=float)
 @click.option("--scheduler-timeout", default=5, show_default=True, type=int)
-@click.option("--kill-on-hang", is_flag=True, help="Cancel the head job on detected hang/failure.")
-@click.option("--watch", is_flag=True, help="Continue polling until a problem is reported.")
+@click.option("--kill-on-hang/--no-kill-on-hang", default=True, show_default=True,
+              help="Cancel child jobs first, then the head job, on detected hang/failure.")
+@click.option("--watch", is_flag=True, help="Continue polling until all jobs finish.")
 @click.option("--interval", default=60.0, show_default=True, type=float)
 @click.option("--max-checks", default=None, type=int, help="Stop after N checks when --watch is used.")
 @click.option("--json-output", is_flag=True, help="Print machine-readable snapshot.")
@@ -95,7 +96,7 @@ def monitor(
         else:
             click.echo("no problem report written")
         return
-    snapshot, findings, cancel_result, report = monitor_once(
+    snapshot, findings, cancel_result, report, _finding_codes = monitor_once(
         submission,
         stale_minutes=stale_minutes,
         scheduler_timeout_s=scheduler_timeout,

@@ -429,7 +429,7 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     if frag_info is not None:
         report["atac_fragment_peek"] = frag_info
         report["atac_n_unique_barcodes"] = len(atac_bc)
-    (artifacts / "validation_report.json").write_text(json.dumps(report, indent=2, default=str))
+    _io.write_text_safe(artifacts / "validation_report.json", json.dumps(report, indent=2, default=str))
 
     # --- RNA ingest h5ad (always declared as an s0 output for DAG stability;
     #     written as an empty placeholder for atac_only so downstream rules'
@@ -454,7 +454,7 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
 
     # --- ATAC ingest metadata (only if ATAC present) ---------------------
     if atac_frag_path is not None:
-        (artifacts / "atac_ingest.json").write_text(json.dumps({
+        _io.write_text_safe(artifacts / "atac_ingest.json", json.dumps({
             "fragments_path": str(atac_frag_path),
             "tbi_path": str(Path(str(atac_frag_path) + ".tbi")),
             "barcodes_n": len(atac_bc),

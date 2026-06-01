@@ -32,6 +32,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .. import io as _io
 from .. import provenance as _prov
 from ..atac_latent import ATAC_LATENT_ALIAS, ATAC_LATENT_KEY
 from ..log import log_event
@@ -39,10 +40,22 @@ from ..log import log_event
 
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     import snapatac2 as snap
+    import json
     run_dir = Path(run_dir)
     art = run_dir / "internal" / "artifacts" / "s5_atac_spectral"
     art.mkdir(parents=True, exist_ok=True)
     params_path = run_dir / "internal" / "parameters.yaml"
+    branch = _prov.current_branch(str(params_path))
+
+    if branch == "rna_only":
+        _io.write_text_safe(art / "spectral_summary.json", json.dumps({
+            "stage": "s5_atac_spectral",
+            "skipped": True,
+            "reason": "rna_only branch has no ATAC modality",
+        }, indent=2))
+        log_event(run_dir, {"stage": "s5_atac_spectral", "event": "skipped_no_atac",
+                            "branch": branch})
+        return {"skipped": True, "branch": branch}
 
     src = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
     if not src.exists():
@@ -51,6 +64,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     if dst.exists():
         dst.unlink()
     shutil.copy(src, dst)
+    _io.sync_path(dst)
     adata = snap.read(str(dst))
 
     p = plan["stages"]["s5_atac_spectral"]["parameters"]
@@ -373,8 +387,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             feature_kind = "peak_matrix"
 
         sp.save_npz(str(art / "feature_matrix.npz"), peak_X)
-        (art / "feature_names.tsv").write_text("\n".join(peak_names))
-        (art / "feature_kind.txt").write_text(feature_kind)
+        _io.sync_path(art / "feature_matrix.npz")
+        _io.write_text_safe(art / "feature_names.tsv", "\n".join(peak_names))
+        _io.write_text_safe(art / "feature_kind.txt", feature_kind)
 
         n_features = int(peak_X.shape[1])
         feature_exported = True
@@ -396,7 +411,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             )
     else:
         # All three paths failed — empty sidecar → S8 emits latent_only.
-        (art / "feature_kind.txt").write_text("")
+        _io.write_text_safe(art / "feature_kind.txt", "")
         export_reason = (
             "Feature-level ATAC export failed on all paths (ARC, MACS3, tile fallback). "
             f"macs3_errors={macs3_failures}. S8 will emit a latent_only AnnData with "
@@ -430,7 +445,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                 "code_ref": "executor/io.py"})
 
     import json as _json
-    (art / "spectral_summary.json").write_text(_json.dumps({
+    _io.write_text_safe(art / "spectral_summary.json", _json.dumps({
         "method": "snap.tl.spectral",
         "embedding_key": ATAC_LATENT_KEY,
         "embedding_alias": ATAC_LATENT_ALIAS,

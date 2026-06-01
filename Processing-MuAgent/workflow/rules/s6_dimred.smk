@@ -14,25 +14,20 @@ rule s6_dimred_propose:
         unpack(_s6_inputs)
     output:
         proposal = str(INTERNAL / "proposals" / "s6_dimred.yaml"),
-        awaiting = str(INTERNAL / "proposals" / "s6_dimred.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
         import yaml
         from pathlib import Path
-        from executor import approval
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s6_dimred",
             "action": "RNA PCA + neighbors; ATAC KNN on snap.tl.spectral embedding (X_spectral)",
         }))
-        approval.mark_awaiting(params.run_dir, "s6_dimred")
 
 
 rule s6_dimred_execute:
     input:
         unpack(_s6_inputs),
-        proposal         = str(INTERNAL / "proposals" / "s6_dimred.yaml"),
-        approved         = str(INTERNAL / "checkpoints" / "s6_dimred.approved"),
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
     output:

@@ -30,6 +30,15 @@ mem_mb="$4"
 runtime_min="$5"
 jobscript="$6"
 
+if [ "${PMA_DISABLE_STORAGE_LOCAL_COPIES:-1}" != "0" ]; then
+    PYTHONPATH="${PMA_REPO_ROOT}:${PYTHONPATH:-}" python - "$jobscript" <<'PY'
+import sys
+from executor import hpc
+
+hpc.sanitize_snakemake_jobscript(sys.argv[1])
+PY
+fi
+
 # Convert minutes → HH:MM:SS for PBS walltime.
 h=$(( runtime_min / 60 ))
 m=$(( runtime_min % 60 ))

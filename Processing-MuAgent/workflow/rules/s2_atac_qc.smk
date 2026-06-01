@@ -19,24 +19,19 @@ rule s2_atac_qc_propose:
         unpack(_s2_propose_inputs)
     output:
         proposal = str(INTERNAL / "proposals" / "s2_atac_qc.yaml"),
-        awaiting = str(INTERNAL / "proposals" / "s2_atac_qc.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
         import yaml
         from pathlib import Path
-        from executor import approval
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s2_atac_qc",
             "action": "TSS enrichment + n_fragments MAD via SnapATAC2 (no tile matrix here — S5 builds it)",
         }))
-        approval.mark_awaiting(params.run_dir, "s2_atac_qc")
 
 
 rule s2_atac_qc_execute:
     input:
-        proposal         = str(INTERNAL / "proposals" / "s2_atac_qc.yaml"),
-        approved         = str(INTERNAL / "checkpoints" / "s2_atac_qc.approved"),
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
     output:

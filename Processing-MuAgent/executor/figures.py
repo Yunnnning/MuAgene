@@ -52,6 +52,9 @@ def save_figure(fig, out_dir: Path | str, stem: str, *, also_pdf: bool = True) -
         paths.append(pdf_path)
     import matplotlib.pyplot as plt
     plt.close(fig)
+    from . import io as _io
+    for path in paths:
+        _io.sync_path(path)
     return paths
 
 

@@ -110,8 +110,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     sc.pp.filter_genes(a_f, min_cells=min_cells)
 
     # Save qc metrics pre/post
-    a.obs.to_parquet(art / "qc_metrics_pre.parquet")
-    a_f.obs.to_parquet(art / "qc_metrics_post.parquet")
+    _io.write_parquet_safe(a.obs, art / "qc_metrics_pre.parquet")
+    _io.write_parquet_safe(a_f.obs, art / "qc_metrics_post.parquet")
 
     # QC violin figures are user-facing deliverables → checkpoint/qc_review/
     try:

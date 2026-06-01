@@ -11,6 +11,8 @@ spectral embedding. S2 only computes QC metrics and subsets cells.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -231,16 +233,27 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     keep_idx = np.nonzero(keep)[0].tolist()
     n_pre = int(adata.n_obs)
     filtered_path = art / "atac_qc.h5ad"
+    fd, tmp_name = tempfile.mkstemp(suffix=".h5ad", dir="/tmp")
+    Path(tmp_name).unlink(missing_ok=True)
+    Path(tmp_name).parent.mkdir(parents=True, exist_ok=True)
+    # Close the fd from mkstemp; SnapATAC2 creates the HDF5 file itself.
+    import os
+    os.close(fd)
     # SnapATAC2 2.8: inplace defaults to True (returns None); pass inplace=False to get
-    # a new on-disk AnnData written to `out`.
-    adata_f = adata.subset(obs_indices=keep_idx, out=str(filtered_path), inplace=False)
+    # a new on-disk AnnData written to `out`. Write on local /tmp first; copying
+    # the completed file back to NFS avoids HDF5/NFS locks and Snakemake utime stalls.
+    adata_f = adata.subset(obs_indices=keep_idx, out=tmp_name, inplace=False)
     if adata_f is None:
-        # Fallback: re-open the written file
         import snapatac2 as snap
-        adata_f = snap.read(str(filtered_path))
+        adata_f = snap.read(tmp_name)
     n_post = int(adata_f.n_obs)
 
     if n_post == 0:
+        try:
+            adata_f.close()
+        except Exception:
+            pass
+        Path(tmp_name).unlink(missing_ok=True)
         raise ValueError(
             f"S2 ATAC QC removed all cells (n_pre={n_pre}, n_post=0). Thresholds used: "
             f"n_fragments in [{f_lo:.1f}, {f_hi:.1f}], tss_enrichment in ({tss_min}, {tss_max}), "
@@ -259,7 +272,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 "p90":    float(np.quantile(finite_ns, 0.90)),
                 "max":    float(np.max(finite_ns)),
             }
-    (art / "qc_summary.json").write_text(json.dumps({
+    _io.write_text_safe(art / "qc_summary.json", json.dumps({
         "n_cells_pre": n_pre,
         "n_cells_post": n_post,
         "thresholds": {
@@ -304,6 +317,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         adata_f.close()
     except Exception:
         pass
+    shutil.copy2(tmp_name, filtered_path)
+    _io.sync_path(filtered_path)
+    Path(tmp_name).unlink(missing_ok=True)
 
     log_event(run_dir, {"stage": "s2_atac_qc", "event": "done",
                          "n_cells_pre": n_pre, "n_cells_post": n_post,

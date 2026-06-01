@@ -14,25 +14,20 @@ rule s3_doublets_propose:
         unpack(_s3_inputs)
     output:
         proposal = str(INTERNAL / "proposals" / "s3_doublets.yaml"),
-        awaiting = str(INTERNAL / "proposals" / "s3_doublets.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
         import yaml
         from pathlib import Path
-        from executor import approval
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s3_doublets",
             "action": "Scrublet (RNA) + heuristic ATAC doublet flagging; overlap + goal-based policy recommendation",
         }))
-        approval.mark_awaiting(params.run_dir, "s3_doublets")
 
 
 rule s3_doublets_execute:
     input:
         unpack(_s3_inputs),
-        proposal         = str(INTERNAL / "proposals" / "s3_doublets.yaml"),
-        approved         = str(INTERNAL / "checkpoints" / "s3_doublets.approved"),
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
     output:

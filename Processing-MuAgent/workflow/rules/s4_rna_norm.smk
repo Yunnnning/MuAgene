@@ -3,24 +3,19 @@ rule s4_rna_norm_propose:
         rna_post = str(INTERNAL / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"),
     output:
         proposal = str(INTERNAL / "proposals" / "s4_rna_norm.yaml"),
-        awaiting = str(INTERNAL / "proposals" / "s4_rna_norm.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
         import yaml
         from pathlib import Path
-        from executor import approval
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s4_rna_norm",
             "action": "log-normalize (target_sum=1e4) + HVG seurat_v3 on counts layer",
         }))
-        approval.mark_awaiting(params.run_dir, "s4_rna_norm")
 
 
 rule s4_rna_norm_execute:
     input:
-        proposal           = str(INTERNAL / "proposals" / "s4_rna_norm.yaml"),
-        approved           = str(INTERNAL / "checkpoints" / "s4_rna_norm.approved"),
         plan               = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done   = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         qc_review_done     = str(INTERNAL / "checkpoints" / "post_qc_review.approved"),

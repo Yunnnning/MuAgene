@@ -1,13 +1,12 @@
 rule p1_context_propose:
     output:
         proposal = str(INTERNAL / "proposals" / "p1_context.yaml"),
-        awaiting = str(INTERNAL / "proposals" / "p1_context.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
         import yaml
         from pathlib import Path
-        from executor import context as ctx, approval
+        from executor import context as ctx
         # Canonical user-facing location for the Biological Context Report
         default_report_path = str(PRE_RUN / "config" / "biological_context.md")
         report_path = config.get("biological_context_path") or default_report_path
@@ -18,13 +17,9 @@ rule p1_context_propose:
             "report_path": report_path,
             "action": "run executor.context.extract_context after user fills the report",
         }))
-        approval.mark_awaiting(params.run_dir, "p1_context")
 
 
 rule p1_context_execute:
-    input:
-        proposal = str(INTERNAL / "proposals" / "p1_context.yaml"),
-        approved = str(INTERNAL / "checkpoints" / "p1_context.approved"),
     output:
         # Machine-readable extraction stays internal; human-readable summary is
         # a pre-run deliverable (reviewed before plan approval).

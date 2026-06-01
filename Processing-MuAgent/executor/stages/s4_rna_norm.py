@@ -17,6 +17,14 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     art = run_dir / "internal" / "artifacts" / "s4_rna_norm"
     art.mkdir(parents=True, exist_ok=True)
     params_path = run_dir / "internal" / "parameters.yaml"
+    branch = _prov.current_branch(str(params_path))
+
+    if branch == "atac_only":
+        import scipy.sparse as sp
+        _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), art / "rna_norm.h5ad")
+        log_event(run_dir, {"stage": "s4_rna_norm", "event": "skipped_no_rna",
+                            "branch": branch})
+        return {"n_cells": 0, "branch": branch}
 
     a = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad")
 

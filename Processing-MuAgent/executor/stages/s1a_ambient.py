@@ -108,11 +108,11 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         "max_contamination_cap": max_contam,
     }
     import json as _json
-    (art / "summary.json").write_text(_json.dumps(
+    _io.write_text_safe(art / "summary.json", _json.dumps(
         {**contam_summary, **result.summary}, indent=2, default=str))
     import pandas as pd
-    pd.DataFrame({"barcode": result.barcodes,
-                  "contamination": contam}).to_parquet(art / "contamination.parquet")
+    _io.write_parquet_safe(pd.DataFrame({"barcode": result.barcodes,
+                  "contamination": contam}), art / "contamination.parquet")
 
     _prov.set_param(params_path, "s1a_ambient.method", result.method.lower(),
                     source="derived", confidence="high",

@@ -702,6 +702,41 @@ def fragment_size_metrics(
     return out
 
 
+def sync_path(path: Path | str) -> None:
+    """Fsync a file on shared NFS after a direct write (parquet, json, npz, copy, ...)."""
+    _fsync_path(path)
+
+
+def _fsync_path(path: Path | str) -> None:
+    """Force NFS write-back commit for a file just written on a shared filesystem."""
+    import os
+
+    path = Path(path)
+    if not path.exists() or not path.is_file():
+        return
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_text_safe(path: Path | str, text: str, **kwargs) -> None:
+    """Write a text file and fsync so Snakemake post-job stat/touch do not block."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, **kwargs)
+    _fsync_path(path)
+
+
+def write_parquet_safe(df, path: Path | str, **kwargs) -> None:
+    """Write parquet and fsync so NFS write-back does not stall cluster child jobs."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, **kwargs)
+    _fsync_path(path)
+
+
 def _write_via_tmp(write_fn, path: Path | str, suffix: str) -> None:
     """Write any HDF5-backed file via /tmp to avoid NFS file-locking and write-back hangs.
 
@@ -720,6 +755,10 @@ def _write_via_tmp(write_fn, path: Path | str, suffix: str) -> None:
        destination file forces the NFS client to commit all dirty pages to the
        server via a COMMIT RPC before returning, so subsequent touch/stat are
        fast.
+
+    Snakemake 9 cluster child jobs (--mode remote) also run store_storage_outputs()
+    when storage-local-copies is enabled; disable it in workflow/profiles/ on
+    shared NFS (see executor/hpc.SNAKEMAKE_SHARED_FS_USAGE).
     """
     import os
     import tempfile

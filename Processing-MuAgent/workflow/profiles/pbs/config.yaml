@@ -27,6 +27,15 @@ max-jobs-per-second: 1
 max-status-checks-per-second: 1
 latency-wait: 300
 
+# Same shared-NFS rationale as workflow/profiles/slurm/config.yaml.
+shared-fs-usage:
+  - persistence
+  - input-output
+  - software-deployment
+  - software-deployment-cache
+  - sources
+  - source-cache
+
 # Retry an OOM-killed / walltime-exceeded job once with attempt-scaled memory
 # (see mem_mb_for() in resources.smk).
 restart-times: 1

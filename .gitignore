@@ -34,5 +34,11 @@ run_*/
 # Processing-MuAgent scheduler logs (head PBS/SLURM jobs)
 Processing-MuAgent/logs/
 
+# Execution-MuAgent scratch runs and scheduler logs
+Execution-MuAgent/logs/
+Execution-MuAgent/run/
+Execution-MuAgent/run_*/
+Execution-MuAgent/tmp_*/
+
 # Presentation materials
 *.pptx

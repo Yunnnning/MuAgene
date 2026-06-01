@@ -1,0 +1,390 @@
+"""Pipeline progress: per-step status display and granular Snakemake resume targets."""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from .plan_assembler import _stages_for_branch
+from .provenance import current_branch
+from .run_paths import RunPaths
+
+# Ordered rows for status display (keys are monitor IDs, not always Snakemake stage IDs).
+MONITOR_PIPELINE: tuple[str, ...] = (
+    "plan_review",
+    "s1a_ambient",
+    "s1_rna_qc",
+    "s2_atac_qc",
+    "s3_doublets",
+    "post_qc_review",
+    "s4_rna_norm",
+    "s5_atac_spectral",
+    "s6_dimred",
+    "s7_sweep",
+    "resolution_review",
+    "s7_labels",
+    "s8_umap",
+)
+
+RESOLUTION_REVIEW_STAGE = "s7_clustering"
+
+HUMAN_GATES: frozenset[str] = frozenset({
+    "plan_review", "post_qc_review", RESOLUTION_REVIEW_STAGE,
+})
+
+MONITOR_LABELS: dict[str, str] = {
+    "plan_review": "plan_review",
+    "s1a_ambient": "S1a",
+    "s1_rna_qc": "S1",
+    "s2_atac_qc": "S2",
+    "s3_doublets": "S3",
+    "post_qc_review": "qc_review",
+    "s4_rna_norm": "S4",
+    "s5_atac_spectral": "S5",
+    "s6_dimred": "S6",
+    "s7_sweep": "S7",
+    "resolution_review": "resolution_review",
+    "s7_labels": "S7-labels",
+    "s8_umap": "S8",
+}
+
+MONITOR_TASKS: dict[str, str] = {
+    "plan_review": "Plan review",
+    "s1a_ambient": "Ambient RNA correction",
+    "s1_rna_qc": "RNA QC filtering",
+    "s2_atac_qc": "ATAC QC filtering",
+    "s3_doublets": "Doublet removal",
+    "post_qc_review": "QC review",
+    "s4_rna_norm": "RNA normalization",
+    "s5_atac_spectral": "ATAC spectral embedding",
+    "s6_dimred": "Dimensionality reduction",
+    "s7_sweep": "Resolution sweep",
+    "resolution_review": "Resolution review",
+    "s7_labels": "Cluster label assignment",
+    "s8_umap": "UMAP and final outputs",
+}
+
+EXECUTE_MARKERS: dict[str, str] = {
+    "s1a_ambient": "rna_decontaminated.h5ad",
+    "s1_rna_qc": "rna_qc.h5ad",
+    "s2_atac_qc": "atac_qc.h5ad",
+    "s3_doublets": "calls.parquet",
+    "s4_rna_norm": "rna_norm.h5ad",
+    "s5_atac_spectral": "spectral_summary.json",
+    "s6_dimred": "rna_dimred.h5ad",
+    "s7_clustering": "rna_clustered.h5ad",
+    "s8_umap": "s8_done.txt",
+}
+
+S7_SWEEP_MARKER = "sweep.parquet"
+
+QC_EXECUTE_STAGES: tuple[str, ...] = (
+    "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
+)
+POST_QC_EXECUTE_STAGES: tuple[str, ...] = (
+    "s4_rna_norm", "s5_atac_spectral", "s6_dimred",
+)
+
+_RULE_ERROR_RE = re.compile(r"Error in rule ([A-Za-z0-9_]+):")
+
+_FAILURE_MARKERS: tuple[str, ...] = (
+    "RuleException:",
+    "WorkflowError:",
+    "Exiting because a job execution failed",
+    "At least one job did not complete successfully",
+)
+
+_BLOCKABLE_STATES: frozenset[str] = frozenset({"pending", "in_progress"})
+
+
+def monitor_label(monitor_id: str) -> str:
+    return MONITOR_LABELS.get(monitor_id, monitor_id)
+
+
+def monitor_task(monitor_id: str) -> str:
+    return MONITOR_TASKS.get(monitor_id, monitor_id)
+
+
+def snakemake_rules_for_monitor(monitor_id: str) -> tuple[str, ...]:
+    """Snakemake rule names whose logs indicate success/failure for a monitor row."""
+    if monitor_id == "s7_sweep":
+        return ("s7_clustering_propose",)
+    if monitor_id == "s7_labels":
+        return ("s7_clustering_execute",)
+    if monitor_id == "resolution_review":
+        return ()
+    if monitor_id in HUMAN_GATES:
+        return (f"{monitor_id}_propose",)
+    if monitor_id in EXECUTE_MARKERS:
+        return (f"{monitor_id}_propose", f"{monitor_id}_execute")
+    return ()
+
+
+def _branch_stages(paths: RunPaths) -> set[str]:
+    return _stages_for_branch(current_branch(paths.parameters_yaml))
+
+
+def _s7_applies(branch_stages: set[str]) -> bool:
+    return RESOLUTION_REVIEW_STAGE in branch_stages
+
+
+def _applies(monitor_id: str, branch_stages: set[str]) -> bool:
+    if monitor_id in ("s7_sweep", "resolution_review", "s7_labels"):
+        return _s7_applies(branch_stages)
+    if monitor_id in HUMAN_GATES:
+        return True
+    return monitor_id in branch_stages
+
+
+def execute_artifact(paths: RunPaths, stage: str) -> Path:
+    return paths.artifact(stage, EXECUTE_MARKERS[stage])
+
+
+def execute_done(paths: RunPaths, stage: str) -> bool:
+    return execute_artifact(paths, stage).exists()
+
+
+def _s7_sweep_done(paths: RunPaths) -> bool:
+    return paths.artifact(RESOLUTION_REVIEW_STAGE, S7_SWEEP_MARKER).exists()
+
+
+def _log_indicates_failure(text: str) -> bool:
+    return "Error in rule " in text or any(marker in text for marker in _FAILURE_MARKERS)
+
+
+def _read_log_text(path: Path, *, max_bytes: int = 512_000) -> str:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size <= max_bytes:
+        return path.read_text(errors="replace")
+    with path.open("rb") as handle:
+        handle.seek(max(0, size - max_bytes))
+        return handle.read().decode(errors="replace")
+
+
+def _snakemake_root(paths: RunPaths) -> Path:
+    return paths.snakemake_workdir / ".snakemake"
+
+
+def _cluster_logs_root(paths: RunPaths) -> Path:
+    return _snakemake_root(paths) / "slurm_logs"
+
+
+def _latest_rule_log(paths: RunPaths, rule_name: str) -> Path | None:
+    log_dir = _cluster_logs_root(paths) / f"rule_{rule_name}"
+    if not log_dir.is_dir():
+        return None
+    job_logs = list(log_dir.glob("*.log"))
+    if not job_logs:
+        return None
+    return max(job_logs, key=lambda p: p.stat().st_mtime)
+
+
+def _failed_rules_from_main_log(paths: RunPaths) -> set[str]:
+    log_dir = _snakemake_root(paths) / "log"
+    if not log_dir.is_dir():
+        return set()
+    logs = sorted(log_dir.glob("*.snakemake.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not logs:
+        return set()
+    text = _read_log_text(logs[0])
+    if not _log_indicates_failure(text):
+        return set()
+    return set(_RULE_ERROR_RE.findall(text))
+
+
+def _rule_is_failed(paths: RunPaths, rule_name: str, failed_rules: frozenset[str]) -> bool:
+    if rule_name not in failed_rules:
+        return False
+    latest = _latest_rule_log(paths, rule_name)
+    if latest is not None:
+        return _log_indicates_failure(_read_log_text(latest))
+    return True
+
+
+def collect_failed_snakemake_rules(paths: RunPaths) -> frozenset[str]:
+    """Snakemake rules whose logs report failure (per-rule cluster logs + main workflow log)."""
+    failed: set[str] = set()
+
+    cluster_root = _cluster_logs_root(paths)
+    if cluster_root.is_dir():
+        for rule_dir in cluster_root.iterdir():
+            if not rule_dir.is_dir() or not rule_dir.name.startswith("rule_"):
+                continue
+            rule_name = rule_dir.name.removeprefix("rule_")
+            latest = _latest_rule_log(paths, rule_name)
+            if latest is not None and _log_indicates_failure(_read_log_text(latest)):
+                failed.add(rule_name)
+
+    failed.update(_failed_rules_from_main_log(paths))
+    return frozenset(failed)
+
+
+def _monitor_outputs_done(paths: RunPaths, monitor_id: str) -> bool:
+    if monitor_id == "s7_sweep":
+        return _s7_sweep_done(paths)
+    if monitor_id == "s7_labels":
+        return execute_done(paths, RESOLUTION_REVIEW_STAGE)
+    if monitor_id in HUMAN_GATES or monitor_id == "resolution_review":
+        return False
+    return execute_done(paths, monitor_id)
+
+
+def _monitor_failed(
+    paths: RunPaths,
+    monitor_id: str,
+    failed_rules: frozenset[str],
+) -> bool:
+    if not failed_rules or _monitor_outputs_done(paths, monitor_id):
+        return False
+    for rule in snakemake_rules_for_monitor(monitor_id):
+        if _rule_is_failed(paths, rule, failed_rules):
+            return True
+    return False
+
+
+def _human_gate_state(
+    paths: RunPaths,
+    stage: str,
+    failed_rules: frozenset[str],
+) -> str:
+    if paths.approved_sentinel(stage).exists():
+        return "approved"
+    if paths.awaiting_sentinel(stage).exists():
+        return "awaiting_approval"
+    if stage == "post_qc_review" and paths.qc_review_summary_md.exists():
+        return "awaiting_approval"
+    if stage == RESOLUTION_REVIEW_STAGE and _s7_sweep_done(paths):
+        return "awaiting_approval"
+    if stage == "plan_review" and paths.plan_review_md.exists():
+        return "awaiting_approval"
+    if _monitor_failed(paths, stage, failed_rules):
+        return "failed"
+    return "pending"
+
+
+def _automated_state(
+    paths: RunPaths,
+    monitor_id: str,
+    stage_id: str,
+    branch_stages: set[str],
+    failed_rules: frozenset[str],
+) -> str:
+    """Unified pending / in_progress / failed / done / skipped for processing steps."""
+    if stage_id not in branch_stages:
+        return "skipped"
+    if _monitor_outputs_done(paths, monitor_id):
+        return "done"
+    if _monitor_failed(paths, monitor_id, failed_rules):
+        return "failed"
+    if paths.proposal(stage_id).exists():
+        return "in_progress"
+    return "pending"
+
+
+def _monitor_state(
+    paths: RunPaths,
+    monitor_id: str,
+    branch_stages: set[str],
+    failed_rules: frozenset[str],
+) -> str:
+    if monitor_id == "resolution_review":
+        return _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules)
+
+    if monitor_id == "s7_sweep":
+        return _automated_state(
+            paths, monitor_id, RESOLUTION_REVIEW_STAGE, branch_stages, failed_rules,
+        )
+
+    if monitor_id == "s7_labels":
+        gate = _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules)
+        if gate != "approved":
+            return "pending"
+        return _automated_state(
+            paths, monitor_id, RESOLUTION_REVIEW_STAGE, branch_stages, failed_rules,
+        )
+
+    if monitor_id in HUMAN_GATES:
+        return _human_gate_state(paths, monitor_id, failed_rules)
+
+    return _automated_state(paths, monitor_id, monitor_id, branch_stages, failed_rules)
+
+
+def _apply_upstream_blocked(
+    rows: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """After a failed step, downstream pending/in_progress rows become blocked."""
+    blocked = False
+    out: list[tuple[str, str, str]] = []
+    for label, task, state in rows:
+        if blocked and state in _BLOCKABLE_STATES:
+            state = "blocked"
+        if state == "failed":
+            blocked = True
+        out.append((label, task, state))
+    return out
+
+
+def stage_states(paths: RunPaths) -> list[tuple[str, str, str]]:
+    """Return (short_label, task_name, state) for each applicable monitor row."""
+    branch_stages = _branch_stages(paths)
+    failed_rules = collect_failed_snakemake_rules(paths)
+    rows = [
+        (
+            monitor_label(mid),
+            monitor_task(mid),
+            _monitor_state(paths, mid, branch_stages, failed_rules),
+        )
+        for mid in MONITOR_PIPELINE
+        if _applies(mid, branch_stages)
+    ]
+    return _apply_upstream_blocked(rows)
+
+
+def _first_incomplete_execute(
+    paths: RunPaths,
+    stages: tuple[str, ...],
+    branch_stages: set[str],
+) -> str | None:
+    for stage in stages:
+        if stage not in branch_stages:
+            continue
+        if not execute_done(paths, stage):
+            return f"{stage}_execute"
+    return None
+
+
+def infer_resume_target(run_dir: Path | str) -> str:
+    """Pick the Snakemake target from the first incomplete pipeline step."""
+    paths = RunPaths(run_dir)
+    branch_stages = _branch_stages(paths)
+
+    incomplete = _first_incomplete_execute(paths, QC_EXECUTE_STAGES, branch_stages)
+    if incomplete is not None:
+        return incomplete
+    if not paths.approved_sentinel("post_qc_review").exists():
+        return "post_qc_review_propose"
+
+    incomplete = _first_incomplete_execute(paths, POST_QC_EXECUTE_STAGES, branch_stages)
+    if incomplete is not None:
+        return incomplete
+    if not paths.approved_sentinel(RESOLUTION_REVIEW_STAGE).exists():
+        return "s7_clustering_propose"
+    if not execute_done(paths, RESOLUTION_REVIEW_STAGE):
+        return "s7_clustering_execute"
+    if not execute_done(paths, "s8_umap"):
+        return "s8_umap_execute"
+    return "all"
+
+
+def required_human_approvals(target: str) -> tuple[str, ...]:
+    """Human checkpoint sentinels that must exist before running ``target``."""
+    base = ("plan_review",)
+    qc_targets = {f"{s}_execute" for s in QC_EXECUTE_STAGES} | {"post_qc_review_propose"}
+    mid_targets = {f"{s}_execute" for s in POST_QC_EXECUTE_STAGES} | {"s7_clustering_propose"}
+    if target in qc_targets:
+        return base
+    if target in mid_targets:
+        return base + ("post_qc_review",)
+    return base + ("post_qc_review", RESOLUTION_REVIEW_STAGE)
