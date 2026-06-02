@@ -1,6 +1,6 @@
 """post_qc_review — QC review user checkpoint (checkpoint #2 of 3).
 
-Runs after S3 doublet filtering and before S4/S5 dimensionality reduction.
+Runs after S3 doublet filtering and before S4/S5 and S6 PCA (RNA) + neighbor graph.
 Generates QC figures and writes the QC review summary at
   deliverables/checkpoint/qc_review/qc_summary.md
 

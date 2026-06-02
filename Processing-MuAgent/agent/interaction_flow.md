@@ -20,13 +20,13 @@ Canonical entry behaviour for the chat runtime. Each step has three parts:
 2. **scATAC-seq** — single modality, ATAC only. Input: `fragments.tsv.gz` + matching `.tbi` index.
 3. **Paired multiome RNA + ATAC** — one sample, both modalities, cells share barcodes. Inputs: an RNA matrix (formats above) + ATAC fragments. I also handle the *separate* case (RNA + ATAC from independent samples where barcodes don't match) — no cross-modality integration, each modality flows through independently.
 
-For any of these, I do QC → doublet detection → dim reduction → clustering → UMAP per modality, and then I stop. I don't do integration, annotation, or any downstream analysis.
+For any of these, I do QC → doublet detection → PCA (RNA) + neighbor graph → clustering → UMAP per modality, and then I stop. I don't do integration, annotation, or any downstream analysis.
 
 Before you answer, one other thing I'll need: a run directory — a writable folder where I can put intermediate artifacts, approval checkpoints, and final outputs.
 
 Mandatory approval points depend on the branch:
 
-- All branches: (1) biological context, (2) the full preprocessing plan, (3) **QC review** (after S3, before dimensionality reduction), (4) clustering resolution.
+- All branches: (1) biological context, (2) the full preprocessing plan, (3) **QC review** (after S3, before S6 PCA + neighbor graph), (4) clustering resolution.
 - `paired` only: (5) doublet-policy reconciliation at S3 — how to combine the RNA and ATAC detector calls.
 - `separate` / `rna_only` / `atac_only`: S3 runs automatically — each modality's doublets are filtered by its own detector with no cross-modal reconciliation; no pause unless you ask for per-stage review.
 
@@ -241,7 +241,7 @@ for confirmation.
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S3 | Cluster | — |
 | Checkpoint **#2** | post_qc_review | — | Review QC |
-| Dimred + clustering | S4 → S7 (sweep) | Cluster | — |
+| PCA + neighbors + clustering | S4 → S7 (sweep) | Cluster | — |
 | Checkpoint **#3** | s7_clustering | — | Review resolution |
 | Finish | S7 (labels) → S8 → manifest | Cluster | — |
 

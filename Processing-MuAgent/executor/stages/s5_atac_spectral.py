@@ -1,7 +1,7 @@
 """S5 — ATAC spectral embedding via SnapATAC2, plus flexible feature export.
 
 SnapATAC2 backed AnnData writes in-place on the file it was opened from. To preserve
-the S3 output unchanged and make S6+ work on a distinct artifact, we COPY the S3
+the S3 output unchanged and make S6 (PCA + neighbors)+ work on a distinct artifact, we COPY the S3
 output to s5/atac_spectral.h5ad then modify that copy in place.
 
 S5 performs two independent operations:

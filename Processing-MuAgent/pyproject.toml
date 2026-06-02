@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "Processing-MuAgent"
 version = "0.1.0"
-description = "Multiome (scRNA + scATAC) preprocessing subagent: QC -> dim reduction -> clustering -> UMAP. Hard stop."
+description = "Multiome (scRNA + scATAC) preprocessing subagent: QC -> PCA (RNA) + neighbor graph -> clustering -> UMAP. Hard stop."
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "scanpy>=1.10",

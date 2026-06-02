@@ -55,7 +55,7 @@ def propose(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     rna_rows: list[dict[str, Any]] = []
     rna_pick = {"resolution": None, "rationale": "No RNA modality in this branch", "stable_region": []}
     if has_rna:
-        rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s6_dimred" / "rna_dimred.h5ad")
+        rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s6_neighbors" / "rna_neighbors.h5ad")
         rna_rows = _rs.sweep_leiden(rna, grid=rna_grid, seeds=seeds, latent_key="X_pca")
         rna_pick = _rs.pick_stable_knee(rna_rows, tilt=rna_tilt, stability_floor=stability_floor)
 
@@ -327,7 +327,7 @@ def execute(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         if rna_res is None:
             raise RuntimeError("s7_clustering.rna.resolution not set in parameters.yaml; "
                                 "did the propose step run?")
-        rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s6_dimred" / "rna_dimred.h5ad")
+        rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s6_neighbors" / "rna_neighbors.h5ad")
         sc.tl.leiden(rna, resolution=float(rna_res), random_state=seeds[0],
                      key_added="leiden_rna")
         _io.write_h5ad_safe(rna, art / "rna_clustered.h5ad")

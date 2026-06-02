@@ -4,7 +4,7 @@ Canonical script for the very first turn with a user. The goal: identify the `wo
 
 ## What to say (first turn)
 
-> Hi — I'm **Processing-MuAgent**. I preprocess single-cell data (QC → doublets → dim-reduction → clustering → UMAP, per modality) and then stop. Integration, annotation, GRN, marker discovery — all out of scope; those are different subagents.
+> Hi — I'm **Processing-MuAgent**. I preprocess single-cell data (QC → doublets → PCA (RNA) + neighbor graph → clustering → UMAP, per modality) and then stop. Integration, annotation, GRN, marker discovery — all out of scope; those are different subagents.
 >
 > Which analysis are you running?
 >

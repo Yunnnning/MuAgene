@@ -10,6 +10,7 @@ from executor.stage_progress import (
     EXECUTE_MARKERS,
     MONITOR_PIPELINE,
     collect_failed_snakemake_rules,
+    collect_monitor_killed_monitor_ids,
     infer_resume_target,
     snakemake_rules_for_monitor,
     stage_states,
@@ -196,6 +197,69 @@ class StageProgressTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
             self.assertEqual(cli._stage_states(paths), stage_states(paths))
+
+    def _write_monitor_kill_report(self, paths: RunPaths, child_job_ids: list[str]) -> None:
+        monitor_dir = paths.run_dir / "internal" / "hpc_monitor"
+        monitor_dir.mkdir(parents=True, exist_ok=True)
+        actions = [
+            {"job_id": jid, "role": "child", "attempted": True, "returncode": 0}
+            for jid in child_job_ids
+        ]
+        actions.append({"job_id": "999000", "role": "head", "attempted": True, "returncode": 0})
+        payload = {
+            "attempted": True,
+            "executor": "slurm",
+            "head_job_id": "999000",
+            "child_job_ids": child_job_ids,
+            "actions": actions,
+        }
+        report = (
+            "# HPC Monitor Report\n\n"
+            "## Kill Action\n\n"
+            f"```json\n{__import__('json').dumps(payload, indent=2)}\n```\n"
+        )
+        (monitor_dir / "latest_report.md").write_text(report)
+
+    def test_monitor_kill_shows_cancelled_without_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._init_run(tmp)
+            paths.approved_sentinel("plan_review").write_text("")
+            for stage, marker in (
+                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1_rna_qc", "rna_qc.h5ad"),
+                ("s2_atac_qc", "atac_qc.h5ad"),
+            ):
+                p = paths.artifact(stage, marker)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("")
+            _write_cluster_rule_log(paths, "s3_doublets_execute", "slurmstepd: CANCELLED\n")
+            self._write_monitor_kill_report(paths, ["42"])
+            (paths.snakemake_workdir / ".snakemake" / "slurm_logs" / "rule_s3_doublets_execute").mkdir(
+                parents=True, exist_ok=True
+            )
+            (paths.snakemake_workdir / ".snakemake" / "slurm_logs" / "rule_s3_doublets_execute" / "42.log").write_text(
+                "slurmstepd: CANCELLED\n"
+            )
+
+            self.assertIn("s3_doublets", collect_monitor_killed_monitor_ids(paths))
+            states = _states_by_label(paths)
+            self.assertEqual(states["S3"], "cancelled")
+            self.assertEqual(states["qc_review"], "blocked")
+
+    def test_monitor_kill_does_not_override_done_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._init_run(tmp)
+            paths.approved_sentinel("plan_review").write_text("")
+            p = paths.artifact("s1a_ambient", "rna_decontaminated.h5ad")
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("")
+            _write_cluster_rule_log(paths, "s1a_ambient_execute", "slurmstepd: CANCELLED\n")
+            self._write_monitor_kill_report(paths, ["7"])
+            log_dir = paths.snakemake_workdir / ".snakemake" / "slurm_logs" / "rule_s1a_ambient_execute"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / "7.log").write_text("slurmstepd: CANCELLED\n")
+
+            self.assertEqual(_states_by_label(paths)["S1a"], "done")
 
 
 if __name__ == "__main__":

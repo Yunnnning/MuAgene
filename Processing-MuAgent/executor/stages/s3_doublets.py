@@ -399,7 +399,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                 pass
     else:
         # rna_only — empty placeholder so downstream rules that rglob the
-        # artifacts dir don't crash. s6/s7/s8 consult workflow_branch directly.
+        # artifacts dir don't crash. s6_neighbors/s7/s8 consult workflow_branch directly.
         import scipy.sparse as sp
         _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), atac_out)
 

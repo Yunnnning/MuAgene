@@ -5,7 +5,7 @@ rule s7_clustering_propose:
     in parameters.yaml.
     """
     input:
-        rna_dimred = str(INTERNAL / "artifacts" / "s6_dimred" / "rna_dimred.h5ad"),
+        rna_neighbors = str(INTERNAL / "artifacts" / "s6_neighbors" / "rna_neighbors.h5ad"),
         plan       = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
     output:
         proposal = str(INTERNAL / "proposals" / "s7_clustering.yaml"),
@@ -55,7 +55,7 @@ rule s7_clustering_execute:
         approved         = str(INTERNAL / "checkpoints" / "s7_clustering.approved"),
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
-        rna_dimred       = str(INTERNAL / "artifacts" / "s6_dimred" / "rna_dimred.h5ad"),
+        rna_neighbors    = str(INTERNAL / "artifacts" / "s6_neighbors" / "rna_neighbors.h5ad"),
     output:
         rna_clustered = str(INTERNAL / "artifacts" / "s7_clustering" / "rna_clustered.h5ad"),
     params:

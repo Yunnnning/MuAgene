@@ -18,13 +18,13 @@ from .hpc import load_execution_settings
 # {paired, separate, rna_only, atac_only}.
 _STAGES_BY_BRANCH = {
     "paired":    {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-                   "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap"},
+                   "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"},
     "separate":  {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-                   "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap"},
+                   "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"},
     "rna_only":  {"s1a_ambient", "s1_rna_qc", "s3_doublets", "s4_rna_norm",
-                   "s6_dimred", "s7_clustering", "s8_umap"},
+                   "s6_neighbors", "s7_clustering", "s8_umap"},
     "atac_only": {"s2_atac_qc", "s3_doublets", "s5_atac_spectral",
-                   "s6_dimred", "s7_clustering", "s8_umap"},
+                   "s6_neighbors", "s7_clustering", "s8_umap"},
 }
 
 
@@ -205,7 +205,7 @@ def assemble_plan(
                 "max_top_peaks": p(50000, "recommended", "Cap on feature selection.", "medium"),
             }
         },
-        "s6_dimred": {
+        "s6_neighbors": {
             "parameters": {
                 "rna_n_pcs": p("auto", "recommended",
                                 "If 'auto', n_pcs is chosen by elbow detection on the cumulative "

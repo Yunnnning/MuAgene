@@ -2,7 +2,7 @@
 
 Rule DAG: p1_context -> p2_plan -> plan_review -> s0_ingest -> s1a_ambient ->
           s1_rna_qc -> s2_atac_qc -> s3_doublets -> post_qc_review ->
-          s4_rna_norm -> s5_atac_spectral -> s6_dimred -> s7_clustering -> s8_umap -> manifest
+          s4_rna_norm -> s5_atac_spectral -> s6_neighbors -> s7_clustering -> s8_umap -> manifest
 
 Each stage has a _propose / _execute pair (see rules/*.smk); the execute rule
 depends on checkpoints/<stage>.approved written by `Processing-MuAgent approve <stage>`.
@@ -34,7 +34,7 @@ STAGES = [
     "p1_context", "p2_plan", "plan_review",
     "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
     "post_qc_review",
-    "s4_rna_norm", "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap",
+    "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
 ]
 
 
@@ -51,7 +51,7 @@ include: "rules/s3_doublets.smk"
 include: "rules/post_qc_review.smk"
 include: "rules/s4_rna_norm.smk"
 include: "rules/s5_atac_spectral.smk"
-include: "rules/s6_dimred.smk"
+include: "rules/s6_neighbors.smk"
 include: "rules/s7_clustering.smk"
 include: "rules/s8_umap.smk"
 include: "rules/manifest.smk"
@@ -77,7 +77,7 @@ localrules:
     post_qc_review_propose,
     s4_rna_norm_propose,
     s5_atac_spectral_propose,
-    s6_dimred_propose,
+    s6_neighbors_propose,
     s7_clustering_propose,
     s8_umap_propose,
     manifest,

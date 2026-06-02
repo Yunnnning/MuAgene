@@ -1,6 +1,7 @@
 """Pipeline progress: per-step status display and granular Snakemake resume targets."""
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -18,7 +19,7 @@ MONITOR_PIPELINE: tuple[str, ...] = (
     "post_qc_review",
     "s4_rna_norm",
     "s5_atac_spectral",
-    "s6_dimred",
+    "s6_neighbors",
     "s7_sweep",
     "resolution_review",
     "s7_labels",
@@ -40,7 +41,7 @@ MONITOR_LABELS: dict[str, str] = {
     "post_qc_review": "qc_review",
     "s4_rna_norm": "S4",
     "s5_atac_spectral": "S5",
-    "s6_dimred": "S6",
+    "s6_neighbors": "S6",
     "s7_sweep": "S7",
     "resolution_review": "resolution_review",
     "s7_labels": "S7-labels",
@@ -56,7 +57,7 @@ MONITOR_TASKS: dict[str, str] = {
     "post_qc_review": "QC review",
     "s4_rna_norm": "RNA normalization",
     "s5_atac_spectral": "ATAC spectral embedding",
-    "s6_dimred": "Dimensionality reduction",
+    "s6_neighbors": "PCA (RNA) + neighbor graph",
     "s7_sweep": "Resolution sweep",
     "resolution_review": "Resolution review",
     "s7_labels": "Cluster label assignment",
@@ -70,7 +71,7 @@ EXECUTE_MARKERS: dict[str, str] = {
     "s3_doublets": "calls.parquet",
     "s4_rna_norm": "rna_norm.h5ad",
     "s5_atac_spectral": "spectral_summary.json",
-    "s6_dimred": "rna_dimred.h5ad",
+    "s6_neighbors": "rna_neighbors.h5ad",
     "s7_clustering": "rna_clustered.h5ad",
     "s8_umap": "s8_done.txt",
 }
@@ -81,7 +82,7 @@ QC_EXECUTE_STAGES: tuple[str, ...] = (
     "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
 )
 POST_QC_EXECUTE_STAGES: tuple[str, ...] = (
-    "s4_rna_norm", "s5_atac_spectral", "s6_dimred",
+    "s4_rna_norm", "s5_atac_spectral", "s6_neighbors",
 )
 
 _RULE_ERROR_RE = re.compile(r"Error in rule ([A-Za-z0-9_]+):")
@@ -93,7 +94,25 @@ _FAILURE_MARKERS: tuple[str, ...] = (
     "At least one job did not complete successfully",
 )
 
-_BLOCKABLE_STATES: frozenset[str] = frozenset({"pending", "in_progress"})
+_BLOCKABLE_STATES: frozenset[str] = frozenset({"pending", "in_progress", "cancelled"})
+
+_KILL_ACTION_RE = re.compile(r"## Kill Action\s+```json\s+(.*?)\s+```", re.DOTALL)
+
+# Snakemake rule name -> monitor row id (see MONITOR_PIPELINE).
+_RULE_TO_MONITOR_ID: dict[str, str] = {
+    "s1a_ambient_execute": "s1a_ambient",
+    "s1_rna_qc_execute": "s1_rna_qc",
+    "s2_atac_qc_execute": "s2_atac_qc",
+    "s3_doublets_execute": "s3_doublets",
+    "s4_rna_norm_execute": "s4_rna_norm",
+    "s5_atac_spectral_execute": "s5_atac_spectral",
+    "s6_neighbors_execute": "s6_neighbors",
+    "s7_clustering_propose": "s7_sweep",
+    "s7_clustering_execute": "s7_labels",
+    "s8_umap_execute": "s8_umap",
+    "plan_review_propose": "plan_review",
+    "post_qc_review_propose": "post_qc_review",
+}
 
 
 def monitor_label(monitor_id: str) -> str:
@@ -231,6 +250,67 @@ def _monitor_outputs_done(paths: RunPaths, monitor_id: str) -> bool:
     return execute_done(paths, monitor_id)
 
 
+def _child_job_to_rule(paths: RunPaths, job_id: str) -> str | None:
+    """Map a SLURM child job id to the Snakemake rule name from cluster logs."""
+    root = _cluster_logs_root(paths)
+    if not root.is_dir():
+        return None
+    for rule_dir in root.iterdir():
+        if not rule_dir.is_dir() or not rule_dir.name.startswith("rule_"):
+            continue
+        if (rule_dir / f"{job_id}.log").exists():
+            return rule_dir.name.removeprefix("rule_")
+    return None
+
+
+def _load_monitor_kill_action(paths: RunPaths) -> dict | None:
+    """Parse the latest HPC monitor kill record written by Execution-MuAgent."""
+    report_path = paths.run_dir / "internal" / "hpc_monitor" / "latest_report.md"
+    if not report_path.is_file():
+        return None
+    match = _KILL_ACTION_RE.search(report_path.read_text(errors="replace"))
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    if not payload.get("attempted"):
+        return None
+    return payload
+
+
+def collect_monitor_killed_monitor_ids(paths: RunPaths) -> frozenset[str]:
+    """Monitor row ids whose SLURM child jobs were cancelled by the HPC monitor."""
+    kill = _load_monitor_kill_action(paths)
+    if kill is None:
+        return frozenset()
+    killed: set[str] = set()
+    for action in kill.get("actions") or []:
+        if action.get("role") != "child":
+            continue
+        job_id = str(action.get("job_id") or "").strip()
+        if not job_id:
+            continue
+        rule = _child_job_to_rule(paths, job_id)
+        if rule is None:
+            continue
+        monitor_id = _RULE_TO_MONITOR_ID.get(rule)
+        if monitor_id is not None:
+            killed.add(monitor_id)
+    return frozenset(killed)
+
+
+def _monitor_cancelled(
+    paths: RunPaths,
+    monitor_id: str,
+    killed_monitor_ids: frozenset[str],
+) -> bool:
+    if monitor_id not in killed_monitor_ids:
+        return False
+    return not _monitor_outputs_done(paths, monitor_id)
+
+
 def _monitor_failed(
     paths: RunPaths,
     monitor_id: str,
@@ -248,6 +328,7 @@ def _human_gate_state(
     paths: RunPaths,
     stage: str,
     failed_rules: frozenset[str],
+    killed_monitor_ids: frozenset[str],
 ) -> str:
     if paths.approved_sentinel(stage).exists():
         return "approved"
@@ -261,6 +342,8 @@ def _human_gate_state(
         return "awaiting_approval"
     if _monitor_failed(paths, stage, failed_rules):
         return "failed"
+    if _monitor_cancelled(paths, stage, killed_monitor_ids):
+        return "cancelled"
     return "pending"
 
 
@@ -270,14 +353,17 @@ def _automated_state(
     stage_id: str,
     branch_stages: set[str],
     failed_rules: frozenset[str],
+    killed_monitor_ids: frozenset[str],
 ) -> str:
-    """Unified pending / in_progress / failed / done / skipped for processing steps."""
+    """Unified pending / in_progress / failed / cancelled / done / skipped for processing steps."""
     if stage_id not in branch_stages:
         return "skipped"
     if _monitor_outputs_done(paths, monitor_id):
         return "done"
     if _monitor_failed(paths, monitor_id, failed_rules):
         return "failed"
+    if _monitor_cancelled(paths, monitor_id, killed_monitor_ids):
+        return "cancelled"
     if paths.proposal(stage_id).exists():
         return "in_progress"
     return "pending"
@@ -288,39 +374,44 @@ def _monitor_state(
     monitor_id: str,
     branch_stages: set[str],
     failed_rules: frozenset[str],
+    killed_monitor_ids: frozenset[str],
 ) -> str:
     if monitor_id == "resolution_review":
-        return _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules)
+        return _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules, killed_monitor_ids)
 
     if monitor_id == "s7_sweep":
         return _automated_state(
             paths, monitor_id, RESOLUTION_REVIEW_STAGE, branch_stages, failed_rules,
+            killed_monitor_ids,
         )
 
     if monitor_id == "s7_labels":
-        gate = _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules)
+        gate = _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules, killed_monitor_ids)
         if gate != "approved":
             return "pending"
         return _automated_state(
             paths, monitor_id, RESOLUTION_REVIEW_STAGE, branch_stages, failed_rules,
+            killed_monitor_ids,
         )
 
     if monitor_id in HUMAN_GATES:
-        return _human_gate_state(paths, monitor_id, failed_rules)
+        return _human_gate_state(paths, monitor_id, failed_rules, killed_monitor_ids)
 
-    return _automated_state(paths, monitor_id, monitor_id, branch_stages, failed_rules)
+    return _automated_state(
+        paths, monitor_id, monitor_id, branch_stages, failed_rules, killed_monitor_ids,
+    )
 
 
 def _apply_upstream_blocked(
     rows: list[tuple[str, str, str]],
 ) -> list[tuple[str, str, str]]:
-    """After a failed step, downstream pending/in_progress rows become blocked."""
+    """After a failed or monitor-cancelled step, downstream pending rows become blocked."""
     blocked = False
     out: list[tuple[str, str, str]] = []
     for label, task, state in rows:
         if blocked and state in _BLOCKABLE_STATES:
             state = "blocked"
-        if state == "failed":
+        if state in ("failed", "cancelled"):
             blocked = True
         out.append((label, task, state))
     return out
@@ -330,11 +421,12 @@ def stage_states(paths: RunPaths) -> list[tuple[str, str, str]]:
     """Return (short_label, task_name, state) for each applicable monitor row."""
     branch_stages = _branch_stages(paths)
     failed_rules = collect_failed_snakemake_rules(paths)
+    killed_monitor_ids = collect_monitor_killed_monitor_ids(paths)
     rows = [
         (
             monitor_label(mid),
             monitor_task(mid),
-            _monitor_state(paths, mid, branch_stages, failed_rules),
+            _monitor_state(paths, mid, branch_stages, failed_rules, killed_monitor_ids),
         )
         for mid in MONITOR_PIPELINE
         if _applies(mid, branch_stages)

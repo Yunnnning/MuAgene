@@ -531,11 +531,11 @@ def _qc_review_actions(branch: str) -> str:
         "",
     ]
     lines += [
-        "### Approve and continue to dimensionality reduction",
+        "### Approve and continue to PCA (RNA) + neighbor graph",
         "",
         "```bash",
         f"Processing-MuAgent approve post_qc_review --config {cfg}",
-        f"Processing-MuAgent run --config {cfg} --target s6_dimred_execute",
+        f"Processing-MuAgent run --config {cfg} --target s6_neighbors_execute",
         "```",
         "",
     ]

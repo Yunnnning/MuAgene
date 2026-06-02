@@ -1,6 +1,6 @@
 """Side-by-side Leiden resolution comparison helper.
 
-Given an existing run directory with S6 dim-reduced RNA + S5 spectral ATAC, re-cluster
+Given an existing run directory with S6 PCA (RNA) + neighbor graph and S5 spectral ATAC, re-cluster
 each modality at two user-specified resolutions and render a side-by-side UMAP
 figure + summary table. Writes to <run_dir>/internal/artifacts/s7_clustering/
 and surfaces comparison figures in deliverables/checkpoint/resolution_review/.
@@ -90,7 +90,7 @@ def _plot_two_panel(left_coords, left_labels, left_title,
 
 def compare_rna(run_dir: Path | str, resolutions: tuple[float, float], seed: int = 0) -> dict[str, Any]:
     run_dir = Path(run_dir)
-    rna_path = run_dir / "internal" / "artifacts" / "s6_dimred" / "rna_dimred.h5ad"
+    rna_path = run_dir / "internal" / "artifacts" / "s6_neighbors" / "rna_neighbors.h5ad"
     if not rna_path.exists():
         # fall back to the clustered output (also has X_umap + PCA + neighbors)
         rna_path = run_dir / "internal" / "artifacts" / "s7_clustering" / "rna_clustered.h5ad"
@@ -387,7 +387,7 @@ def adjacency_comparison(run_dir: Path | str, *, modality: str, grid: list[float
     figures: list[str] = []
 
     if modality == "rna":
-        rna_path = run_dir / "internal" / "artifacts" / "s6_dimred" / "rna_dimred.h5ad"
+        rna_path = run_dir / "internal" / "artifacts" / "s6_neighbors" / "rna_neighbors.h5ad"
         rna = ad.read_h5ad(rna_path)
         if "X_umap" not in rna.obsm:
             sc.tl.umap(rna, random_state=seed)

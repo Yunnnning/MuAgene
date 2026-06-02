@@ -1,4 +1,4 @@
-"""S6 — Dim reduction + neighbors (RNA PCA + neighbors; ATAC neighbors on spectral embedding from S5).
+"""S6 — PCA (RNA) + neighbor graph (RNA PCA + neighbors; ATAC KNN on S5 spectral embedding).
 
 Standard scanpy preprocessing path (rev. 2026-04):
     log-normalize → HVG → optional sc.pp.scale → PCA → neighbors
@@ -52,7 +52,7 @@ def _pick_pca_elbow(variance_ratio: np.ndarray, *, max_n: int) -> tuple[int, str
 
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     run_dir = Path(run_dir)
-    art = run_dir / "internal" / "artifacts" / "s6_dimred"
+    art = run_dir / "internal" / "artifacts" / "s6_neighbors"
     art.mkdir(parents=True, exist_ok=True)
     params_path = run_dir / "internal" / "parameters.yaml"
     branch = _prov.current_branch(str(params_path))
@@ -60,7 +60,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     has_rna = branch in ("paired", "separate", "rna_only")
     has_atac = branch in ("paired", "separate", "atac_only")
 
-    s6_params = plan["stages"].get("s6_dimred", {}).get("parameters", {})
+    s6_params = plan["stages"].get("s6_neighbors", {}).get("parameters", {})
     n_pcs_param = s6_params.get("rna_n_pcs", {}).get("value", "auto")
     n_pcs_max = int(s6_params.get("rna_n_pcs_max", {}).get("value", 50))
     do_scale = bool(s6_params.get("rna_scale", {}).get("value", True))
@@ -82,7 +82,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             try:
                 sc.pp.scale(a_pca, max_value=10)
             except Exception as e:
-                log_event(run_dir, {"stage": "s6_dimred", "event": "scale_failed",
+                log_event(run_dir, {"stage": "s6_neighbors", "event": "scale_failed",
                                     "error": str(e)})
 
         # Elbow-resolved n_pcs. Compute up to n_pcs_max then trim to the elbow.
@@ -118,22 +118,22 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     np.array([]))[:n_pcs] if isinstance(a.uns["pca"].get("variance"), np.ndarray) else a.uns["pca"].get("variance")
 
         sc.pp.neighbors(a, n_neighbors=n_neighbors, n_pcs=n_pcs)
-        _io.write_h5ad_safe(a, art / "rna_dimred.h5ad")
-        _prov.set_param(params_path, "s6_dimred.rna_n_pcs", int(n_pcs),
+        _io.write_h5ad_safe(a, art / "rna_neighbors.h5ad")
+        _prov.set_param(params_path, "s6_neighbors.rna_n_pcs", int(n_pcs),
                         source="derived", confidence="high",
                         rationale=rationale,
                         method={"name": "_pick_pca_elbow",
-                                "code_ref": "executor/stages/s6_dimred.py"})
-        _prov.set_param(params_path, "s6_dimred.rna_scale_applied", bool(do_scale),
+                                "code_ref": "executor/stages/s6_neighbors.py"})
+        _prov.set_param(params_path, "s6_neighbors.rna_scale_applied", bool(do_scale),
                         source="derived", confidence="high",
                         rationale=("sc.pp.scale(max_value=10) applied" if do_scale
                                    else "rna_scale=False; PCA on log-normalized but unscaled data"),
                         method={"name": "scanpy.pp.scale",
-                                "code_ref": "executor/stages/s6_dimred.py"})
+                                "code_ref": "executor/stages/s6_neighbors.py"})
     else:
         # atac_only — produce an empty placeholder so the Snakemake output exists.
         import scipy.sparse as sp
-        _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), art / "rna_dimred.h5ad")
+        _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), art / "rna_neighbors.h5ad")
         n_pcs = 0
 
     # --- ATAC ---
@@ -149,12 +149,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 # SnapATAC2 default use_rep='X_spectral' (trimmed in S5 when drop_first=True).
                 snap.pp.knn(adata, n_neighbors=n_neighbors, use_rep=ATAC_LATENT_KEY)
             except Exception as e:
-                log_event(run_dir, {"stage": "s6_dimred", "event": "atac_knn_failed", "error": str(e)})
+                log_event(run_dir, {"stage": "s6_neighbors", "event": "atac_knn_failed", "error": str(e)})
             try:
                 adata.close()
             except Exception:
                 pass
 
-    log_event(run_dir, {"stage": "s6_dimred", "event": "done",
+    log_event(run_dir, {"stage": "s6_neighbors", "event": "done",
                         "n_pcs": n_pcs, "n_neighbors": n_neighbors, "branch": branch})
     return {"n_pcs": n_pcs, "n_neighbors": n_neighbors, "branch": branch}

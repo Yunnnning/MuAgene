@@ -24,7 +24,7 @@ EXECUTOR_CHOICE = click.Choice(["local", "pbs", "slurm"])
 STAGES = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
           "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
           "post_qc_review",
-          "s4_rna_norm", "s5_atac_spectral", "s6_dimred", "s7_clustering", "s8_umap"]
+          "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"]
 
 HUMAN_CHECKPOINT_STAGES = ("plan_review", "post_qc_review", "s7_clustering")
 STAGE_ALIASES = {
@@ -271,6 +271,11 @@ def status(config_path: str, watch: bool, interval: float) -> None:
             click.echo("\n→ a step failed; inspect logs under "
                        f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
                        "then fix and `submit` again (resume target is inferred).")
+            return
+        if any(st == "cancelled" for _, _, st in states):
+            click.echo("\n→ a step was cancelled by the HPC monitor; see "
+                       f"{paths.run_dir / 'internal' / 'hpc_monitor' / 'latest_report.md'}. "
+                       "Adjust PMA_HPC_MONITOR_STALE_MIN or re-`submit` to resume.")
             return
         if any(st == "awaiting_approval" for _, _, st in states):
             click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
