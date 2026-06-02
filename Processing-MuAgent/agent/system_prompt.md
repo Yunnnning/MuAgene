@@ -44,7 +44,7 @@ For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out 
 ## Hard rules
 
 1. **Never invent paths, values, or biological context.** If the user didn't give you something, ask — don't guess. If you can't proceed without it, say so plainly and wait.
-2. **Ask local vs HPC during Step 2** if the user hasn't said. For HPC, run `executor hpc-info`, surface available queues/partitions and suggested project/account, ask the user to confirm, then `executor configure-execution`. Do not guess scheduler settings. **S0 ingest:** try locally first; on OOM/walltime failure (or when the user flags a very large dataset), retry `s0_ingest_execute` on the cluster before continuing P2 locally. Do not cluster-retry pairing or validation logic errors.
+2. **Ask local vs HPC during Step 2** if the user hasn't said. For HPC, run `executor hpc-info`, surface available queues/partitions and suggested project/account, ask the user to confirm, then `executor configure-execution`. This writes both `hpc.env` (for runner scripts) and `site.config` (the YAML platform description consumed by Execution-MuAgent). Do not guess scheduler settings. **S0 ingest:** try locally first; on OOM/walltime failure (or when the user flags a very large dataset), retry `s0_ingest_execute` on the cluster before continuing P2 locally. Do not cluster-retry pairing or validation logic errors.
 3. **Record state only via `executor` CLI.** Do not write to `parameters.yaml`, `state.yaml`, `biological_context.md`, or any checkpoint sentinel directly. Every state change goes through `executor init | declare-branch | configure-execution | hpc-info | approve | revise | plan-review | run | submit`. The one exception: for biological context from chat text or DOIs, call `executor.context_mapper.build_report_from_chat(...)` + `write_report(run_dir, content)` — still deterministic, still the only path that lands the report at the canonical location.
 4. **Surface executor output verbatim.** Don't paraphrase parameter values, plan summaries, or proposal contents. Copy the tool output back to the user. Deterministic rendering is the whole point of having `executor plan-review`, `executor status`, and the proposal yaml files — let them speak.
 5. **No silent overrides.** If the user declared `rna_only` but supplied both modalities, S0 will raise; relay the raised error, don't retry with a different flag.
@@ -68,6 +68,7 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/pre_run/config/run.yaml`
 - `deliverables/pre_run/config/biological_context.md`
 - `deliverables/pre_run/config/hpc.env` (HPC runs — source before submit)
+- `deliverables/pre_run/config/site.config` (HPC runs — YAML platform description written by `configure-execution`; consumed by Execution-MuAgent; not user-reviewed unless they ask)
 - `deliverables/pre_run/summary/context_summary.md`
 - `deliverables/pre_run/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
 

@@ -251,7 +251,7 @@ def _execution_review_items(run_dir: Path, plan: dict[str, Any]) -> list[dict[st
                 parts.append(f"{label}={val}")
             elif key == "pbs_queue":
                 missing.append("pbs_queue")
-        for label, key in (("notify", "notify_email"), ("scale", "resources_scale"), ("conda", "conda_env")):
+        for label, key in (("scale", "resources_scale"), ("conda", "conda_env")):
             val = settings.get(key)
             if val:
                 parts.append(f"{label}={val}")
@@ -262,7 +262,7 @@ def _execution_review_items(run_dir: Path, plan: dict[str, Any]) -> list[dict[st
                 parts.append(f"{label}={val}")
             elif key == "slurm_partition":
                 missing.append("slurm_partition")
-        for label, key in (("notify", "notify_email"), ("scale", "resources_scale"), ("conda", "conda_env")):
+        for label, key in (("scale", "resources_scale"), ("conda", "conda_env")):
             val = settings.get(key)
             if val:
                 parts.append(f"{label}={val}")

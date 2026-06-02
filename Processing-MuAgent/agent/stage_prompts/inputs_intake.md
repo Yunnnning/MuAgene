@@ -131,12 +131,11 @@ executor configure-execution --config $CFG --mode local
 2. Ask the user to confirm or override:
    - PBS: queue (+ project code if their site requires `-P`)
    - SLURM: partition (+ account if required)
-   - `PMA_NOTIFY_EMAIL` (recommended)
    - optional `PMA_RESOURCES_SCALE`
 3. Write settings once confirmed:
    ```
    executor configure-execution --config $CFG --mode pbs \
-       --pbs-queue <queue> --pbs-project <project> --notify-email <email>
+       --pbs-queue <queue> --pbs-project <project>
    ```
    (or `--mode slurm --slurm-partition ... --slurm-account ...`)
 

@@ -8,12 +8,12 @@
 # Head-job: runs the snakemake orchestrator that submits each per-stage child
 # job to SLURM. Exits when the DAG completes or stops at a missing-approval gate.
 #
-# Submitted via `Processing-MuAgent submit --executor slurm ...`, which sets the
-# following env vars via `sbatch --export`:
+# Submitted by Execution-MuAgent (execute-spec), which renders this script from
+# the head_job.yaml spec and sets the following env vars:
 #   PMA_CONFIG      path to the run.yaml configfile
 #   PMA_TARGET      snakemake target (default: all)
 #   PMA_REPO_ROOT   absolute path to Processing-MuAgent/
-# Plus any PMA_SLURM_* and PMA_NOTIFY_EMAIL vars from the submitter's env.
+# Monitoring and findings are written to internal/hpc_monitor/ by Execution-MuAgent.
 set -euo pipefail
 
 cd "${PMA_REPO_ROOT}"
@@ -24,31 +24,4 @@ SNAKE_ARGS=(
     --configfile "${PMA_CONFIG}"
 )
 
-EXIT_CODE=0
-scripts/launch_runner.sh "${SNAKE_ARGS[@]}" || EXIT_CODE=$?
-
-if [ -n "${PMA_NOTIFY_EMAIL:-}" ]; then
-    subject="Processing-MuAgent: runner exited with code ${EXIT_CODE}"
-    body="Head-job ${SLURM_JOB_ID:-unknown} finished.
-Config:   ${PMA_CONFIG}
-Target:   ${PMA_TARGET:-all}
-ExitCode: ${EXIT_CODE}
-
-If exit code is 0 and target was 'all', the run is complete.
-If exit code is 0 and the runner stopped early, snakemake hit an
-unapproved checkpoint (typically s7_clustering). Review the proposal
-artifact at <run_dir>/internal/proposals/<stage>.yaml, then
-'Processing-MuAgent approve <stage>' and 'Processing-MuAgent submit'
-again to resume.
-
-Run dir: $(awk '/^run_dir:/ {print $2}' "${PMA_CONFIG}")
-"
-    if command -v mail >/dev/null 2>&1; then
-        printf '%s\n' "$body" | mail -s "$subject" "$PMA_NOTIFY_EMAIL" || true
-    elif command -v sendmail >/dev/null 2>&1; then
-        { printf 'To: %s\nSubject: %s\n\n%s\n' "$PMA_NOTIFY_EMAIL" "$subject" "$body"; } \
-            | sendmail -t || true
-    fi
-fi
-
-exit "${EXIT_CODE}"
+scripts/launch_runner.sh "${SNAKE_ARGS[@]}"

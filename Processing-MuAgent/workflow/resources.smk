@@ -102,3 +102,23 @@ def mem_mb_for(stage: str, attempt: int = 1) -> int:
         resources: mem_mb=lambda wc, attempt: mem_mb_for("s3_doublets", attempt)
     """
     return RESOURCES[stage]["mem_mb"] * attempt
+
+
+# Progress-timeout hints in MINUTES — consumed by Execution-MuAgent monitor.
+# Single source of truth for per-stage silence thresholds. specs.py reads this dict
+# and writes the values into internal/stage_meta/<stage>.yaml at plan-review time.
+# Execution-MuAgent reads those YAMLs; --stale-minutes 90 is the fallback default
+# when no hint is present (e.g. for the head_job itself).
+# Independent of PMA_RESOURCES_SCALE: reflects algorithm cadence, not compute time.
+PROGRESS_TIMEOUT_HINT: dict[str, int] = {
+    "s0_ingest":        20,
+    "s1a_ambient":      30,
+    "s1_rna_qc":        45,
+    "s2_atac_qc":       90,
+    "s3_doublets":      60,
+    "s4_rna_norm":      20,
+    "s5_atac_spectral": 60,
+    "s6_neighbors":     30,
+    "s7_clustering":    60,
+    "s8_umap":          30,
+}

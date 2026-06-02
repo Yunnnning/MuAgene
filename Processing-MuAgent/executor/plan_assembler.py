@@ -291,9 +291,7 @@ def render_plan_appendix(plan: dict[str, Any]) -> str:
     for stage, body in plan["stages"].items():
         lines.append(f"### {stage}")
         for pname, pv in body["parameters"].items():
-            lines.append(
-                f"- **{pname}**: `{pv['value']}` — {pv['source']}/{pv['confidence']}"
-            )
+            lines.append(f"- **{pname}**: `{pv['value']}`")
             lines.append(f"  - {pv['rationale']}")
         lines.append("")
     if plan.get("warnings"):
@@ -314,12 +312,12 @@ def _render_execution_appendix(exec_block: dict[str, Any]) -> list[str]:
     if exec_block.get("hpc_env_path"):
         lines.append(f"- **hpc_env**: `{exec_block['hpc_env_path']}`")
     if mode == "pbs":
-        for key in ("pbs_queue", "pbs_project", "notify_email", "resources_scale", "conda_env"):
+        for key in ("pbs_queue", "pbs_project", "resources_scale", "conda_env"):
             val = settings.get(key)
             if val:
                 lines.append(f"- **{key}**: `{val}`")
     elif mode == "slurm":
-        for key in ("slurm_partition", "slurm_account", "notify_email", "resources_scale", "conda_env"):
+        for key in ("slurm_partition", "slurm_account", "resources_scale", "conda_env"):
             val = settings.get(key)
             if val:
                 lines.append(f"- **{key}**: `{val}`")

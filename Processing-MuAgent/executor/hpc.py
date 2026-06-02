@@ -173,83 +173,6 @@ def detect_scheduler() -> Executor:
     return "local"
 
 
-def submit_head_job(
-    executor: Executor,
-    config_path: Path | str,
-    target: str = "all",
-    *,
-    output_log: Path | None = None,
-) -> str:
-    """Submit the snakemake runner as a head-job on the chosen scheduler.
-
-    Returns the scheduler-assigned job id (e.g. PBS "1234567.pbs" or SLURM "1234567").
-    Raises CalledProcessError if submission fails.
-
-    The head-job activates the project conda env and runs snakemake with the
-    chosen profile. Per-stage child jobs are submitted by snakemake itself.
-    """
-    if executor not in ("pbs", "slurm"):
-        raise ValueError(f"submit_head_job requires pbs|slurm; got {executor!r}")
-    config_path = Path(config_path).resolve()
-    if not config_path.exists():
-        raise FileNotFoundError(f"config not found: {config_path}")
-
-    runner = RUNNER_SCRIPT[executor]
-    if not runner.exists():
-        raise FileNotFoundError(f"head-job script missing: {runner}")
-
-    if output_log is None:
-        output_log = head_job_log_path(executor)
-    else:
-        output_log = Path(output_log)
-        if not output_log.is_absolute():
-            output_log = REPO_ROOT / output_log
-        if executor == "slurm":
-            output_log.parent.mkdir(parents=True, exist_ok=True)
-        elif output_log.suffix:
-            output_log.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            output_log.mkdir(parents=True, exist_ok=True)
-
-    env_vars = {
-        "PMA_CONFIG": str(config_path),
-        "PMA_TARGET": target,
-        "PMA_REPO_ROOT": str(REPO_ROOT),
-    }
-
-    if executor == "pbs":
-        cmd = ["qsub", "-terse"]
-        # Inherit the submitter's env (queue, project, notify email, etc.).
-        cmd += ["-V"]
-        # Plus explicit pass-through of the run-specific vars (more reliable
-        # than relying on -V across all PBS Pro configurations).
-        cmd += ["-v", ",".join(f"{k}={v}" for k, v in env_vars.items())]
-        cmd += ["-o", str(output_log), "-j", "oe"]
-        # Optional queue / project from env vars.
-        if os.environ.get("PMA_PBS_QUEUE"):
-            cmd += ["-q", os.environ["PMA_PBS_QUEUE"]]
-        if os.environ.get("PMA_PBS_PROJECT"):
-            cmd += ["-P", os.environ["PMA_PBS_PROJECT"]]
-        cmd += [str(runner)]
-
-    else:  # slurm
-        export_list = "ALL," + ",".join(f"{k}={v}" for k, v in env_vars.items())
-        cmd = ["sbatch", "--parsable", f"--export={export_list}"]
-        cmd += ["--output", str(output_log)]
-        if os.environ.get("PMA_SLURM_PARTITION"):
-            cmd += ["--partition", os.environ["PMA_SLURM_PARTITION"]]
-        if os.environ.get("PMA_SLURM_ACCOUNT"):
-            cmd += ["--account", os.environ["PMA_SLURM_ACCOUNT"]]
-        cmd += [str(runner)]
-
-    try:
-        submit_timeout = int(os.environ.get("PMA_SUBMIT_TIMEOUT_SEC", "60"))
-    except ValueError:
-        submit_timeout = 60
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=submit_timeout, check=True)
-    return result.stdout.strip()
-
-
 def submitted_log_path(executor: Executor, output_log: Path | str, job_id: str) -> Path:
     """Return the concrete scheduler log path after scheduler id substitution."""
     path = Path(output_log)
@@ -272,92 +195,43 @@ def _execution_muagent_env() -> dict[str, str] | None:
     return env
 
 
-def register_with_execution_muagent(
-    *,
-    executor: Executor,
-    job_id: str,
+def submit_via_execution_muagent(
+    spec_path: Path | str,
+    site_config_path: Path | str,
     run_dir: Path | str,
-    config_path: Path | str,
     target: str,
-    log_path: Path | str,
-) -> Path | None:
-    """Register an HPC job with sibling Execution-MuAgent when available.
-
-    The processing workflow must not depend hard on the execution monitor: a
-    failed registration should not make a successfully submitted HPC job vanish.
-    """
-    if executor not in ("pbs", "slurm"):
-        return None
-    env = _execution_muagent_env()
-    if env is None:
-        return None
-    cmd = [
-        sys.executable, "-m", "execution_muagent.cli", "register",
-        "--agent", "Processing-MuAgent",
-        "--executor", executor,
-        "--job-id", str(job_id),
-        "--run-dir", str(Path(run_dir).resolve()),
-        "--config", str(Path(config_path).resolve()),
-        "--target", target,
-        "--repo-root", str(REPO_ROOT),
-        "--log-path", str(Path(log_path).resolve()),
-    ]
-    try:
-        subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=10, check=True)
-    except (subprocess.SubprocessError, OSError):
-        return None
-    return Path(run_dir).resolve() / "internal" / "hpc_monitor" / "submissions.jsonl"
-
-
-def start_execution_monitor(
     *,
-    executor: Executor,
-    job_id: str,
-    run_dir: Path | str,
-    stale_minutes: float | None = None,
-    interval_s: float | None = None,
-    kill_on_hang: bool | None = None,
-) -> Path | None:
-    """Start Execution-MuAgent's watcher in the background, if available."""
-    if executor not in ("pbs", "slurm"):
-        return None
+    watch: bool = False,
+    kill_on_hang: bool = True,
+) -> dict[str, object] | None:
+    """Delegate HPC submission to Execution-MuAgent via execute-spec.
+
+    Execution-MuAgent is a hard dependency for cluster submission. Returns a dict
+    with stdout/stderr on success, None when unavailable or when the call errors.
+    The caller must raise a hard error when None is returned — no direct-submit fallback.
+    """
     env = _execution_muagent_env()
     if env is None:
         return None
-    run_dir = Path(run_dir).resolve()
-    monitor_dir = run_dir / "internal" / "hpc_monitor"
-    monitor_dir.mkdir(parents=True, exist_ok=True)
-    safe_job_id = str(job_id).replace("/", "_").replace(";", "_")
-    daemon_log = monitor_dir / f"monitor-{safe_job_id}.log"
-    stale = stale_minutes if stale_minutes is not None else float(os.environ.get("PMA_HPC_MONITOR_STALE_MIN", "20"))
-    interval = interval_s if interval_s is not None else float(os.environ.get("PMA_HPC_MONITOR_INTERVAL", "60"))
-    if kill_on_hang is None:
-        kill_on_hang = os.environ.get("PMA_HPC_MONITOR_KILL_ON_HANG", "1") != "0"
     cmd = [
-        sys.executable, "-m", "execution_muagent.cli", "monitor",
-        "--run-dir", str(run_dir),
-        "--job-id", str(job_id),
-        "--watch",
-        "--stale-minutes", str(stale),
-        "--interval", str(interval),
+        sys.executable, "-m", "execution_muagent.cli", "execute-spec",
+        "--spec", str(Path(spec_path).resolve()),
+        "--site-config", str(Path(site_config_path).resolve()),
+        "--run-dir", str(Path(run_dir).resolve()),
+        "--repo-root", str(REPO_ROOT),
+        "--target", target,
     ]
+    if watch:
+        cmd.append("--watch")
     if kill_on_hang:
         cmd.append("--kill-on-hang")
     else:
         cmd.append("--no-kill-on-hang")
     try:
-        with daemon_log.open("ab") as out:
-            subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=out,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-    except OSError:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120, check=True)
+        return {"stdout": result.stdout, "stderr": result.stderr}
+    except (subprocess.SubprocessError, OSError):
         return None
-    return daemon_log
 
 
 def env_diagnostics() -> dict[str, str | None]:
@@ -367,8 +241,7 @@ def env_diagnostics() -> dict[str, str | None]:
     keys = (
         "PMA_PBS_QUEUE", "PMA_PBS_PROJECT",
         "PMA_SLURM_PARTITION", "PMA_SLURM_ACCOUNT",
-        "PMA_NOTIFY_EMAIL", "PMA_RESOURCES_SCALE",
-        "PMA_CONDA_ENV", "PMA_LOG_DIR",
+        "PMA_RESOURCES_SCALE", "PMA_CONDA_ENV", "PMA_LOG_DIR",
     )
     return {k: os.environ.get(k) for k in keys}
 
@@ -502,8 +375,68 @@ def discover_site() -> dict[str, object]:
     return info
 
 
-def write_hpc_env(path: Path | str, *, mode: Executor, settings: dict[str, str | None]) -> Path:
-    """Write a source-able shell snippet with PMA_* exports for this run."""
+def write_site_config(path: Path | str, *, mode: Executor, settings: dict[str, str | None]) -> Path:
+    """Write site.config — the YAML platform description consumed by Execution-MuAgent.
+
+    Processing-MuAgent writes this from confirmed user input; Execution-MuAgent
+    reads it to render submission scripts without scheduler knowledge baked in.
+    """
+    import yaml  # type: ignore[import]
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scheduler_section: dict[str, dict[str, str | None]] = {}
+    if mode == "slurm":
+        scheduler_section["slurm"] = {
+            "partition": settings.get("slurm_partition"),
+            "account": settings.get("slurm_account"),
+            "qos": None,
+        }
+    elif mode == "pbs":
+        scheduler_section["pbs"] = {
+            "queue": settings.get("pbs_queue"),
+            "project": settings.get("pbs_project"),
+        }
+    try:
+        scale = int(float(settings["resources_scale"])) if settings.get("resources_scale") else 1
+    except (ValueError, TypeError):
+        scale = 1
+    config: dict[str, object] = {
+        "schema_version": "1",
+        "scheduler": mode,
+        **scheduler_section,
+        "common": {
+            "resources_scale": scale,
+            "conda_env": settings.get("conda_env"),
+            "container": None,
+            "scratch": None,
+        },
+    }
+    path.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False))
+    return path
+
+
+def load_site_config(path: Path | str) -> dict[str, object]:
+    """Load site.config YAML; returns empty dict if the file does not exist."""
+    import yaml  # type: ignore[import]
+    p = Path(path)
+    if not p.exists():
+        return {}
+    with p.open() as f:
+        return yaml.safe_load(f) or {}
+
+
+def write_hpc_env(path: Path | str, site_config_path: Path | str) -> Path:
+    """Write a source-able shell snippet with PMA_* exports derived from site.config.
+
+    Derives all values from site.config so the two files cannot drift — hpc.env
+    is always a shell-variable projection of site.config, not a parallel source.
+    """
+    cfg = load_site_config(site_config_path)
+    mode = cfg.get("scheduler", "local")
+    common = cfg.get("common", {}) or {}
+    slurm = cfg.get("slurm", {}) or {}
+    pbs = cfg.get("pbs", {}) or {}
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -512,17 +445,15 @@ def write_hpc_env(path: Path | str, *, mode: Executor, settings: dict[str, str |
         f"# execution mode: {mode}",
         "",
     ]
-    key_map = {
-        "pbs_queue": "PMA_PBS_QUEUE",
-        "pbs_project": "PMA_PBS_PROJECT",
-        "slurm_partition": "PMA_SLURM_PARTITION",
-        "slurm_account": "PMA_SLURM_ACCOUNT",
-        "notify_email": "PMA_NOTIFY_EMAIL",
-        "resources_scale": "PMA_RESOURCES_SCALE",
-        "conda_env": "PMA_CONDA_ENV",
+    exports: dict[str, str | None] = {
+        "PMA_PBS_QUEUE":        pbs.get("queue"),
+        "PMA_PBS_PROJECT":      pbs.get("project"),
+        "PMA_SLURM_PARTITION":  slurm.get("partition"),
+        "PMA_SLURM_ACCOUNT":    slurm.get("account"),
+        "PMA_RESOURCES_SCALE":  str(common["resources_scale"]) if common.get("resources_scale") else None,
+        "PMA_CONDA_ENV":        common.get("conda_env"),
     }
-    for field, env_key in key_map.items():
-        val = settings.get(field)
+    for env_key, val in exports.items():
         if val:
             lines.append(f"export {env_key}={val!r}")
     path.write_text("\n".join(lines) + "\n")
@@ -581,7 +512,6 @@ def load_execution_settings(run_dir: Path | str) -> dict[str, object]:
         "pbs_project": _get("PMA_PBS_PROJECT", "pbs_project"),
         "slurm_partition": _get("PMA_SLURM_PARTITION", "slurm_partition"),
         "slurm_account": _get("PMA_SLURM_ACCOUNT", "slurm_account"),
-        "notify_email": _get("PMA_NOTIFY_EMAIL", "notify_email"),
         "resources_scale": _get("PMA_RESOURCES_SCALE", "resources_scale"),
         "conda_env": _get("PMA_CONDA_ENV", "conda_env"),
     }

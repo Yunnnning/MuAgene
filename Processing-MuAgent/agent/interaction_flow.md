@@ -226,8 +226,10 @@ biological-context question. When they choose HPC:
    account (from env vars or recent jobs), and any `PMA_*` vars already set.
 3. Ask the user to confirm or override queue/partition, project/account, notify
    email, and optional `PMA_RESOURCES_SCALE`.
-4. Run `executor configure-execution --config $CFG --mode pbs|slurm ...` to write
-   `deliverables/pre_run/config/hpc.env` and record `execution.mode`.
+4. Run `executor configure-execution --config $CFG --mode pbs|slurm ...` to write:
+   - `deliverables/pre_run/config/hpc.env` — shell snippet sourced by runner scripts
+   - `deliverables/pre_run/config/site.config` — YAML platform description consumed by Execution-MuAgent
+   - Records `execution.mode` in `parameters.yaml`.
 
 Do not invent queue or account names — probe with `hpc-info`, suggest, and wait
 for confirmation.
@@ -251,7 +253,9 @@ After plan review approval, `source deliverables/pre_run/config/hpc.env`, then:
 - **After QC approval:** same submit with `--auto-approve-except s7_clustering` only
 - **After resolution approval:** `executor submit --config $CFG --executor pbs|slurm`
 
-Poll with `executor status --watch --config $CFG`. Email fires on batch pause/complete when `PMA_NOTIFY_EMAIL` is set.
+`executor submit` is a hard dependency on Execution-MuAgent — it writes `internal/stage_meta/head_job.yaml`, then delegates to `Execution-MuAgent execute-spec`, which reads the spec and `site.config`, renders the submission script, submits the head-job, and monitors. Snakemake submits per-stage child jobs from within the head-job. If Execution-MuAgent is absent, `submit` fails loudly.
+
+Poll with `executor status --watch --config $CFG`. Findings and hang reports appear in `internal/hpc_monitor/latest_report.md`.
 
 ### How Claude surfaces things during the HPC flow
 
@@ -274,7 +278,6 @@ Poll with `executor status --watch --config $CFG`. Email fires on batch pause/co
 # PBS Pro example:
 export PMA_PBS_QUEUE=<your_queue_name>
 export PMA_PBS_PROJECT=<your_project_code>
-export PMA_NOTIFY_EMAIL=<your_email_address>
 
 # SLURM example:
 export PMA_SLURM_PARTITION=<your_partition_name>
@@ -297,3 +300,5 @@ These are written to `deliverables/pre_run/config/hpc.env` by `configure-executi
 - **Phase 1 gate raises "biological_context.md is empty"** — the user didn't give context and didn't opt out. Ask for context OR offer `executor run --config $CFG --no-context` as the explicit opt-out.
 - **S0 fails with OOM / Killed / walltime on the login node** — not a logic error. Configure HPC if needed, `source hpc.env`, retry `executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute`, then resume `executor run --config $CFG --target p2_plan_execute`. Consider raising `PMA_RESOURCES_SCALE`. Tell the user what you did.
 - **A stage execute fails at runtime** — relay the traceback from snakemake. Do not retry silently; root-cause first. If the user insists on retry, use `executor run --config $CFG --target <stage>_execute`.
+- **Execution-MuAgent reports `submit_rejected_policy`** — the scheduler rejected the job as a policy error (invalid partition, account, or walltime over the site limit). Read `internal/hpc_monitor/latest_report.md` for the scheduler's exact message. Tell the user which field to correct: partition/account via `executor configure-execution --mode <scheduler> ...` (rewrites `site.config`), or walltime by reducing `PMA_RESOURCES_SCALE`. Then `executor submit` again.
+- **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/specs/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.

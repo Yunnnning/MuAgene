@@ -470,6 +470,32 @@ def infer_resume_target(run_dir: Path | str) -> str:
     return "all"
 
 
+def load_hpc_monitor_state(paths: RunPaths) -> dict | None:
+    """Load latest_snapshot.json written by Execution-MuAgent.
+
+    Returns the full JSON dict (including the nested "monitor_state" key when
+    present) or None if the file is absent or unreadable.
+    """
+    snapshot_path = paths.run_dir / "internal" / "hpc_monitor" / "latest_snapshot.json"
+    if not snapshot_path.is_file():
+        return None
+    try:
+        return json.loads(snapshot_path.read_text(errors="replace"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def load_latest_hpc_submission(paths: RunPaths) -> dict | None:
+    """Load latest_submission.json written by Execution-MuAgent."""
+    path = paths.run_dir / "internal" / "hpc_monitor" / "latest_submission.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(errors="replace"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def required_human_approvals(target: str) -> tuple[str, ...]:
     """Human checkpoint sentinels that must exist before running ``target``."""
     base = ("plan_review",)

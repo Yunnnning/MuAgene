@@ -123,10 +123,11 @@ Processing-MuAgent/
 ├── executor/            # Python implementation (stages, methods, CLI, helpers)
 │   ├── stages/          # per-stage scripts S0..S8 + post_qc_review
 │   ├── methods/         # MAD thresholds, resolution sweep, doublet policy
-│   └── hpc.py           # PBS/SLURM head-job submission helpers
+│   ├── hpc.py           # site.config/hpc.env writers; submission delegated to Execution-MuAgent
+│   └── specs.py         # stage metadata authoring (writes internal/stage_meta/)
 ├── workflow/            # Snakemake orchestration
 │   ├── Snakefile        # localrules for planning + propose + manifest
-│   ├── resources.smk    # per-stage mem/runtime/cpus
+│   ├── resources.smk    # per-stage mem/runtime/cpus + PROGRESS_TIMEOUT_HINT
 │   ├── rules/           # per-stage propose/execute rule pairs + manifest
 │   ├── envs/            # conda env (mirrors `grn`)
 │   └── profiles/
@@ -138,27 +139,31 @@ Processing-MuAgent/
 
 ## Running on HPC (PBS Pro or SLURM)
 
-On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode; you only need to configure your site once (below). Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
+On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode. Platform settings are gathered once per run via `configure-execution` and stored in `site.config` (the single source of truth); `hpc.env` is generated from it automatically. Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
 
-### One-time setup
+**Execution-MuAgent is a hard dependency for cluster submission.** `Processing-MuAgent submit` delegates rendering, submission, and monitoring to the sibling `Execution-MuAgent` package. If it is absent the command fails loudly. Install it first: `pip install -e Execution-MuAgent/`.
 
-Set these environment variables for your cluster before the first run:
+### One-time setup per run
 
 ```bash
-# PBS Pro example:
-export PMA_PBS_QUEUE=<your_queue_name>
-export PMA_PBS_PROJECT=<your_project_code>
-export PMA_NOTIFY_EMAIL=<your_email_address>
+# Probe available queues/partitions and suggest settings:
+Processing-MuAgent hpc-info
 
-# SLURM example:
-export PMA_SLURM_PARTITION=<your_partition_name>
-export PMA_SLURM_ACCOUNT=<your_account_name>
+# Write site.config (source of truth) and derived hpc.env:
+# PBS Pro:
+Processing-MuAgent configure-execution --config $CFG --mode pbs \
+  --pbs-queue <queue> --pbs-project <project>
 
-# Optional — scale per-rule memory and walltime (default is 1):
-export PMA_RESOURCES_SCALE=2
+# SLURM:
+Processing-MuAgent configure-execution --config $CFG --mode slurm \
+  --slurm-partition <partition> --slurm-account <account>
 ```
 
-`PMA_NOTIFY_EMAIL` is optional but recommended: you receive mail when a submitted batch finishes or pauses at a review checkpoint. For larger datasets, increase `PMA_RESOURCES_SCALE` (e.g. `2` for ~30k cells, `4` for ~100k). Per-stage CPU, memory, and walltime defaults live in `workflow/resources.smk`; OOM-killed jobs are retried once at double memory.
+This writes:
+- `deliverables/pre_run/config/site.config` — YAML platform description (consumed by Execution-MuAgent)
+- `deliverables/pre_run/config/hpc.env` — shell snippet generated from site.config; source before `submit`
+
+For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` for ~100k). Per-stage CPU, memory, and walltime defaults live in `workflow/resources.smk`; OOM-killed jobs are retried once at double memory.
 
 ### Requirements
 
@@ -179,7 +184,7 @@ export PMA_RESOURCES_SCALE=2
 
 **Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2.
 
-Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`; email notification fires when a batch pauses or completes (if `PMA_NOTIFY_EMAIL` is set).
+Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`. Findings and hang reports are written to `internal/hpc_monitor/latest_report.md` by Execution-MuAgent.
 
 ### Submit workflow
 
@@ -203,46 +208,63 @@ Processing-MuAgent submit --config $CFG --executor slurm --unlock-stale-locks
 
 ```bash
 CFG=<run_dir>/deliverables/pre_run/config/run.yaml
+
+# Configure HPC settings (writes site.config + derived hpc.env):
+Processing-MuAgent configure-execution --config $CFG --mode slurm \
+  --slurm-partition cpu-medium --slurm-account mylab
+
 source <run_dir>/deliverables/pre_run/config/hpc.env
 
-# First heavy batch after plan review (stops at QC review):
+# Run planning + plan review on login node, then submit heavy batch:
+Processing-MuAgent run --config $CFG --target p2_plan_execute
+Processing-MuAgent plan-review --config $CFG  # also writes internal/stage_meta/
+Processing-MuAgent approve plan_review --config $CFG
+
+# First heavy batch (stops at QC review):
 Processing-MuAgent submit --config $CFG --executor slurm
 
-# After QC review (CLI alias shown; internal stage is post_qc_review):
+# After QC review:
 Processing-MuAgent approve qc_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 
-# After resolution review (CLI alias shown; internal stage is s7_clustering):
+# After resolution review:
 Processing-MuAgent approve resolution_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 ```
 
 Poll with `Processing-MuAgent status --watch --config $CFG`. For an unattended batch, pre-seed all three checkpoints with `--auto-approve` on `run` or `submit`. To keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts aliases or internal names).
 
-### Execution-MuAgent monitor
+### Execution-MuAgent integration
 
-When the sibling `Execution-MuAgent` package is present, `Processing-MuAgent submit`
-automatically registers the scheduler head-job and starts a background watcher.
-Monitor state and reports are written under:
+`Processing-MuAgent submit` delegates the full submission lifecycle to the sibling `Execution-MuAgent` package (a hard dependency — the command fails loudly if it is absent):
 
-```text
-<run_dir>/internal/hpc_monitor/
-```
+1. `plan-review` writes per-stage metadata YAMLs to `internal/stage_meta/` (resources, I/O paths, `progress_timeout_hint`, science description). `progress_timeout_hint` values come from `resources.smk` — that is the single source of truth; `--stale-minutes 90` is the fallback default in Execution-MuAgent when no hint is present.
+2. `configure-execution` writes `site.config` (the single platform source of truth). `hpc.env` is generated from it — the two cannot drift.
+3. `submit` writes `internal/stage_meta/head_job.yaml`, then calls `Execution-MuAgent execute-spec` with it. Execution-MuAgent renders the head-job submission script from spec + site.config, submits it, records to `execution_manifest.jsonl`, and monitors. Snakemake submits per-stage child jobs from within the head-job.
 
-The watcher detects scheduler failures, Snakemake errors, stale run-scoped
-logs/artifacts, and Snakemake child jobs stuck at "Storing output in storage."
-By default it **reports and cancels** stuck jobs (children first, then the
-head job). To report only without cancelling:
+**Job monitoring (two-clock state machine):** the watcher counts quiet check intervals (no file progress, no log growth); after `tolerance_n` consecutive quiet intervals it enters SUSPECT and gathers evidence (CPU via `sstat`, memory, filesystem responsiveness, child job states, error markers in logs). It kills only from CONFIRMED_DEAD — never on a stall signal alone. Check interval default: 15 min; fallback stale threshold: 90 min.
+
+On terminal COMPLETED, Execution-MuAgent validates that each per-stage output artifact in `internal/stage_meta/` exists and is non-empty. A COMPLETED job with missing outputs is reported as `output_missing` in `latest_report.md`.
+
+Monitor state and investigation reports are written under `<run_dir>/internal/hpc_monitor/`. The `latest_snapshot.json` includes a `"monitor_state"` section.
+
+**Filesystem hang** (`fs_hang_policy` in site.config): when a child job is stuck at `Storing output in storage.` or the filesystem probe times out, the default policy is `"hold"` — report and wait rather than kill reflexively. Set to `"kill_and_resubmit"` to kill and route through the failure path.
+
+If Execution-MuAgent reports a **policy rejection** (`submit_rejected_policy` in `latest_report.md`), the scheduler rejected the job for an invalid partition, account, or walltime. Re-run `configure-execution` with corrected settings and resubmit.
+
+### Break-glass: manual submission
+
+If you need to submit manually (e.g. for debugging), use `sbatch`/`qsub` directly, then register the job so Execution-MuAgent can monitor it:
 
 ```bash
-export PMA_HPC_MONITOR_KILL_ON_HANG=0
+sbatch --partition cpu-medium --account mylab scripts/runner.slurm
+# → prints job id, e.g. 987654
+
+Execution-MuAgent register \
+  --agent Processing-MuAgent --executor slurm --job-id 987654 \
+  --run-dir <run_dir> --config $CFG --target all \
+  --repo-root <pma_root> --log-path logs/pma_runner-987654.out
 ```
-
-Hang alerts also email `PMA_NOTIFY_EMAIL` when set (in addition to the runner
-exit email from `runner.slurm`).
-
-Use `--no-monitor` on `Processing-MuAgent submit` to skip registration for a
-debug run.
 
 
 ## Run directory layout
@@ -256,6 +278,8 @@ Per-run state lives under `run_dir` from your config — never inside the source
       config/
         run.yaml                  ← canonical config (use this for all CLI calls)
         biological_context.md     ← Biological Context Report
+        hpc.env                   ← source before submit/run on cluster
+        site.config               ← YAML platform description (consumed by Execution-MuAgent)
       summary/
         context_summary.md        ← P1 output
         plan_review.md            ← plan review gate (summary + parameter appendix)
@@ -271,8 +295,15 @@ Per-run state lives under `run_dir` from your config — never inside the source
       layout.json
   internal/
     artifacts/sN_<stage>/         ← intermediate stage outputs
+    stage_meta/<stage>.yaml       ← per-stage metadata (resources, I/O, timeout hint) — not a submission contract
+    stage_meta/head_job.yaml      ← head-job submission spec (written by submit, read by Execution-MuAgent)
     proposals/                    ← optional <stage>.yaml (mainly checkpoint review artifacts)
     checkpoints/                  ← plan_review, post_qc_review, s7_clustering .approved only
+    hpc_monitor/
+      submissions.jsonl           ← append-only job registration log
+      execution_manifest.jsonl    ← per-submit record (stage, job_id, script, outputs)
+      latest_report.md            ← Execution-MuAgent investigation reports and confirmed-dead verdicts
+      latest_snapshot.json        ← full snapshot + monitor_state (health, silence, investigation)
     parameters.yaml
     state.yaml
     log.jsonl
@@ -309,13 +340,14 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 |---------|---------|
 | `init` | Create run directory scaffold |
 | `declare-branch` | Record workflow branch in `parameters.yaml` |
-| `configure-execution` | Set `execution.mode` and write `deliverables/pre_run/config/hpc.env` |
+| `configure-execution` | Set `execution.mode`; write `site.config` (platform source of truth) and derived `hpc.env` |
 | `hpc-info` | Probe PBS/SLURM queues, partitions, accounts on the login node |
 | `run` | Foreground Snakemake (`--executor local\|pbs\|slurm`) |
-| `submit` | Submit Snakemake head-job to PBS/SLURM (infers phase target by default) |
-| `status` | Show the three human checkpoints only |
+| `submit` | Submit head-job via Execution-MuAgent (hard dependency); infers phase target |
+| `status` | Per-step pipeline state (S1a–S8 + review gates); `--watch` polls until actionable |
+| `hpc-status` | HPC monitor health (HEALTHY/SUSPECT/…) + per-step state; `--watch` polls |
 | `approve` | Write `internal/checkpoints/<stage>.approved` (human checkpoints only) |
-| `plan-review` | Render `deliverables/pre_run/summary/plan_review.md` |
+| `plan-review` | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/` |
 | `revise` | Update one parameter in `parameters.yaml` and reset a checkpoint to awaiting |
 | `resolution-compare` | Side-by-side resolution comparison figures (optional) |
 | `unlock` | Remove stale Snakemake locks after a cancelled/killed run |
@@ -357,7 +389,7 @@ After checkpoint **#1**, use `submit` instead of foreground `run`. See **Running
 ```bash
 source <run_dir>/deliverables/pre_run/config/hpc.env
 Processing-MuAgent submit --config $CFG --executor slurm
-Processing-MuAgent status --watch --config $CFG
+Processing-MuAgent hpc-status --watch --config $CFG   # shows HPC health + per-step state
 ```
 
 ### Optional debugging

@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 import yaml
 
-from . import approval, context as _ctx, hpc, plan_review as _pr, provenance, stage_progress as _sp
+from . import approval, context as _ctx, hpc, plan_review as _pr, provenance, specs as _specs, stage_progress as _sp
 from .log import log_event
 from .run_paths import RunPaths
 
@@ -147,7 +147,6 @@ def hpc_info() -> None:
 @click.option("--pbs-project", default=None, help="PBS project code (PMA_PBS_PROJECT).")
 @click.option("--slurm-partition", default=None, help="SLURM partition (PMA_SLURM_PARTITION).")
 @click.option("--slurm-account", default=None, help="SLURM account (PMA_SLURM_ACCOUNT).")
-@click.option("--notify-email", default=None, help="Email for batch completion (PMA_NOTIFY_EMAIL).")
 @click.option("--resources-scale", default=None, type=float,
               help="Memory/walltime scale factor (PMA_RESOURCES_SCALE).")
 @click.option("--conda-env", default=None, help="Conda env name for cluster jobs (PMA_CONDA_ENV).")
@@ -158,11 +157,10 @@ def configure_execution(
     pbs_project: str | None,
     slurm_partition: str | None,
     slurm_account: str | None,
-    notify_email: str | None,
     resources_scale: float | None,
     conda_env: str | None,
 ) -> None:
-    """Record execution mode and write deliverables/pre_run/config/hpc.env."""
+    """Record execution mode and write deliverables/pre_run/config/site.config + hpc.env."""
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
     paths.ensure()
@@ -179,7 +177,6 @@ def configure_execution(
         "pbs_project": pbs_project or os.environ.get("PMA_PBS_PROJECT"),
         "slurm_partition": slurm_partition or os.environ.get("PMA_SLURM_PARTITION"),
         "slurm_account": slurm_account or os.environ.get("PMA_SLURM_ACCOUNT"),
-        "notify_email": notify_email or os.environ.get("PMA_NOTIFY_EMAIL"),
         "resources_scale": (
             str(int(resources_scale)) if resources_scale is not None
             else os.environ.get("PMA_RESOURCES_SCALE")
@@ -198,11 +195,13 @@ def configure_execution(
         raise click.ClickException(
             "SLURM mode requires --slurm-partition or PMA_SLURM_PARTITION in the environment.")
 
-    out = hpc.write_hpc_env(paths.hpc_env_sh, mode=mode, settings=settings)
+    site_cfg = hpc.write_site_config(paths.site_config, mode=mode, settings=settings)
+    out = hpc.write_hpc_env(paths.hpc_env_sh, paths.site_config)
     log_event(run_dir, {"stage": "configure_execution", "event": "configured",
-                        "mode": mode, "hpc_env": str(out)})
+                        "mode": mode, "hpc_env": str(out), "site_config": str(site_cfg)})
     click.echo(f"Execution mode: {mode}")
-    click.echo(f"Wrote {out}")
+    click.echo(f"Wrote {site_cfg}")
+    click.echo(f"Wrote {out}  (derived from site.config)")
     click.echo("Source this file in your shell before submit/run on the cluster:")
     click.echo(f"  source {out}")
 
@@ -274,8 +273,90 @@ def status(config_path: str, watch: bool, interval: float) -> None:
             return
         if any(st == "cancelled" for _, _, st in states):
             click.echo("\n→ a step was cancelled by the HPC monitor; see "
-                       f"{paths.run_dir / 'internal' / 'hpc_monitor' / 'latest_report.md'}. "
-                       "Adjust PMA_HPC_MONITOR_STALE_MIN or re-`submit` to resume.")
+                       f"{paths.run_dir / 'internal' / 'hpc_monitor' / 'latest_report.md'} "
+                       "for the confirmed-dead reason and investigation evidence. "
+                       "Re-`submit` to resume.")
+            return
+        if any(st == "awaiting_approval" for _, _, st in states):
+            click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
+                       "`Processing-MuAgent approve <stage>` (e.g. qc_review, resolution_review).")
+            return
+        if paths.run_manifest_json.exists():
+            click.echo("\n→ run_manifest.json present; pipeline complete.")
+            return
+        time.sleep(max(2.0, interval))
+
+
+@main.command(name="hpc-status")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+@click.option("--watch", is_flag=True,
+              help="Poll until a review gate needs approval, a step fails or is cancelled, "
+                   "or the pipeline completes.")
+@click.option("--interval", type=float, default=15.0,
+              help="Poll interval in seconds when --watch is set.")
+def hpc_status(config_path: str, watch: bool, interval: float) -> None:
+    """Show HPC job health (monitor state) and per-step pipeline state.
+
+    Reads Execution-MuAgent's latest_snapshot.json for health/silence/tolerance
+    and latest_submission.json for the active job, then prints per-step state.
+    Use --watch to poll until something actionable happens.
+    """
+    run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
+
+    def _print_hpc_header() -> None:
+        submission = _sp.load_latest_hpc_submission(paths)
+        snapshot = _sp.load_hpc_monitor_state(paths)
+        if submission is None:
+            click.echo("  (no HPC submission registered)")
+            return
+        job_id = submission.get("job_id", "?")
+        stage = submission.get("target", "?").removesuffix("_execute")
+        submitted_at = submission.get("submitted_at", "?")
+        sched = (snapshot.get("scheduler") or {}) if snapshot else {}
+        sched_state = sched.get("state") or "unknown"
+        elapsed = sched.get("elapsed") or "?"
+        timelimit = sched.get("timelimit") or "?"
+        ms = (snapshot.get("monitor_state") or {}) if snapshot else {}
+        health = ms.get("health", "unknown")
+        silence = ms.get("silence_intervals", "?")
+        tolerance = ms.get("tolerance_n", "?")
+        click.echo(f"  Stage: {stage}  Job: {job_id}  Submitted: {submitted_at}")
+        click.echo(f"  Scheduler: {sched_state}  Elapsed: {elapsed} / {timelimit}")
+        click.echo(f"  Health: {health}  (silence {silence}/{tolerance} intervals)")
+        reason = ms.get("confirmed_dead_reason")
+        if reason:
+            click.echo(f"  Confirmed-dead reason: {reason}")
+
+    def _print(states: list[tuple[str, str, str]]) -> None:
+        click.echo("")
+        click.echo("--- HPC monitor ---")
+        _print_hpc_header()
+        click.echo("")
+        click.echo("--- Pipeline state ---")
+        for label, task, st in states:
+            click.echo(f"  {label:18s}  {task:30s}  {st}")
+
+    if not watch:
+        _print(_stage_states(paths))
+        return
+
+    last: list[tuple[str, str, str]] | None = None
+    while True:
+        states = _stage_states(paths)
+        if states != last:
+            click.echo(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+            _print(states)
+            last = states
+        if any(st == "failed" for _, _, st in states):
+            click.echo("\n→ a step failed; inspect logs under "
+                       f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
+                       "then fix and `submit` again (resume target is inferred).")
+            return
+        if any(st == "cancelled" for _, _, st in states):
+            click.echo("\n→ a step was cancelled by the HPC monitor; see "
+                       f"{paths.run_dir / 'internal' / 'hpc_monitor' / 'latest_report.md'} "
+                       "for the confirmed-dead reason. Re-`submit` to resume.")
             return
         if any(st == "awaiting_approval" for _, _, st in states):
             click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
@@ -290,12 +371,28 @@ def status(config_path: str, watch: bool, interval: float) -> None:
 @main.command(name="plan-review")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 def plan_review_cmd(config_path: str) -> None:
-    """Render and write the merged plan-review markdown (summary + appendix)."""
+    """Render and write the merged plan-review markdown (summary + appendix).
+
+    Also writes per-stage job spec YAMLs to internal/specs/ so Execution-MuAgent
+    can read science intent, resource hints, and progress_timeout_hint per stage.
+    """
     run_dir = _resolve_run_dir(config_path)
     text = _pr.render_merged_markdown(run_dir)
     click.echo(text)
     out = _pr.write_summary(run_dir)
     click.echo(f"\nWritten: {out}")
+    # Write per-stage specs; read workflow_branch from plan if available.
+    try:
+        import json
+        plan_path = RunPaths(run_dir).artifact("p2_plan", "preprocessing_plan.json")
+        branch = "paired"
+        if plan_path.exists():
+            branch = json.loads(plan_path.read_text()).get("workflow_branch", "paired")
+        written = _specs.write_stage_specs(run_dir, branch)
+        if written:
+            click.echo(f"Wrote {len(written)} stage metadata file(s) to {RunPaths(run_dir).stage_meta_dir}/")
+    except Exception:
+        pass  # spec writing is best-effort; never block plan-review
 
 
 @main.command(name="resolution-compare")
@@ -510,17 +607,20 @@ def _prepare_submit_approvals(
 @click.option("--unlock-stale-locks", is_flag=True,
               help="If Snakemake locks exist and no local process owns this workdir, "
                    "run snakemake --unlock before submitting.")
-@click.option("--no-monitor", is_flag=True,
-              help="Do not auto-register/start the Execution-MuAgent HPC monitor.")
 def submit(config_path: str, executor: str, target: str | None,
            auto_approve: bool, auto_except: tuple[str, ...],
-           output_log: str | None, unlock_stale_locks: bool, no_monitor: bool) -> None:
+           output_log: str | None, unlock_stale_locks: bool) -> None:
     """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
 
+    Execution-MuAgent is a hard dependency for cluster submission — it renders the
+    submission script, submits the head-job, and owns monitoring. If Execution-MuAgent
+    is unavailable, this command fails loudly. Break-glass: submit manually with
+    sbatch/qsub, then use `Execution-MuAgent register` to enable monitoring.
+
     The head-job runs on a compute node, activates the project conda env, and
-    invokes snakemake with the cluster profile. snakemake then submits per-stage
+    invokes snakemake with the cluster profile. Snakemake then submits per-stage
     child jobs. The head-job exits when the DAG completes or stops at a missing
-    approval gate; it emails $PMA_NOTIFY_EMAIL on exit if set.
+    approval gate.
 
     Typical headless workflow on HPC:
 
@@ -586,60 +686,55 @@ def submit(config_path: str, executor: str, target: str | None,
         _unlock_snakemake(run_dir, paths.run_yaml)
 
     out_path = Path(output_log) if output_log else hpc.head_job_log_path(executor)
-    try:
-        job_id = hpc.submit_head_job(executor, paths.run_yaml, target=resolved_target,
-                                      output_log=out_path)
-    except subprocess.TimeoutExpired as exc:
+
+    if not paths.site_config.exists():
         raise click.ClickException(
-            f"{executor} head-job submission timed out after {exc.timeout}s. "
-            "The scheduler command is not responding; retry later or contact HPC support."
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or "").strip()
-        raise click.ClickException(
-            f"{executor} head-job submission failed"
-            + (f": {detail}" if detail else ".")
-        ) from exc
-    submitted_log_path = hpc.submitted_log_path(executor, out_path, job_id)
-    monitor_registry = None
-    monitor_log = None
-    if not no_monitor:
-        monitor_registry = hpc.register_with_execution_muagent(
-            executor=executor,
-            job_id=job_id,
-            run_dir=run_dir,
-            config_path=paths.run_yaml,
-            target=resolved_target,
-            log_path=submitted_log_path,
+            f"site.config not found at {paths.site_config}. "
+            "Run `Processing-MuAgent configure-execution --mode slurm|pbs ...` first."
         )
-        if monitor_registry is not None:
-            monitor_log = hpc.start_execution_monitor(
-                executor=executor,
-                job_id=job_id,
-                run_dir=run_dir,
-            )
+
+    # Write the head-job spec so Execution-MuAgent can render + submit it.
+    head_spec_path = _specs.write_head_job_spec(run_dir, resolved_target)
+
+    ea_result = hpc.submit_via_execution_muagent(
+        head_spec_path,
+        paths.site_config,
+        run_dir,
+        resolved_target,
+        watch=False,
+        kill_on_hang=True,
+    )
+    if ea_result is None:
+        raise click.ClickException(
+            "Execution-MuAgent is required for cluster submission but is not available "
+            "or returned an error.\n"
+            "  Install it:  pip install -e Execution-MuAgent/\n"
+            "  Break-glass: submit manually with sbatch/qsub, then run\n"
+            "               Execution-MuAgent register --agent Processing-MuAgent "
+            f"--executor {executor} --job-id <id> --run-dir {run_dir} "
+            f"--config {paths.run_yaml} --target {resolved_target} "
+            f"--repo-root <pma_root> --log-path <log>"
+        )
+
+    import re as _re
+    m = _re.search(r"(?:head-job|job[_-]id)[:\s]+(\S+)", ea_result.get("stdout", ""))
+    job_id = m.group(1).strip() if m else ea_result.get("stdout", "").strip().splitlines()[-1]
+
+    submitted_log_path = hpc.submitted_log_path(executor, out_path, job_id)
     log_event(run_dir, {"stage": "submit", "event": "head_job_submitted",
                         "executor": executor, "target": resolved_target,
                         "job_id": job_id, "auto_approve": auto_approve,
                         "kept_gates": sorted(set(auto_except)),
                         "phase_auto_approved": phase_seeded,
-                        "head_job_log": str(submitted_log_path),
-                        "hpc_monitor_registry": str(monitor_registry) if monitor_registry else None,
-                        "hpc_monitor_log": str(monitor_log) if monitor_log else None})
-    click.echo(f"Submitted {executor} head-job: {job_id}")
+                        "via_execution_agent": True,
+                        "head_job_log": str(submitted_log_path)})
+    click.echo(f"Submitted {executor} head-job: {job_id} (via Execution-MuAgent)")
     click.echo(f"  config:  {paths.run_yaml}")
     click.echo(f"  target:  {resolved_target}")
     if phase_seeded:
         click.echo(f"  phase-auto-approved: {', '.join(phase_seeded)}")
     click.echo(f"  log:     {submitted_log_path}")
-    if monitor_registry:
-        click.echo(f"  monitor: {monitor_registry}")
-        if monitor_log:
-            click.echo(f"  watcher: {monitor_log}")
-    elif not no_monitor:
-        click.echo("  monitor: unavailable (Execution-MuAgent not importable)")
-    if os.environ.get("PMA_NOTIFY_EMAIL"):
-        click.echo(f"  notify:  {os.environ['PMA_NOTIFY_EMAIL']}")
+    click.echo("  monitor: managed by Execution-MuAgent")
     click.echo("\nPoll progress with: Processing-MuAgent status --watch "
                f"--config {paths.run_yaml}")
 

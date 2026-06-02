@@ -152,6 +152,20 @@ class RunPaths:
         """pre_run/config/hpc.env — source-able PMA_* exports for cluster runs."""
         return self.deliv_config / "hpc.env"
 
+    @property
+    def site_config(self) -> Path:
+        """pre_run/config/site.config — YAML platform description consumed by Execution-MuAgent."""
+        return self.deliv_config / "site.config"
+
+    @property
+    def stage_meta_dir(self) -> Path:
+        """internal/stage_meta/ — monitoring metadata (resources, I/O, timeout hints). Not a submission contract."""
+        return self.internal / "stage_meta"
+
+    def stage_meta(self, stage: str) -> Path:
+        """internal/stage_meta/<stage>.yaml"""
+        return self.stage_meta_dir / f"{stage}.yaml"
+
     # pre_run/summary/*
     @property
     def context_summary_md(self) -> Path:

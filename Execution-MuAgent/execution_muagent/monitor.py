@@ -1,20 +1,33 @@
 """HPC job registration, monitoring, and diagnostics.
 
-The monitor is intentionally scheduler-light: it uses the scheduler only for
-state, and uses filesystem progress as the main signal that a workflow is alive.
+Detection and decision are separate. The watcher is cheap and deterministic: it
+counts quiet check intervals and raises a flag after the stage's tolerance is
+crossed. A flag is a suspicion, not a verdict. The investigator then gathers
+independent evidence (CPU, memory, filesystem probe, child states, log markers)
+before classifying. Kill only from confirmed dead, with a recorded reason.
+
+Two clocks: check interval (sampling rate, same for every stage) and tolerance_n
+(how many quiet intervals are allowed, derived from the stage's
+progress_timeout_hint). Silence is measured in missed heartbeats, not wall-clock
+minutes. A heartbeat occurs when any run-scoped file mtime advances OR the head
+log grows — whichever fires first.
+
 All scheduler calls are bounded by short subprocess timeouts so the monitor
 cannot hang behind a stuck `squeue`/`qstat` call.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -61,14 +74,16 @@ SCHEDULER_RUNNING_STATES = {
 
 SCHEDULER_TERMINAL_STATES = SCHEDULER_FAILED_STATES | {"COMPLETED"}
 
-KILLABLE_FINDING_CODES = {
-    "scheduler_failed",
-    "no_filesystem_progress",
-    "unknown_scheduler_state_no_progress",
-    "unknown_scheduler_state_no_progress_files",
-    "child_job_storage_hang",
-    "workflow_error_marker",
-}
+class JobHealth(str, Enum):
+    """Monitor state machine states for a single HPC submission."""
+    HEALTHY       = "healthy"        # No stall signal; normal operation
+    SUSPECT       = "suspect"        # Stall flag raised; evidence not yet gathered
+    INVESTIGATING = "investigating"  # Transient: gathering evidence this iteration
+    RECOVERED     = "recovered"      # Investigation found life; silence window reset
+    CONFIRMED_DEAD = "confirmed_dead"  # Evidence confirmed dead; ready to kill
+    FS_HANG       = "fs_hang"        # D-state / storage-degraded; policy decides
+    KILLED        = "killed"         # Cancellation sent
+    DONE          = "done"           # Job exited terminal scheduler state
 
 
 @dataclass
@@ -82,6 +97,8 @@ class Submission:
     repo_root: str
     log_path: str
     submitted_at: str
+    spec_path: str | None = None
+    progress_timeout_hint: float | None = None
 
 
 @dataclass
@@ -91,12 +108,266 @@ class MonitorFinding:
     message: str
 
 
+@dataclass
+class MonitorState:
+    """Per-submission state carried across watch iterations."""
+    health: JobHealth = JobHealth.HEALTHY
+    silence_intervals: int = 0          # consecutive quiet check intervals
+    tolerance_n: int = 6                # flag after this many quiet intervals (default: 6×15min=90min)
+    last_progress_mtime: float | None = None  # newest progress file mtime at last check
+    last_log_size: int | None = None    # head log byte-size at last check
+    investigation: dict | None = None   # evidence gathered at last SUSPECT→INVESTIGATING transition
+    confirmed_dead_reason: str | None = None
+    notified_codes: frozenset[str] = field(default_factory=frozenset)
+    previous_finding_codes: frozenset[str] | None = None
+
+
+@dataclass
+class SiteConfig:
+    """Platform description written by Processing-MuAgent, consumed by Execution-MuAgent."""
+    scheduler: str
+    partition: str | None = None
+    account: str | None = None
+    qos: str | None = None
+    queue: str | None = None
+    project: str | None = None
+    resources_scale: int = 1
+    conda_env: str | None = None
+    container: str | None = None
+    scratch: str | None = None
+    fs_hang_policy: str = "hold"  # "hold" | "kill_and_resubmit"
+
+
+@dataclass
+class StageSpec:
+    """Per-stage job spec authored by Processing-MuAgent."""
+    schema_version: str
+    stage: str
+    science_description: str
+    resources: dict[str, int]
+    inputs: dict[str, str]
+    outputs: dict[str, str]
+    progress_timeout_hint: float
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def run_monitor_dir(run_dir: Path | str) -> Path:
     return Path(run_dir) / "internal" / "hpc_monitor"
+
+
+def load_site_config(path: Path | str) -> SiteConfig:
+    """Load a site.config YAML file into a SiteConfig dataclass."""
+    import yaml
+    p = Path(path)
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    scheduler = str(data.get("scheduler", "slurm"))
+    sched_section: dict[str, Any] = {}
+    if scheduler == "slurm":
+        sched_section = data.get("slurm") or {}
+    elif scheduler == "pbs":
+        sched_section = data.get("pbs") or {}
+    common: dict[str, Any] = data.get("common") or {}
+    return SiteConfig(
+        scheduler=scheduler,
+        partition=sched_section.get("partition"),
+        account=sched_section.get("account"),
+        qos=sched_section.get("qos"),
+        queue=sched_section.get("queue"),
+        project=sched_section.get("project"),
+        resources_scale=int(common.get("resources_scale") or 1),
+        conda_env=common.get("conda_env"),
+        container=common.get("container"),
+        scratch=common.get("scratch"),
+        fs_hang_policy=str(common.get("fs_hang_policy", "hold")),
+    )
+
+
+def load_stage_spec(path: Path | str) -> StageSpec:
+    """Load a per-stage job spec YAML into a StageSpec dataclass."""
+    import yaml
+    p = Path(path)
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    return StageSpec(
+        schema_version=str(data.get("schema_version", "1")),
+        stage=str(data.get("stage", "")),
+        science_description=str(data.get("science_description", "")),
+        resources=dict(data.get("resources") or {}),
+        inputs=dict(data.get("inputs") or {}),
+        outputs=dict(data.get("outputs") or {}),
+        progress_timeout_hint=float(data.get("progress_timeout_hint", 90)),
+    )
+
+
+def validate_spec(spec: StageSpec, site_config: SiteConfig) -> list[str]:
+    """Return a list of validation error strings (empty = spec is workable)."""
+    errors: list[str] = []
+    if not spec.stage:
+        errors.append("spec.stage is empty")
+    if spec.resources.get("cpus", 0) <= 0:
+        errors.append(f"spec.resources.cpus must be > 0, got {spec.resources.get('cpus')}")
+    if spec.resources.get("mem_mb", 0) <= 0:
+        errors.append(f"spec.resources.mem_mb must be > 0, got {spec.resources.get('mem_mb')}")
+    if spec.resources.get("walltime_min", 0) <= 0:
+        errors.append(f"spec.resources.walltime_min must be > 0, got {spec.resources.get('walltime_min')}")
+    if site_config.scheduler not in ("slurm", "pbs"):
+        errors.append(f"site_config.scheduler must be slurm or pbs, got {site_config.scheduler!r}")
+    for key, path in spec.inputs.items():
+        if path and not Path(path).exists():
+            errors.append(f"spec input {key!r} not found: {path}")
+    return errors
+
+
+def render_submission_script(
+    spec: StageSpec,
+    site_config: SiteConfig,
+    repo_root: Path | str,
+    run_dir: Path | str,
+    log_path: Path | str,
+    target: str,
+) -> str:
+    """Render a scheduler submission script from a stage spec + site.config.
+
+    Maps resource hints to scheduler directives, adds partition/account/QOS,
+    wraps the command in a container invocation when site_config.container is set,
+    and invokes launch_runner.sh with the correct environment.
+    """
+    repo_root = Path(repo_root)
+    run_dir_s = str(Path(run_dir).resolve())
+    log_path_s = str(Path(log_path).resolve())
+    walltime_min = spec.resources.get("walltime_min", 60)
+    cpus = spec.resources.get("cpus", 1)
+    mem_mb = spec.resources.get("mem_mb", 4000)
+    conda_env = site_config.conda_env or "base"
+
+    if site_config.scheduler == "slurm":
+        hh, mm = divmod(walltime_min, 60)
+        lines = [
+            "#!/bin/bash",
+            f"#SBATCH --job-name=pma_{spec.stage}",
+            f"#SBATCH --output={log_path_s}",
+            f"#SBATCH --cpus-per-task={cpus}",
+            f"#SBATCH --mem={mem_mb}M",
+            f"#SBATCH --time={hh:02d}:{mm:02d}:00",
+        ]
+        if site_config.partition:
+            lines.append(f"#SBATCH --partition={site_config.partition}")
+        if site_config.account:
+            lines.append(f"#SBATCH --account={site_config.account}")
+        if site_config.qos:
+            lines.append(f"#SBATCH --qos={site_config.qos}")
+    else:  # pbs
+        hh, mm = divmod(walltime_min, 60)
+        lines = [
+            "#!/bin/bash",
+            f"#PBS -N pma_{spec.stage}",
+            f"#PBS -o {log_path_s}",
+            "#PBS -j oe",
+            f"#PBS -l select=1:ncpus={cpus}:mem={mem_mb}mb",
+            f"#PBS -l walltime={hh:02d}:{mm:02d}:00",
+        ]
+        if site_config.queue:
+            lines.append(f"#PBS -q {site_config.queue}")
+        if site_config.project:
+            lines.append(f"#PBS -P {site_config.project}")
+
+    lines += [
+        "",
+        f"export PMA_CONFIG={repo_root / 'deliverables' / 'pre_run' / 'config' / 'run.yaml'}",
+        f"export PMA_TARGET={target}",
+        f"export PMA_REPO_ROOT={repo_root}",
+        "",
+    ]
+
+    launch = str(repo_root / "scripts" / "launch_runner.sh")
+    if site_config.container:
+        lines.append(
+            f"apptainer exec --bind {run_dir_s}:{run_dir_s} "
+            f"{site_config.container} bash {launch}"
+        )
+    else:
+        lines += [
+            f"source $(conda info --base)/etc/profile.d/conda.sh",
+            f"conda activate {conda_env}",
+            f"bash {launch}",
+        ]
+
+    return "\n".join(lines) + "\n"
+
+
+def submit_from_spec(
+    spec: StageSpec,
+    site_config: SiteConfig,
+    run_dir: Path | str,
+    repo_root: Path | str,
+    log_path: Path | str,
+    target: str,
+    timeout_s: int = 60,
+) -> dict[str, Any]:
+    """Render a submission script, write it to disk, and submit via sbatch/qsub.
+
+    Returns a dict with job_id, script_path, rejected_as ('policy'|'transient'|None),
+    stdout, and stderr. The caller registers the submission and starts monitoring.
+    """
+    run_dir = Path(run_dir).resolve()
+    scripts_dir = run_monitor_dir(run_dir) / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    script_path = scripts_dir / f"{spec.stage}_{stamp}.sh"
+
+    script_text = render_submission_script(spec, site_config, repo_root, run_dir, log_path, target)
+    script_path.write_text(script_text, encoding="utf-8")
+    script_path.chmod(0o755)
+
+    _POLICY_MARKERS = (
+        "invalid partition", "invalid account", "invalid qos",
+        "time limit", "exceeds", "not found", "error in batch script",
+        "invalid node", "unrecognized", "no partition specified",
+    )
+
+    def _try_submit() -> tuple[int | None, str, str]:
+        if site_config.scheduler == "slurm":
+            cmd = ["sbatch", "--parsable", str(script_path)]
+        else:
+            cmd = ["qsub", "-terse", str(script_path)]
+        return _run_cmd(cmd, timeout_s)
+
+    rc, out, err = _try_submit()
+    rejected_as: str | None = None
+
+    if rc != 0:
+        combined = (out + err).lower()
+        if any(m in combined for m in _POLICY_MARKERS):
+            rejected_as = "policy"
+        else:
+            # Transient failure — retry up to 2 times with a short backoff.
+            for _ in range(2):
+                time.sleep(10)
+                rc, out, err = _try_submit()
+                if rc == 0:
+                    break
+            if rc != 0:
+                rejected_as = "transient"
+
+    job_id = out.strip().split()[0] if rc == 0 and out.strip() else ""
+    return {
+        "job_id": job_id,
+        "script_path": str(script_path),
+        "returncode": rc,
+        "stdout": out,
+        "stderr": err,
+        "rejected_as": rejected_as,
+    }
+
+
+def append_execution_manifest(run_dir: Path | str, entry: dict[str, Any]) -> None:
+    """Append one entry to the execution manifest (job_id, spec, script, outputs)."""
+    manifest = run_monitor_dir(run_dir) / "execution_manifest.jsonl"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
 def register_submission(submission: Submission) -> Path:
@@ -374,43 +645,30 @@ def _child_slurm_log(submission: Submission, job_id: str) -> Path | None:
     return _newest_file(matches)
 
 
-def _log_indicates_postrule_hang(path: Path, stale_minutes: float) -> bool:
+def _log_indicates_storage_hang(path: Path) -> bool:
+    """True if a Snakemake child log shows finished but stuck at output storage."""
     if not path.exists() or not path.is_file():
-        return False
-    age_min = (time.time() - path.stat().st_mtime) / 60.0
-    if age_min < stale_minutes:
         return False
     tail = _read_tail(path, 4000)
     return "Finished jobid:" in tail and "Storing output in storage." in tail
 
 
-def _child_job_hang_findings(
+def _child_storage_hang_ids(
     submission: Submission,
     child_job_ids: list[str],
-    stale_minutes: float,
     scheduler_timeout_s: int,
-) -> list[MonitorFinding]:
-    findings: list[MonitorFinding] = []
+) -> list[str]:
+    """Return child job IDs that are RUNNING but stuck at Snakemake output storage."""
+    hung: list[str] = []
     for child_id in child_job_ids:
         sched = query_scheduler(submission.executor, child_id, scheduler_timeout_s)
         state = str(sched.get("state") or "").split()[0]
         if state not in SCHEDULER_RUNNING_STATES:
             continue
         child_log = _child_slurm_log(submission, child_id)
-        if child_log is None or not _log_indicates_postrule_hang(child_log, stale_minutes):
-            continue
-        findings.append(
-            MonitorFinding(
-                "error",
-                "child_job_storage_hang",
-                (
-                    f"Child job {child_id} is still {state} in the scheduler but its "
-                    f"Snakemake log ({child_log.name}) finished and is stuck at "
-                    f"'Storing output in storage.' for >= {stale_minutes:.0f} min."
-                ),
-            )
-        )
-    return findings
+        if child_log is not None and _log_indicates_storage_hang(child_log):
+            hung.append(child_id)
+    return hung
 
 
 def collect_snapshot(submission: Submission, scheduler_timeout_s: int = 5) -> dict[str, Any]:
@@ -444,14 +702,16 @@ def collect_snapshot(submission: Submission, scheduler_timeout_s: int = 5) -> di
     }
 
 
-def evaluate_snapshot(
+def evaluate_snapshot_definitive(
     snapshot: dict[str, Any],
-    stale_minutes: float,
-    *,
-    scheduler_timeout_s: int = 5,
 ) -> list[MonitorFinding]:
+    """Return only findings whose meaning is unambiguous regardless of elapsed time.
+
+    Stall detection (silence counting) is handled by the state machine in
+    monitor_once; this function only raises findings that warrant immediate
+    attention independent of any silence window.
+    """
     findings: list[MonitorFinding] = []
-    submission = Submission(**snapshot["submission"])
     scheduler = snapshot.get("scheduler") or {}
     state_parts = str(scheduler.get("state") or "").split()
     state = state_parts[0] if state_parts else ""
@@ -468,38 +728,8 @@ def evaluate_snapshot(
                 "Workflow log contains: " + ", ".join(snapshot["error_markers"]),
             )
         )
-    latest = snapshot.get("latest_progress_file") or {}
-    mtime = latest.get("mtime")
-    if mtime:
-        age_min = (time.time() - float(mtime)) / 60.0
-        if state in SCHEDULER_RUNNING_STATES and age_min >= stale_minutes:
-            findings.append(
-                MonitorFinding(
-                    "error",
-                    "no_filesystem_progress",
-                    f"No run-scoped file changed for {age_min:.1f} min while scheduler state is {state}.",
-                )
-            )
-        elif not state and age_min >= stale_minutes:
-            findings.append(
-                MonitorFinding(
-                    "error",
-                    "unknown_scheduler_state_no_progress",
-                    f"Scheduler state is unknown and no run-scoped file changed for {age_min:.1f} min.",
-                )
-            )
-    elif state in SCHEDULER_RUNNING_STATES:
-        findings.append(MonitorFinding("warning", "no_progress_files", "No progress files found yet."))
-    elif not state:
-        age_min = (time.time() - _submitted_epoch(submission)) / 60.0
-        if age_min >= stale_minutes:
-            findings.append(
-                MonitorFinding(
-                    "error",
-                    "unknown_scheduler_state_no_progress_files",
-                    f"Scheduler state is unknown and no progress files appeared for {age_min:.1f} min.",
-                )
-            )
+    if not (snapshot.get("latest_progress_file") or {}).get("exists") and state in SCHEDULER_RUNNING_STATES:
+        findings.append(MonitorFinding("warning", "no_progress_files", "No run-scoped progress files found yet."))
     if state == "COMPLETING":
         findings.append(
             MonitorFinding(
@@ -508,10 +738,6 @@ def evaluate_snapshot(
                 "Job is in COMPLETING; on this cluster that can indicate epilog or NFS cleanup stall.",
             )
         )
-    child_ids = snapshot.get("child_job_ids") or []
-    findings.extend(
-        _child_job_hang_findings(submission, child_ids, stale_minutes, scheduler_timeout_s)
-    )
     return findings
 
 
@@ -541,86 +767,6 @@ def submission_jobs_active(
         if child_state in SCHEDULER_RUNNING_STATES or child_state == "PENDING":
             return True
     return False
-
-
-def notify_monitor_email(submission: Submission, subject: str, body: str) -> dict[str, Any]:
-    recipient = os.environ.get("PMA_NOTIFY_EMAIL", "").strip()
-    if not recipient:
-        return {"attempted": False, "reason": "PMA_NOTIFY_EMAIL not set"}
-    if shutil.which("mail"):
-        try:
-            result = subprocess.run(
-                ["mail", "-s", subject, recipient],
-                input=body,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-            return {
-                "attempted": True,
-                "via": "mail",
-                "returncode": result.returncode,
-                "stderr": result.stderr.strip(),
-            }
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            return {"attempted": True, "via": "mail", "error": str(exc)}
-    if shutil.which("sendmail"):
-        try:
-            payload = f"To: {recipient}\nSubject: {subject}\n\n{body}\n"
-            result = subprocess.run(
-                ["sendmail", "-t"],
-                input=payload,
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-            return {
-                "attempted": True,
-                "via": "sendmail",
-                "returncode": result.returncode,
-                "stderr": result.stderr.strip(),
-            }
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            return {"attempted": True, "via": "sendmail", "error": str(exc)}
-    return {"attempted": False, "reason": "no mail or sendmail on PATH"}
-
-
-def notify_hang_detected(
-    submission: Submission,
-    snapshot: dict[str, Any],
-    findings: list[MonitorFinding],
-    cancel_result: dict[str, Any] | None,
-) -> dict[str, Any]:
-    sched = snapshot.get("scheduler") or {}
-    lines = [
-        f"Agent: {submission.agent}",
-        f"Run: {submission.run_dir}",
-        f"Head job: {submission.job_id}",
-        f"Target: {submission.target}",
-        f"Scheduler state: {sched.get('state') or 'unknown'}",
-        "",
-        "Findings:",
-    ]
-    for finding in findings:
-        if finding.severity == "error":
-            lines.append(f"- {finding.code}: {finding.message}")
-    child_ids = snapshot.get("child_job_ids") or []
-    if child_ids:
-        lines.extend(["", f"Child jobs: {', '.join(child_ids)}"])
-    if cancel_result is not None:
-        lines.extend(["", "Kill action attempted (children first, then head)."])
-    lines.extend(
-        [
-            "",
-            f"Latest report: {run_monitor_dir(submission.run_dir) / 'latest_report.md'}",
-        ]
-    )
-    subject = (
-        f"{submission.agent}: HPC hang detected (job {submission.job_id})"
-    )
-    return notify_monitor_email(submission, subject, "\n".join(lines) + "\n")
 
 
 def cancel_job(executor: str, job_id: str, timeout_s: int = 5) -> dict[str, Any]:
@@ -653,7 +799,12 @@ def cancel_submission_jobs(submission: Submission, child_job_ids: list[str], tim
     }
 
 
-def render_report(snapshot: dict[str, Any], findings: list[MonitorFinding], cancel_result: dict[str, Any] | None) -> str:
+def render_report(
+    snapshot: dict[str, Any],
+    findings: list[MonitorFinding],
+    cancel_result: dict[str, Any] | None,
+    monitor_state: "MonitorState | None" = None,
+) -> str:
     sub = snapshot["submission"]
     sched = snapshot["scheduler"]
     lines = [
@@ -668,9 +819,27 @@ def render_report(snapshot: dict[str, Any], findings: list[MonitorFinding], canc
         f"- Scheduler state: `{sched.get('state') or 'unknown'}`",
         f"- Elapsed / limit: `{sched.get('elapsed') or 'unknown'}` / `{sched.get('timelimit') or 'unknown'}`",
         "",
-        "## Findings",
+        "## Monitor State",
         "",
     ]
+    if monitor_state is not None:
+        lines.append(f"- Health: `{monitor_state.health.value}`")
+        lines.append(f"- Silence: `{monitor_state.silence_intervals} / {monitor_state.tolerance_n} intervals`")
+        if monitor_state.confirmed_dead_reason:
+            lines.append(f"- Confirmed-dead reason: `{monitor_state.confirmed_dead_reason}`")
+        if monitor_state.investigation:
+            inv = monitor_state.investigation
+            cpu = inv.get("compute_cpu_s")
+            rss = inv.get("memory_rss_mb")
+            fs = inv.get("filesystem_responsive")
+            lines.append(
+                f"- Investigation: filesystem_responsive={fs}, "
+                f"compute_cpu_s={cpu}, memory_rss_mb={rss}, "
+                f"child_storage_hang_ids={inv.get('child_storage_hang_ids')}"
+            )
+    else:
+        lines.append("- No monitor state recorded.")
+    lines.extend(["", "## Findings", ""])
     if findings:
         for finding in findings:
             lines.append(f"- **{finding.severity.upper()} `{finding.code}`**: {finding.message}")
@@ -720,15 +889,26 @@ def write_report(
     findings: list[MonitorFinding],
     cancel_result: dict[str, Any] | None = None,
     *,
+    monitor_state: "MonitorState | None" = None,
     record_history: bool = True,
 ) -> Path:
     report_dir = run_monitor_dir(submission.run_dir) / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
-    text = render_report(snapshot, findings, cancel_result)
+    text = render_report(snapshot, findings, cancel_result, monitor_state)
     latest = run_monitor_dir(submission.run_dir) / "latest_report.md"
     latest.write_text(text, encoding="utf-8")
+    # Persist full snapshot + monitor state so Processing-MuAgent can read health.
+    full_state: dict[str, Any] = dict(snapshot)
+    if monitor_state is not None:
+        full_state["monitor_state"] = {
+            "health": monitor_state.health.value,
+            "silence_intervals": monitor_state.silence_intervals,
+            "tolerance_n": monitor_state.tolerance_n,
+            "investigation": monitor_state.investigation,
+            "confirmed_dead_reason": monitor_state.confirmed_dead_reason,
+        }
     state_path = run_monitor_dir(submission.run_dir) / "latest_snapshot.json"
-    state_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    state_path.write_text(json.dumps(full_state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if not record_history:
         return latest
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -737,81 +917,399 @@ def write_report(
     return report_path
 
 
+def _resolve_stale_minutes(submission: Submission, stale_minutes: float) -> float:
+    """Return stale_minutes, preferring the spec's progress_timeout_hint when set."""
+    if submission.progress_timeout_hint is not None:
+        return float(submission.progress_timeout_hint)
+    if submission.spec_path:
+        try:
+            spec = load_stage_spec(submission.spec_path)
+            return spec.progress_timeout_hint
+        except Exception:
+            pass
+    return stale_minutes
+
+
+def _resolve_tolerance_n(submission: Submission, interval_s: float, fallback_minutes: float = 90.0) -> int:
+    """Return how many consecutive quiet intervals constitute a stall.
+
+    Converts the stage's progress_timeout_hint (minutes) to an interval count.
+    The fallback is 90 min — conservative enough that an absent hint never causes
+    a premature kill.
+    """
+    stale_minutes = _resolve_stale_minutes(submission, fallback_minutes)
+    return max(1, math.ceil(stale_minutes * 60.0 / max(1.0, interval_s)))
+
+
+def _watcher_update(
+    snapshot: dict[str, Any],
+    state: MonitorState,
+) -> tuple[MonitorState, bool]:
+    """Update silence counter from the latest snapshot.
+
+    A heartbeat fires when any run-scoped file mtime advanced OR the head log
+    grew since the previous check. On a heartbeat silence resets to 0; otherwise
+    it increments. Returns (new_state, flag_raised) where flag_raised is True
+    once silence_intervals reaches tolerance_n.
+    """
+    latest = snapshot.get("latest_progress_file") or {}
+    raw_mtime = latest.get("mtime")
+    current_mtime: float | None = float(raw_mtime) if raw_mtime is not None else None
+
+    head_log = snapshot.get("head_log") or {}
+    raw_size = head_log.get("size")
+    current_log_size: int | None = int(raw_size) if raw_size is not None else None
+
+    file_heartbeat = (
+        current_mtime is not None
+        and (state.last_progress_mtime is None or current_mtime > state.last_progress_mtime)
+    )
+    log_heartbeat = (
+        current_log_size is not None
+        and (state.last_log_size is None or current_log_size > state.last_log_size)
+    )
+    heartbeat = file_heartbeat or log_heartbeat
+
+    new_silence = 0 if heartbeat else state.silence_intervals + 1
+    flag_raised = new_silence >= state.tolerance_n
+
+    new_state = replace(
+        state,
+        silence_intervals=new_silence,
+        last_progress_mtime=current_mtime if current_mtime is not None else state.last_progress_mtime,
+        last_log_size=current_log_size if current_log_size is not None else state.last_log_size,
+    )
+    return new_state, flag_raised
+
+
+def _probe_sstat(executor: str, job_id: str, timeout_s: int = 5) -> dict[str, Any]:
+    """Query live job CPU/memory via sstat (SLURM only). Best-effort."""
+    if executor != "slurm":
+        return {"error": "not_slurm"}
+    if not shutil.which("sstat"):
+        return {"error": "sstat_not_found"}
+    jid = _normalize_job_id(job_id)
+    rc, out, err = _run_cmd(
+        ["sstat", "-j", f"{jid}.batch", "--format=AveCPU,MaxRSS,JobID", "-n", "-P"],
+        timeout_s,
+    )
+    if rc != 0 or not out.strip():
+        return {"error": err or f"sstat rc={rc}"}
+    parts = out.splitlines()[0].split("|")
+    ave_cpu_raw = parts[0].strip() if len(parts) > 0 else ""
+    max_rss_raw = parts[1].strip() if len(parts) > 1 else ""
+
+    ave_cpu_s: float | None = None
+    if ave_cpu_raw:
+        try:
+            fields = ave_cpu_raw.split(":")
+            if len(fields) == 3:
+                ave_cpu_s = int(fields[0]) * 3600 + int(fields[1]) * 60 + float(fields[2])
+        except (ValueError, IndexError):
+            pass
+
+    max_rss_mb: float | None = None
+    if max_rss_raw:
+        try:
+            val = max_rss_raw.upper()
+            if val.endswith("K"):
+                max_rss_mb = float(val[:-1]) / 1024.0
+            elif val.endswith("M"):
+                max_rss_mb = float(val[:-1])
+            elif val.endswith("G"):
+                max_rss_mb = float(val[:-1]) * 1024.0
+            else:
+                max_rss_mb = float(val) / (1024.0 * 1024.0)  # assume bytes
+        except ValueError:
+            pass
+
+    return {"ave_cpu_s": ave_cpu_s, "max_rss_mb": max_rss_mb}
+
+
+def _probe_filesystem(path: str | Path, timeout_s: float = 5.0) -> bool:
+    """True if os.stat(path) returns within timeout_s (filesystem is responsive)."""
+    result = [False]
+
+    def _check() -> None:
+        try:
+            os.stat(str(path))
+            result[0] = True
+        except OSError:
+            result[0] = True  # stat responded even with error
+
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+    t.join(timeout_s)
+    return result[0]
+
+
+def investigate_suspect(
+    submission: Submission,
+    snapshot: dict[str, Any],
+    *,
+    scheduler_timeout_s: int = 5,
+) -> dict[str, Any]:
+    """Gather independent evidence about a stall suspect.
+
+    Called once when the watcher transitions the job to SUSPECT. Evidence is
+    collected synchronously (scheduler query already in snapshot; sstat and
+    filesystem probe run fresh). The caller (classify_investigation) applies
+    rules to this evidence to conclude recovered, confirmed_dead, or fs_hang.
+    """
+    scheduler = snapshot.get("scheduler") or {}
+    scheduler_state = str(scheduler.get("state") or "").split()[0]
+    error_markers = list(snapshot.get("error_markers") or [])
+
+    sstat = _probe_sstat(submission.executor, submission.job_id, scheduler_timeout_s)
+    fs_responsive = _probe_filesystem(submission.run_dir, timeout_s=5.0)
+
+    child_ids = list(snapshot.get("child_job_ids") or [])
+    hung_children = _child_storage_hang_ids(submission, child_ids, scheduler_timeout_s)
+
+    return {
+        "scheduler_state": scheduler_state,
+        "error_markers": error_markers,
+        "compute_cpu_s": sstat.get("ave_cpu_s"),
+        "memory_rss_mb": sstat.get("max_rss_mb"),
+        "sstat_error": sstat.get("error"),
+        "filesystem_responsive": fs_responsive,
+        "child_storage_hang_ids": hung_children,
+    }
+
+
+def classify_investigation(evidence: dict[str, Any]) -> tuple[str, str]:
+    """Classify stall evidence. Returns (verdict, reason).
+
+    verdict is one of: "confirmed_dead", "recovered", "fs_hang".
+
+    Rules applied in order; first match wins. Asymmetry is intentional:
+    positive evidence of life (CPU active, memory large) overrides silence;
+    confirmed_dead requires all-silent signals plus a responsive filesystem
+    (ruling out D-state). When evidence is incomplete, recover rather than kill.
+    """
+    scheduler_state = str(evidence.get("scheduler_state") or "")
+    error_markers = list(evidence.get("error_markers") or [])
+    hung_children = list(evidence.get("child_storage_hang_ids") or [])
+    fs_responsive = evidence.get("filesystem_responsive")
+    cpu_s = evidence.get("compute_cpu_s")
+    rss_mb = evidence.get("memory_rss_mb")
+
+    # 1. Scheduler reports definitive failure
+    if scheduler_state in SCHEDULER_FAILED_STATES:
+        return "confirmed_dead", f"scheduler_state={scheduler_state}"
+
+    # 2. Error markers in logs — unambiguous workflow failure
+    if error_markers:
+        return "confirmed_dead", f"workflow_error_markers={','.join(error_markers)}"
+
+    # 3. Child stuck at output storage — filesystem hang pattern
+    if hung_children:
+        return "fs_hang", f"child_storage_hang child_ids={','.join(hung_children)}"
+
+    # 4. Filesystem probe timed out — D-state / degraded storage
+    if fs_responsive is False:
+        return "fs_hang", "filesystem_probe_timed_out"
+
+    # 5. CPU activity reported by sstat — job is computing
+    if cpu_s is not None and cpu_s > 1.0:
+        return "recovered", f"compute_active cpu_s={cpu_s:.1f}"
+
+    # 6. Memory still large — live process proxy
+    if rss_mb is not None and rss_mb > 100.0:
+        return "recovered", f"memory_active rss_mb={rss_mb:.0f}"
+
+    # 7. Filesystem responsive + scheduler RUNNING + no CPU/memory evidence
+    # All silence signals confirmed with a working filesystem → dead
+    if fs_responsive is True and scheduler_state in SCHEDULER_RUNNING_STATES:
+        return "confirmed_dead", "no_activity_with_responsive_filesystem"
+
+    # 8. Inconclusive evidence — conservative: assume alive
+    return "recovered", "insufficient_evidence_assume_alive"
+
+
 def monitor_once(
     submission: Submission,
+    state: MonitorState,
     *,
-    stale_minutes: float,
-    scheduler_timeout_s: int,
-    kill_on_hang: bool,
-    previous_finding_codes: frozenset[str] | None = None,
-) -> tuple[dict[str, Any], list[MonitorFinding], dict[str, Any] | None, Path | None, frozenset[str]]:
+    scheduler_timeout_s: int = 5,
+    kill_on_hang: bool = True,
+    fs_hang_policy: str = "hold",
+) -> tuple[dict[str, Any], list[MonitorFinding], dict[str, Any] | None, Path | None, MonitorState]:
+    """Single monitoring check driving the state machine.
+
+    States HEALTHY / RECOVERED run the watcher (cheap: file mtime + log size).
+    SUSPECT triggers investigation and classification. Kill only from
+    CONFIRMED_DEAD (or FS_HANG when policy is kill_and_resubmit).
+    """
     snapshot = collect_snapshot(submission, scheduler_timeout_s)
-    findings = evaluate_snapshot(
-        snapshot,
-        stale_minutes,
-        scheduler_timeout_s=scheduler_timeout_s,
-    )
+    findings: list[MonitorFinding] = []
+    cancel_result: dict[str, Any] | None = None
+
+    # --- Definitive signals (always checked, bypass silence state machine) ---
+    scheduler = snapshot.get("scheduler") or {}
+    sched_state = str(scheduler.get("state") or "").split()[0]
+
+    definitive = evaluate_snapshot_definitive(snapshot)
+    # Terminal definitive findings immediately override health
+    for f in definitive:
+        if f.code in ("scheduler_failed", "workflow_error_marker"):
+            if state.health not in (JobHealth.KILLED, JobHealth.DONE):
+                state = replace(state, health=JobHealth.CONFIRMED_DEAD,
+                                confirmed_dead_reason=f"{f.code}: {f.message}")
+    findings.extend(definitive)
+
+    # --- State machine ---
+    if state.health in (JobHealth.HEALTHY, JobHealth.RECOVERED):
+        # Only run watcher when there is at least one progress file to track
+        has_progress = bool((snapshot.get("latest_progress_file") or {}).get("exists"))
+        if has_progress:
+            state, flag_raised = _watcher_update(snapshot, state)
+            if flag_raised:
+                state = replace(state, health=JobHealth.SUSPECT)
+                findings.append(MonitorFinding(
+                    "warning", "stall_suspected",
+                    f"No progress for {state.silence_intervals} consecutive check intervals "
+                    f"(tolerance: {state.tolerance_n}). Entering investigation.",
+                ))
+
+    elif state.health == JobHealth.SUSPECT:
+        state = replace(state, health=JobHealth.INVESTIGATING)
+        evidence = investigate_suspect(submission, snapshot, scheduler_timeout_s=scheduler_timeout_s)
+        state = replace(state, investigation=evidence)
+        verdict, reason = classify_investigation(evidence)
+
+        if verdict == "confirmed_dead":
+            state = replace(state, health=JobHealth.CONFIRMED_DEAD, confirmed_dead_reason=reason)
+            findings.append(MonitorFinding("error", "stall_confirmed",
+                f"Investigation concluded confirmed dead: {reason}"))
+        elif verdict == "fs_hang":
+            state = replace(state, health=JobHealth.FS_HANG)
+            findings.append(MonitorFinding("error", "filesystem_hang_suspected",
+                f"Filesystem-related hang detected: {reason}. "
+                f"fs_hang_policy={fs_hang_policy}."))
+        else:  # recovered
+            state = replace(state, health=JobHealth.HEALTHY, silence_intervals=0)
+            findings.append(MonitorFinding("warning", "stall_recovered",
+                f"Investigation found evidence of life: {reason}. Resuming monitoring."))
+
+    # INVESTIGATING is transient (only set and resolved within a single call above)
+
+    # --- Kill path ---
+    child_job_ids = list(snapshot.get("child_job_ids") or [])
+
+    if state.health == JobHealth.CONFIRMED_DEAD and kill_on_hang:
+        cancel_result = cancel_submission_jobs(submission, child_job_ids, scheduler_timeout_s)
+        cancel_result["confirmed_dead_reason"] = state.confirmed_dead_reason
+        state = replace(state, health=JobHealth.KILLED)
+
+    elif state.health == JobHealth.FS_HANG and kill_on_hang and fs_hang_policy == "kill_and_resubmit":
+        cancel_result = cancel_submission_jobs(submission, child_job_ids, scheduler_timeout_s)
+        cancel_result["confirmed_dead_reason"] = "filesystem_hang"
+        state = replace(state, health=JobHealth.KILLED)
+
+    # --- Report ---
     finding_codes = _finding_codes(findings)
-    killable = any(f.code in KILLABLE_FINDING_CODES for f in findings)
-    child_job_ids = snapshot.get("child_job_ids") or []
-    cancel_result = (
-        cancel_submission_jobs(submission, child_job_ids, scheduler_timeout_s)
-        if kill_on_hang and killable else None
-    )
     report_path: Path | None = None
     if findings or cancel_result:
         record_history = (
             cancel_result is not None
-            or previous_finding_codes is None
-            or finding_codes != previous_finding_codes
+            or state.previous_finding_codes is None
+            or finding_codes != state.previous_finding_codes
         )
         report_path = write_report(
             submission,
             snapshot,
             findings,
             cancel_result,
+            monitor_state=state,
             record_history=record_history,
         )
-    return snapshot, findings, cancel_result, report_path, finding_codes
+
+    new_state = replace(state, previous_finding_codes=finding_codes)
+    return snapshot, findings, cancel_result, report_path, new_state
+
+
+def validate_terminal_outputs(submission: Submission) -> list[MonitorFinding]:
+    """After a head-job reaches a terminal COMPLETED state, verify per-stage outputs.
+
+    Reads every stage metadata YAML in internal/stage_meta/ and checks that each
+    declared output file exists and is non-empty. Returns an error finding for each
+    missing or empty artifact. An empty return means all outputs are present.
+    """
+    stage_meta_dir = Path(submission.run_dir) / "internal" / "stage_meta"
+    if not stage_meta_dir.exists():
+        return []
+    findings: list[MonitorFinding] = []
+    for meta_path in sorted(stage_meta_dir.glob("*.yaml")):
+        if meta_path.stem == "head_job":
+            continue
+        try:
+            spec = load_stage_spec(meta_path)
+        except Exception:
+            continue
+        for name, path_str in spec.outputs.items():
+            p = Path(path_str)
+            if not p.exists() or p.stat().st_size == 0:
+                findings.append(MonitorFinding(
+                    severity="error",
+                    code="output_missing",
+                    message=(
+                        f"Stage {spec.stage!r} expected output {name!r} is "
+                        f"{'missing' if not p.exists() else 'empty'}: {path_str}"
+                    ),
+                ))
+    return findings
 
 
 def monitor_watch(
     submission: Submission,
     *,
-    interval_s: float,
-    stale_minutes: float,
-    scheduler_timeout_s: int,
-    kill_on_hang: bool,
-    max_checks: int | None,
+    interval_s: float = 900.0,
+    stale_minutes: float = 90.0,
+    scheduler_timeout_s: int = 5,
+    kill_on_hang: bool = True,
+    fs_hang_policy: str = "hold",
+    max_checks: int | None = None,
 ) -> Path | None:
+    """Poll until all jobs exit, driving the state machine across iterations."""
+    tolerance_n = _resolve_tolerance_n(submission, interval_s, stale_minutes)
+    state = MonitorState(tolerance_n=tolerance_n)
+
     checks = 0
     last_report: Path | None = None
-    previous_codes: frozenset[str] | None = None
-    notified_codes: frozenset[str] = frozenset()
+
     while True:
-        snapshot, findings, cancel_result, report_path, finding_codes = monitor_once(
+        snapshot, findings, cancel_result, report_path, state = monitor_once(
             submission,
-            stale_minutes=stale_minutes,
+            state,
             scheduler_timeout_s=scheduler_timeout_s,
             kill_on_hang=kill_on_hang,
-            previous_finding_codes=previous_codes,
+            fs_hang_policy=fs_hang_policy,
         )
         if report_path is not None:
             last_report = report_path
 
-        error_codes = frozenset(f.code for f in findings if f.severity == "error")
-        if error_codes - notified_codes:
-            notify_hang_detected(submission, snapshot, findings, cancel_result)
-            notified_codes = notified_codes | error_codes
-
         if not submission_jobs_active(submission, snapshot, scheduler_timeout_s):
-            return last_report
+            break
 
-        previous_codes = finding_codes
         checks += 1
         if max_checks is not None and checks >= max_checks:
-            return last_report
+            break
         time.sleep(max(5.0, interval_s))
+
+    # D6: on clean terminal exit validate all per-stage output artifacts.
+    if last_report is None:
+        val_findings = validate_terminal_outputs(submission)
+        if val_findings:
+            last_report = write_report(
+                submission,
+                {},
+                val_findings,
+                None,
+                monitor_state=state,
+                record_history=True,
+            )
+    return last_report
 
 
 def parse_job_ids_from_log(path: Path | str) -> list[str]:
