@@ -44,9 +44,11 @@ rule s8_umap_execute:
         import json
         from pathlib import Path
         from executor.stages import s8_umap
-        from executor import provenance
+        from executor import provenance, io as _io
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         branch = provenance.get_value(str(INTERNAL / "parameters.yaml"),
                                       "plan.workflow_branch", "paired")
         result = s8_umap.run(params.run_dir, plan, workflow_branch=branch)
-        Path(output.sentinel).write_text(str(result))
+        _io.write_text_safe(output.sentinel, str(result))
+        finalize_cluster_exit()

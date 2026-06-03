@@ -8,7 +8,7 @@ Processing-MuAgent and Execution-MuAgent share a two-file contract:
 
 | File | Written by | Read by | Contains |
 |------|-----------|---------|----------|
-| `deliverables/pre_run/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition/queue, account/QOS, conda env or container, resource scale, fs_hang_policy |
+| `deliverables/pre_run/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition/queue, account/QOS, conda env or container, resource scale |
 | `internal/stage_meta/head_job.yaml` | Processing-MuAgent (`submit`) | Execution-MuAgent | Head-job submission spec: resources (CPU/mem/walltime), input config path, progress_timeout_hint, snakemake_target |
 | `internal/stage_meta/<stage>.yaml` | Processing-MuAgent (`plan-review`) | Execution-MuAgent (monitoring) | Per-stage metadata: science_description, resources, inputs/outputs, progress_timeout_hint. Not submitted — used for output validation and monitoring hints. |
 
@@ -29,7 +29,7 @@ Execution-MuAgent execute-spec \
   --run-dir /path/to/run \
   --repo-root /path/to/MuAgene/Processing-MuAgent \
   --target all \
-  [--watch] [--interval 900] [--kill-on-hang]
+  [--watch] [--interval 270] [--kill-on-hang]
 ```
 
 Steps performed in order:
@@ -42,48 +42,15 @@ Steps performed in order:
 5. **Register** — writes to `internal/hpc_monitor/submissions.jsonl` with `spec_path` and `progress_timeout_hint`.
 6. **Monitor** (with `--watch`) — runs the state machine until all jobs exit.
 
-### `register` — break-glass: record a manually-submitted job
+### `report` — read the latest diagnostic report (the only human-facing command)
 
-Use this when you submitted the head-job manually with `sbatch`/`qsub` (instead of via `Processing-MuAgent submit`). Execution-MuAgent will pick up the job and monitor it as if it had submitted it.
-
-```bash
-Execution-MuAgent register \
-  --agent Processing-MuAgent \
-  --executor slurm \
-  --job-id 123456 \
-  --run-dir /path/to/run \
-  --config /path/to/run/deliverables/pre_run/config/run.yaml \
-  --target all \
-  --repo-root /path/to/MuAgene/Processing-MuAgent \
-  --log-path /path/to/logs/pma_runner-123456.out \
-  [--spec-path /path/to/run/internal/stage_meta/head_job.yaml]
-```
-
-Pass `--spec-path` so the monitor uses the spec's `progress_timeout_hint` instead of the global `--stale-minutes` fallback.
-
-### `monitor` — watch a registered job
+Prints `<run_dir>/internal/hpc_monitor/latest_report.md` — the findings and diagnostics from the most recent monitor check.
 
 ```bash
-# Watch with per-spec timeout (preferred):
-Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456 \
-  --watch --interval 900 \
-  --spec-path /path/to/run/internal/stage_meta/head_job.yaml
-
-# Watch with global fallback timeout (--stale-minutes 90 is the default):
-Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456 \
-  --watch --stale-minutes 90 --interval 900
-
-# One-shot check (no watch):
-Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456
-
-# Report only, no cancellation:
-Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456 \
-  --watch --no-kill-on-hang
-
-# Filesystem-hang kills instead of holding:
-Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456 \
-  --watch --fs-hang-policy kill_and_resubmit
+Execution-MuAgent report --run-dir /path/to/run
 ```
+
+These are the only two commands. `execute-spec` is the machine lifecycle entry point invoked by Processing-MuAgent (submit + monitor at the `--watch` interval + per-step output verification + unhealthy-run kill+report all happen inside it); `report` is the single read-only command a human uses to inspect what Execution-MuAgent found. There are no manual-submission, registration, or standalone-monitor commands.
 
 ## Monitoring state machine
 
@@ -91,11 +58,11 @@ Detection and decision are always separate. A stall signal is a suspicion, never
 
 ### Two clocks
 
-**Check interval** (`--interval`, default 900 s / 15 min) — how often the watcher wakes. A sampling rate, the same for every stage. A coarse interval only delays noticing a stall by up to one interval — it never causes a bad kill.
+**Check interval** (`--interval`, default 270 s / 4.5 min) — how often the watcher wakes. A sampling rate, the same for every stage. A coarse interval only delays noticing a stall by up to one interval — it never causes a bad kill.
 
 **tolerance_n** — how many consecutive quiet intervals are allowed before raising a stall flag. Derived from the stage's `progress_timeout_hint`: `tolerance_n = ceil(progress_timeout_hint_min × 60 / interval_s)`. The stage declares its tolerance; the interval is just how it is counted.
 
-`progress_timeout_hint` values in `internal/stage_meta/<stage>.yaml` come from `workflow/resources.smk` (the single source of truth), written at `plan-review` time. When no hint is present (e.g. for a manually-registered job without a spec), `--stale-minutes 90` is the fallback default.
+`progress_timeout_hint` values in `internal/stage_meta/<stage>.yaml` come from `workflow/resources.smk` (the single source of truth), written at `plan-review` time. When no hint is present (e.g. for the head-job spec itself), a 90-minute fallback is used.
 
 A **heartbeat** fires when any run-scoped file mtime advances OR the head log grows since the previous check. Silence resets to 0 on a heartbeat; increments by 1 on a quiet interval.
 
@@ -108,10 +75,12 @@ A **heartbeat** fires when any run-scoped file mtime advances OR the head log gr
 | `INVESTIGATING` | Gathering evidence | → RECOVERED / CONFIRMED_DEAD / FS_HANG |
 | `RECOVERED` | Investigation found life; silence reset | → HEALTHY, continue |
 | `CONFIRMED_DEAD` | Evidence confirmed dead | → KILLED (if --kill-on-hang) |
-| `FS_HANG` | Filesystem-related hang | → hold or kill per fs_hang_policy |
+| `FS_HANG` | Filesystem-related hang | → KILLED (if --kill-on-hang); reported to Processing |
 | `KILLED` | Cancellation sent | → wait for terminal scheduler state |
 
 Definitive signals (`scheduler_failed`, `workflow_error_marker`) bypass the silence counter and go directly to CONFIRMED_DEAD.
+
+An unhealthy verdict (`CONFIRMED_DEAD` or `FS_HANG`) is killed for cleanup and reported. Execution-MuAgent never holds for a human and never resubmits — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
 
 ### Investigation evidence
 
@@ -137,15 +106,22 @@ Gathered when entering SUSPECT:
 7. Filesystem responsive + scheduler RUNNING + no CPU/memory activity → `confirmed_dead`
 8. Inconclusive → `recovered` (conservative default)
 
-### Completion validation (D6)
+### Output verification (per step + terminal)
 
-When the head-job reaches terminal COMPLETED state and no problems were detected during the run, Execution-MuAgent validates output artifacts. It reads every `internal/stage_meta/<stage>.yaml` (excluding `head_job.yaml`) and checks that each declared output file exists and is non-empty. Missing or empty outputs are reported as `output_missing` in `latest_report.md` — a COMPLETED scheduler state with missing outputs is treated as a failure.
+Output verification is proper — not a folder/size check. `verify_output_file` opens each declared output and confirms it is a complete, loadable file:
+- `.h5ad`/`.h5mu`/`.h5` — opened with `h5py` and checked for the expected root groups (`X`/`obs`/`var`, or `mod` for h5mu). Without `h5py`, the HDF5 8-byte signature is checked at superblock offsets.
+- `.parquet` — `pyarrow.parquet.read_metadata` (footer); fallback to the `PAR1` head/tail magic.
+- `.json` — parsed; text sentinels — non-empty.
 
-### Filesystem hang policy
+Because stages write outputs atomically (`/tmp` stage + fsync + `os.rename`), a file present at its final path is complete, so a valid signature plus non-zero size is a strong correctness signal.
 
-`fs_hang_policy` in site.config (default `"hold"`):
-- `"hold"` — writes `filesystem_hang_suspected` finding, does NOT kill. Processing-MuAgent escalates to user. Repeat on subsequent checks until resolved.
-- `"kill_and_resubmit"` — kills (children first, head second), routes through normal failure path.
+**Per step (normal progress):** on every check the monitor verifies each per-stage spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
+
+**Terminal:** when the head-job reaches COMPLETED, `validate_terminal_outputs` runs the same verifier over every `internal/stage_meta/<stage>.yaml` (excluding `head_job.yaml`). Any missing, empty, or corrupt output is reported as `output_missing` — a COMPLETED scheduler state with an unverifiable output is treated as a failure.
+
+### Unhealthy runs: no human fallback in Execution
+
+When a run is unhealthy (`CONFIRMED_DEAD` or `FS_HANG`), Execution-MuAgent kills the job (children first, then head) for cleanup and writes diagnostics. It never holds for a human and never resubmits. Processing-MuAgent reads the report, reports to the human, implements the fix, and resubmits. There is no `fs_hang_policy` knob — filesystem hangs follow the same kill-and-report path as any other confirmed-dead verdict.
 
 ### Finding codes
 
@@ -154,11 +130,12 @@ When the head-job reaches terminal COMPLETED state and no problems were detected
 | `submit_rejected_policy` | error | Scheduler policy rejection (partition/account/walltime) |
 | `scheduler_failed` | error | Scheduler state in terminal failure set |
 | `workflow_error_marker` | error | Error keywords in logs |
-| `output_missing` | error | Stage output missing or empty after COMPLETED |
+| `output_missing` | error | Stage output missing, empty, or corrupt after COMPLETED |
+| `stage_output_verified` | info | A stage's declared outputs verified complete and loadable |
 | `stall_suspected` | warning | silence_intervals ≥ tolerance_n; entering investigation |
 | `stall_confirmed` | error | Investigation confirmed dead — kill was sent |
 | `stall_recovered` | warning | Investigation found life; monitoring continues |
-| `filesystem_hang_suspected` | error | D-state / degraded storage hang detected |
+| `filesystem_hang_suspected` | error | D-state / degraded storage hang — kill was sent |
 | `no_progress_files` | warning | No progress files found yet (early stage) |
 | `scheduler_completing` | warning | Job in COMPLETING; may indicate epilog/NFS stall |
 | `scheduler_query_failed` | warning | Scheduler query timed out or failed |
@@ -180,7 +157,7 @@ internal/hpc_monitor/
     └── <job_id>_<timestamp>.md  ← historical problem reports
 ```
 
-`latest_snapshot.json` includes a `"monitor_state"` key with `health`, `silence_intervals`, `tolerance_n`, `investigation`, and `confirmed_dead_reason` — readable by `Processing-MuAgent hpc-status`.
+`latest_snapshot.json` includes a `"monitor_state"` key with `health`, `silence_intervals`, `tolerance_n`, `investigation`, `confirmed_dead_reason`, and `verified_stages` — readable by `Processing-MuAgent hpc-status`. It is refreshed on every check, including healthy ones.
 
 ## Head-job spec format
 
@@ -238,7 +215,6 @@ common:
   conda_env: muagene
   container: null      # path to .sif for Apptainer/Singularity, or null
   scratch: null
-  fs_hang_policy: hold # hold | kill_and_resubmit
 ```
 
 `hpc.env` is derived from this file by Processing-MuAgent and cannot drift from it.

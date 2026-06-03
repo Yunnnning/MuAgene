@@ -46,5 +46,7 @@ rule s2_atac_qc_execute:
         import json
         from pathlib import Path
         from executor.stages import s2_atac_qc
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         s2_atac_qc.run(params.run_dir, plan)
+        finalize_cluster_exit()

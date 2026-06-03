@@ -34,5 +34,7 @@ rule s1_rna_qc_execute:
         import json
         from pathlib import Path
         from executor.stages import s1_rna_qc
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         s1_rna_qc.run(params.run_dir, plan)
+        finalize_cluster_exit()

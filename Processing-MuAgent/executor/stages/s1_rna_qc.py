@@ -136,10 +136,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         log_event(run_dir, {"stage": "s1_rna_qc", "event": "plot_failed", "error": str(e)})
 
+    result = {"n_cells_pre": int(a.n_obs), "n_cells_post": int(a_f.n_obs)}
     _io.write_h5ad_safe(a_f, art / "rna_qc.h5ad")
     log_event(run_dir, {"stage": "s1_rna_qc", "event": "done",
-                         "n_cells_pre": int(a.n_obs), "n_cells_post": int(a_f.n_obs),
+                         "n_cells_pre": result["n_cells_pre"],
+                         "n_cells_post": result["n_cells_post"],
                          "thresholds": {"total_counts": [c_lo, c_hi],
                                          "n_genes": [g_lo, g_hi],
                                          "pct_counts_mt_max": pct_mt_upper}})
-    return {"n_cells_pre": int(a.n_obs), "n_cells_post": int(a_f.n_obs)}
+    return result

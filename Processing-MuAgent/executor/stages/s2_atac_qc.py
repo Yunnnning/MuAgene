@@ -180,7 +180,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     n_frag_floor = _resolve_param(params_path, plan_params, "n_fragments_floor", 500)
     tss_min = float(_resolve_param(params_path, plan_params, "tss_enrichment_min", 1.5))
     tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", 50.0))
-    nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 2.0))
+    nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 3.0))
 
     if n_frag_values.size:
         keep_floor = n_frag_values >= n_frag_floor

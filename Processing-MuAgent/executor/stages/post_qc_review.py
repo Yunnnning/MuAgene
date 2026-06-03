@@ -2,7 +2,7 @@
 
 Runs after S3 doublet filtering and before S4/S5 and S6 PCA (RNA) + neighbor graph.
 Generates QC figures and writes the QC review summary at
-  deliverables/checkpoint/qc_review/qc_summary.md
+  deliverables/checkpoint/qc_review/qc_review.md
 
 This is the single user-facing QC checkpoint: inspect S1/S2 QC figures, S3
 doublet histograms, and the cell-count waterfall; adjust S1/S2 thresholds or
@@ -108,12 +108,12 @@ def _plot_cell_count_waterfall(run_dir: Path, figs_dir: Path) -> list[Path]:
 
     counts = _qcs._stage_counts(run_dir)
 
-    rna_ingest = counts.get("rna_after_ambient") or counts.get("rna_ingest")
+    rna_after_s1a = counts.get("rna_after_ambient") or counts.get("rna_ingest")
     stages = [
-        ("raw",          counts.get("rna_raw"),          counts.get("atac_raw_barcodes")),
-        ("after ambient\n/ ingest", rna_ingest,          counts.get("atac_raw_barcodes")),
-        ("after\nS1/S2 QC",  counts.get("rna_qc_post"),  counts.get("atac_qc_post")),
-        ("after\nS3 doublets", counts.get("rna_post_doublet"), counts.get("atac_post_doublet")),
+        ("raw", counts.get("rna_raw"), counts.get("atac_raw_barcodes")),
+        ("after S1a", rna_after_s1a, counts.get("atac_raw_barcodes")),
+        ("after S1/S2 QC", counts.get("rna_qc_post"), counts.get("atac_qc_post")),
+        ("after S3", counts.get("rna_post_doublet"), counts.get("atac_post_doublet")),
     ]
 
     stages = [(lbl, r, a) for lbl, r, a in stages if r is not None or a is not None]
@@ -180,7 +180,7 @@ def propose(run_dir: Path | str) -> dict[str, Any]:
     summary_path = rp.qc_review_summary_md
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        summary_path.write_text(_qcs.build_qc_review(run_dir))
+        summary_path = _qcs.write_qc_review(run_dir)
     except Exception as e:
         log_event(run_dir, {"stage": "post_qc_review", "event": "summary_failed",
                              "error": str(e)})

@@ -57,7 +57,7 @@ Write to `internal/hpc_monitor/submissions.jsonl` with `spec_path` and `progress
 
 ### Step 6 — Monitor (if `--watch`)
 
-Poll loop at `interval_s` (default 900 s / 15 min). The monitor drives a state machine; detection and decision are always separate.
+Poll loop at `interval_s` (default 270 s / 4.5 min). The monitor drives a state machine; detection and decision are always separate.
 
 **Two clocks:**
 - `interval_s` — sampling rate (how often the watcher wakes). Same for every stage.
@@ -66,6 +66,8 @@ Poll loop at `interval_s` (default 900 s / 15 min). The monitor drives a state m
 **State machine per iteration:**
 
 1. **Collect** — `collect_snapshot()`: scheduler state (sacct/squeue/qstat, ≤5 s), filesystem progress files, log tails, child job IDs, error markers.
+
+1a. **Verify outputs (normal progress)** — `verify_stage_outputs()` properly verifies each per-stage spec's declared outputs that have appeared (HDF5/parquet/JSON open, or structural signature checks without those libs — not merely non-empty). The first time a stage's outputs all verify, emit a `stage_output_verified` finding. `latest_snapshot.json` is refreshed every iteration (healthy or not) so Processing's `hpc-status` never reads stale state.
 
 2. **Definitive signals** (always checked, bypass silence machine):
    - `scheduler_failed` → CONFIRMED_DEAD immediately.
@@ -80,26 +82,14 @@ Poll loop at `interval_s` (default 900 s / 15 min). The monitor drives a state m
    - All silent + responsive filesystem + RUNNING → `confirmed_dead`
    - Inconclusive → `recovered` (conservative default)
 
-5. **Kill** (CONFIRMED_DEAD only):
-   - `cancel_submission_jobs()` — children first, then head.
-   - Record `confirmed_dead_reason` in cancel result.
+5. **Kill** (unhealthy verdict — CONFIRMED_DEAD or FS_HANG):
+   - `cancel_submission_jobs()` — children first, then head (cleanup so Processing can resubmit).
+   - Record `confirmed_dead_reason` (or `filesystem_hang`) in cancel result.
    - Write report to `latest_report.md` and `reports/<job_id>_<timestamp>.md`.
    - Write full snapshot + monitor state to `latest_snapshot.json`.
+   - Execution never holds for a human and never resubmits — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
 
-6. **FS hang** (FS_HANG state):
-   - Policy `"hold"` (default): write `filesystem_hang_suspected` finding; do NOT kill; report to Processing-MuAgent; continue monitoring.
-   - Policy `"kill_and_resubmit"`: kill and route through normal failure path.
-
-7. **Loop exit** when no jobs are active in scheduler (all terminal states).
-
----
-
-## Triggered by: `register` + `monitor` (legacy/fallback path)
-
-When Processing-MuAgent did direct `sbatch`/`qsub` submission (Execution-MuAgent unavailable at submit time, or fallback path), it calls `register` + starts `monitor --watch` as a background daemon.
-
-- `register`: records submission metadata to `submissions.jsonl`; accepts optional `--spec-path` to link the spec for per-spec timeout.
-- `monitor --watch`: same watch loop as Step 6 above; loads spec timeout via `--spec-path` or from the registered submission record.
+6. **Loop exit** when no jobs are active in scheduler (all terminal states).
 
 ---
 
@@ -110,10 +100,12 @@ All findings land in `internal/hpc_monitor/latest_report.md`; monitor state in `
 | Finding code | Meaning | Processing-MuAgent action |
 |---|---|---|
 | `submit_rejected_policy` | Scheduler rejected submission (partition/account/walltime) | Relay as adjustable hint; ask user to fix site.config |
-| `scheduler_failed` | Scheduler reports terminal failure state | Relay finding; route to failure path |
-| `workflow_error_marker` | Error keywords in logs (Traceback, OOM, …) | Relay finding; route to failure path |
-| `stall_suspected` | N quiet intervals; investigation starting | Informational; no user action needed |
-| `stall_confirmed` | Investigation concluded confirmed dead | Relay reason; route to failure path |
+| `scheduler_failed` | Scheduler reports terminal failure state | Report to human; fix; resubmit |
+| `workflow_error_marker` | Error keywords in logs (Traceback, OOM, …) | Report to human; fix; resubmit |
+| `stage_output_verified` | A stage's outputs verified complete and loadable | Informational progress; continue |
+| `stall_suspected` | N quiet intervals; investigation starting | Informational; no action needed |
+| `stall_confirmed` | Investigation concluded confirmed dead (job killed) | Report to human; fix; resubmit |
 | `stall_recovered` | Investigation found life; monitoring continues | Informational; no action needed |
-| `filesystem_hang_suspected` | D-state / storage-degraded hang (policy=hold) | Escalate to user; hold until resolved |
+| `filesystem_hang_suspected` | D-state / storage-degraded hang (job killed) | Report to human; fix; resubmit |
+| `output_missing` | Declared output missing/empty/corrupt after COMPLETED | Report to human; fix; resubmit |
 | Clean exit | No findings; job completed normally | Continue normal pipeline flow |

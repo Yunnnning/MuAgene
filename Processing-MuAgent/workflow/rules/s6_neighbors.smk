@@ -42,5 +42,7 @@ rule s6_neighbors_execute:
         import json
         from pathlib import Path
         from executor.stages import s6_neighbors
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         s6_neighbors.run(params.run_dir, plan)
+        finalize_cluster_exit()

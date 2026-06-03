@@ -81,7 +81,7 @@ class JobHealth(str, Enum):
     INVESTIGATING = "investigating"  # Transient: gathering evidence this iteration
     RECOVERED     = "recovered"      # Investigation found life; silence window reset
     CONFIRMED_DEAD = "confirmed_dead"  # Evidence confirmed dead; ready to kill
-    FS_HANG       = "fs_hang"        # D-state / storage-degraded; policy decides
+    FS_HANG       = "fs_hang"        # D-state / storage-degraded; killed + reported
     KILLED        = "killed"         # Cancellation sent
     DONE          = "done"           # Job exited terminal scheduler state
 
@@ -113,13 +113,13 @@ class MonitorState:
     """Per-submission state carried across watch iterations."""
     health: JobHealth = JobHealth.HEALTHY
     silence_intervals: int = 0          # consecutive quiet check intervals
-    tolerance_n: int = 6                # flag after this many quiet intervals (default: 6×15min=90min)
+    tolerance_n: int = 20               # flag after this many quiet intervals (default: 20×270s=90min)
     last_progress_mtime: float | None = None  # newest progress file mtime at last check
     last_log_size: int | None = None    # head log byte-size at last check
     investigation: dict | None = None   # evidence gathered at last SUSPECT→INVESTIGATING transition
     confirmed_dead_reason: str | None = None
-    notified_codes: frozenset[str] = field(default_factory=frozenset)
     previous_finding_codes: frozenset[str] | None = None
+    verified_stages: frozenset[str] = field(default_factory=frozenset)  # stages whose outputs verified
 
 
 @dataclass
@@ -135,7 +135,6 @@ class SiteConfig:
     conda_env: str | None = None
     container: str | None = None
     scratch: str | None = None
-    fs_hang_policy: str = "hold"  # "hold" | "kill_and_resubmit"
 
 
 @dataclass
@@ -181,7 +180,6 @@ def load_site_config(path: Path | str) -> SiteConfig:
         conda_env=common.get("conda_env"),
         container=common.get("container"),
         scratch=common.get("scratch"),
-        fs_hang_policy=str(common.get("fs_hang_policy", "hold")),
     )
 
 
@@ -199,6 +197,124 @@ def load_stage_spec(path: Path | str) -> StageSpec:
         outputs=dict(data.get("outputs") or {}),
         progress_timeout_hint=float(data.get("progress_timeout_hint", 90)),
     )
+
+
+_HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
+# HDF5 superblock may start at offset 0 or a later power-of-two offset.
+_HDF5_SIGNATURE_OFFSETS = (0, 512, 1024, 2048, 4096, 8192)
+
+
+def _looks_like_hdf5(path: Path) -> bool:
+    """Dependency-free HDF5 check: the 8-byte signature at a superblock offset."""
+    try:
+        with path.open("rb") as fh:
+            for off in _HDF5_SIGNATURE_OFFSETS:
+                fh.seek(off)
+                if fh.read(8) == _HDF5_SIGNATURE:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _looks_like_parquet(path: Path) -> bool:
+    """Dependency-free parquet check: the PAR1 magic at head and tail."""
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return False
+        with path.open("rb") as fh:
+            head = fh.read(4)
+            fh.seek(-4, os.SEEK_END)
+            tail = fh.read(4)
+        return head == b"PAR1" and tail == b"PAR1"
+    except OSError:
+        return False
+
+
+def verify_output_file(path: Path | str) -> tuple[bool, str]:
+    """Verify that an output artifact is present and a complete, loadable file.
+
+    Lightweight integrity check (not a full in-memory load) suitable for running
+    on every monitor interval. Real loaders (h5py / pyarrow) are used when
+    available in the runtime env; otherwise we fall back to dependency-free
+    structural checks. Because stages write outputs atomically (write to /tmp,
+    fsync, then os.rename), a file present at its final path is complete — so a
+    valid signature plus non-zero size is a strong correctness signal.
+
+    Returns (ok, reason). reason is a short machine token, e.g. "valid_hdf5",
+    "missing", "empty", "corrupt_hdf5".
+    """
+    p = Path(path)
+    if not p.exists():
+        return False, "missing"
+    try:
+        if p.stat().st_size == 0:
+            return False, "empty"
+    except OSError as exc:
+        return False, f"stat_error:{exc}"
+
+    suffix = p.suffix.lower()
+    if suffix in (".h5ad", ".h5mu", ".h5"):
+        try:
+            import h5py  # type: ignore[import-not-found]
+
+            with h5py.File(str(p), "r") as fh:
+                keys = set(fh.keys())
+            if suffix == ".h5mu":
+                ok = "mod" in keys
+            elif suffix == ".h5ad":
+                ok = bool({"X", "obs", "var"} & keys)
+            else:
+                ok = bool(keys)
+            return (True, "valid_hdf5") if ok else (False, "hdf5_missing_groups")
+        except ImportError:
+            return (True, "hdf5_signature") if _looks_like_hdf5(p) else (False, "corrupt_hdf5")
+        except Exception as exc:  # truncated / unreadable HDF5
+            return False, f"corrupt_hdf5:{type(exc).__name__}"
+    if suffix == ".parquet":
+        try:
+            import pyarrow.parquet as pq  # type: ignore[import-not-found]
+
+            pq.read_metadata(str(p))
+            return True, "valid_parquet"
+        except ImportError:
+            return (True, "parquet_magic") if _looks_like_parquet(p) else (False, "corrupt_parquet")
+        except Exception as exc:
+            return False, f"corrupt_parquet:{type(exc).__name__}"
+    if suffix == ".json":
+        try:
+            json.loads(p.read_text(encoding="utf-8"))
+            return True, "valid_json"
+        except Exception as exc:
+            return False, f"corrupt_json:{type(exc).__name__}"
+    # Text sentinels and any other type: non-zero size already confirmed above.
+    return True, "nonempty"
+
+
+def verify_stage_outputs(submission: Submission) -> dict[str, dict[str, tuple[bool, str]]]:
+    """Verify declared outputs for every per-stage spec under internal/stage_meta/.
+
+    Returns {stage: {output_name: (ok, reason)}}. Only declared outputs are
+    checked; the head_job spec (no outputs) is skipped.
+    """
+    stage_meta_dir = Path(submission.run_dir) / "internal" / "stage_meta"
+    results: dict[str, dict[str, tuple[bool, str]]] = {}
+    if not stage_meta_dir.exists():
+        return results
+    for meta_path in sorted(stage_meta_dir.glob("*.yaml")):
+        if meta_path.stem == "head_job":
+            continue
+        try:
+            spec = load_stage_spec(meta_path)
+        except Exception:
+            continue
+        if not spec.outputs:
+            continue
+        results[spec.stage] = {
+            name: verify_output_file(path_str) for name, path_str in spec.outputs.items()
+        }
+    return results
 
 
 def validate_spec(spec: StageSpec, site_config: SiteConfig) -> list[str]:
@@ -273,25 +389,42 @@ def render_submission_script(
         if site_config.project:
             lines.append(f"#PBS -P {site_config.project}")
 
+    run_dir_path = Path(run_dir).resolve()
     lines += [
         "",
-        f"export PMA_CONFIG={repo_root / 'deliverables' / 'pre_run' / 'config' / 'run.yaml'}",
+        f"export PMA_CONFIG={run_dir_path / 'deliverables' / 'pre_run' / 'config' / 'run.yaml'}",
         f"export PMA_TARGET={target}",
         f"export PMA_REPO_ROOT={repo_root}",
-        "",
     ]
+    # Export scheduler-specific vars so launch_runner.sh adds them as
+    # --default-resources when it detects the cluster profile.
+    if conda_env:
+        lines.append(f"export PMA_CONDA_ENV={conda_env}")
+    if site_config.scheduler == "slurm":
+        if site_config.partition:
+            lines.append(f"export PMA_SLURM_PARTITION={site_config.partition}")
+        if site_config.account:
+            lines.append(f"export PMA_SLURM_ACCOUNT={site_config.account}")
+    elif site_config.scheduler == "pbs":
+        if site_config.queue:
+            lines.append(f"export PMA_PBS_QUEUE={site_config.queue}")
+        if site_config.project:
+            lines.append(f"export PMA_PBS_PROJECT={site_config.project}")
+    lines.append("")
 
+    profile = repo_root / "workflow" / "profiles" / site_config.scheduler
     launch = str(repo_root / "scripts" / "launch_runner.sh")
+    launch_args = f"--configfile $PMA_CONFIG --profile {profile} --jobs 8 $PMA_TARGET"
     if site_config.container:
         lines.append(
             f"apptainer exec --bind {run_dir_s}:{run_dir_s} "
-            f"{site_config.container} bash {launch}"
+            f"{site_config.container} bash {launch} {launch_args}"
         )
     else:
         lines += [
             f"source $(conda info --base)/etc/profile.d/conda.sh",
             f"conda activate {conda_env}",
-            f"bash {launch}",
+            f"bash {launch} {launch_args}",
         ]
 
     return "\n".join(lines) + "\n"
@@ -380,23 +513,6 @@ def register_submission(submission: Submission) -> Path:
     latest_path = monitor_dir / "latest_submission.json"
     latest_path.write_text(json.dumps(asdict(submission), indent=2, sort_keys=True) + "\n")
     return record_path
-
-
-def load_latest_submission(run_dir: Path | str, job_id: str | None = None) -> Submission:
-    monitor_dir = run_monitor_dir(run_dir)
-    records_path = monitor_dir / "submissions.jsonl"
-    if not records_path.exists():
-        raise FileNotFoundError(f"No HPC submissions registered under {monitor_dir}")
-    selected: dict[str, Any] | None = None
-    for line in records_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        record = json.loads(line)
-        if job_id is None or str(record.get("job_id")) == str(job_id):
-            selected = record
-    if selected is None:
-        raise FileNotFoundError(f"No registered submission for job {job_id!r} in {records_path}")
-    return Submission(**selected)
 
 
 def _run_cmd(cmd: list[str], timeout_s: int) -> tuple[int | None, str, str]:
@@ -825,6 +941,8 @@ def render_report(
     if monitor_state is not None:
         lines.append(f"- Health: `{monitor_state.health.value}`")
         lines.append(f"- Silence: `{monitor_state.silence_intervals} / {monitor_state.tolerance_n} intervals`")
+        verified = sorted(monitor_state.verified_stages)
+        lines.append(f"- Verified stages: `{', '.join(verified) if verified else 'none'}`")
         if monitor_state.confirmed_dead_reason:
             lines.append(f"- Confirmed-dead reason: `{monitor_state.confirmed_dead_reason}`")
         if monitor_state.investigation:
@@ -883,6 +1001,36 @@ def _tail_lines(text: str, n: int) -> str:
     return "\n".join(lines[-n:])
 
 
+def _monitor_state_dict(monitor_state: "MonitorState") -> dict[str, Any]:
+    return {
+        "health": monitor_state.health.value,
+        "silence_intervals": monitor_state.silence_intervals,
+        "tolerance_n": monitor_state.tolerance_n,
+        "investigation": monitor_state.investigation,
+        "confirmed_dead_reason": monitor_state.confirmed_dead_reason,
+        "verified_stages": sorted(monitor_state.verified_stages),
+    }
+
+
+def _persist_snapshot(
+    submission: Submission,
+    snapshot: dict[str, Any],
+    monitor_state: "MonitorState | None",
+) -> Path:
+    """Write latest_snapshot.json (snapshot + monitor_state) for Processing to read.
+
+    Called on every check — including healthy, finding-free ones — so Processing's
+    hpc-status never reads stale health.
+    """
+    full_state: dict[str, Any] = dict(snapshot)
+    if monitor_state is not None:
+        full_state["monitor_state"] = _monitor_state_dict(monitor_state)
+    state_path = run_monitor_dir(submission.run_dir) / "latest_snapshot.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(full_state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return state_path
+
+
 def write_report(
     submission: Submission,
     snapshot: dict[str, Any],
@@ -898,17 +1046,7 @@ def write_report(
     latest = run_monitor_dir(submission.run_dir) / "latest_report.md"
     latest.write_text(text, encoding="utf-8")
     # Persist full snapshot + monitor state so Processing-MuAgent can read health.
-    full_state: dict[str, Any] = dict(snapshot)
-    if monitor_state is not None:
-        full_state["monitor_state"] = {
-            "health": monitor_state.health.value,
-            "silence_intervals": monitor_state.silence_intervals,
-            "tolerance_n": monitor_state.tolerance_n,
-            "investigation": monitor_state.investigation,
-            "confirmed_dead_reason": monitor_state.confirmed_dead_reason,
-        }
-    state_path = run_monitor_dir(submission.run_dir) / "latest_snapshot.json"
-    state_path.write_text(json.dumps(full_state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _persist_snapshot(submission, snapshot, monitor_state)
     if not record_history:
         return latest
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1133,17 +1271,36 @@ def monitor_once(
     *,
     scheduler_timeout_s: int = 5,
     kill_on_hang: bool = True,
-    fs_hang_policy: str = "hold",
 ) -> tuple[dict[str, Any], list[MonitorFinding], dict[str, Any] | None, Path | None, MonitorState]:
     """Single monitoring check driving the state machine.
 
     States HEALTHY / RECOVERED run the watcher (cheap: file mtime + log size).
-    SUSPECT triggers investigation and classification. Kill only from
-    CONFIRMED_DEAD (or FS_HANG when policy is kill_and_resubmit).
+    SUSPECT triggers investigation and classification. An unhealthy verdict
+    (CONFIRMED_DEAD or FS_HANG) kills and reports — Execution never holds for a
+    human and never resubmits; Processing-MuAgent owns recovery.
+
+    Each check also verifies any per-stage outputs that have appeared and emits a
+    one-time ``stage_output_verified`` progress finding, so Processing sees both
+    normal progress and unhealthy flags.
     """
     snapshot = collect_snapshot(submission, scheduler_timeout_s)
     findings: list[MonitorFinding] = []
     cancel_result: dict[str, Any] | None = None
+
+    # --- Per-step output verification (normal-progress reporting) ---
+    newly_verified: list[str] = []
+    for stage, outputs in verify_stage_outputs(submission).items():
+        if stage in state.verified_stages:
+            continue
+        if outputs and all(ok for ok, _ in outputs.values()):
+            newly_verified.append(stage)
+    if newly_verified:
+        state = replace(state, verified_stages=state.verified_stages | frozenset(newly_verified))
+        for stage in sorted(newly_verified):
+            findings.append(MonitorFinding(
+                "info", "stage_output_verified",
+                f"Stage {stage!r} outputs verified complete and loadable.",
+            ))
 
     # --- Definitive signals (always checked, bypass silence state machine) ---
     scheduler = snapshot.get("scheduler") or {}
@@ -1186,7 +1343,7 @@ def monitor_once(
             state = replace(state, health=JobHealth.FS_HANG)
             findings.append(MonitorFinding("error", "filesystem_hang_suspected",
                 f"Filesystem-related hang detected: {reason}. "
-                f"fs_hang_policy={fs_hang_policy}."))
+                "Killing and reporting to Processing-MuAgent for recovery."))
         else:  # recovered
             state = replace(state, health=JobHealth.HEALTHY, silence_intervals=0)
             findings.append(MonitorFinding("warning", "stall_recovered",
@@ -1195,19 +1352,23 @@ def monitor_once(
     # INVESTIGATING is transient (only set and resolved within a single call above)
 
     # --- Kill path ---
+    # An unhealthy verdict (confirmed dead OR filesystem hang) is killed for
+    # cleanup and reported. Execution never holds for a human and never
+    # resubmits — Processing-MuAgent reads the report, escalates to the human,
+    # fixes, and resubmits.
     child_job_ids = list(snapshot.get("child_job_ids") or [])
 
-    if state.health == JobHealth.CONFIRMED_DEAD and kill_on_hang:
+    if state.health in (JobHealth.CONFIRMED_DEAD, JobHealth.FS_HANG) and kill_on_hang:
         cancel_result = cancel_submission_jobs(submission, child_job_ids, scheduler_timeout_s)
-        cancel_result["confirmed_dead_reason"] = state.confirmed_dead_reason
-        state = replace(state, health=JobHealth.KILLED)
-
-    elif state.health == JobHealth.FS_HANG and kill_on_hang and fs_hang_policy == "kill_and_resubmit":
-        cancel_result = cancel_submission_jobs(submission, child_job_ids, scheduler_timeout_s)
-        cancel_result["confirmed_dead_reason"] = "filesystem_hang"
+        cancel_result["confirmed_dead_reason"] = (
+            state.confirmed_dead_reason if state.health == JobHealth.CONFIRMED_DEAD else "filesystem_hang"
+        )
         state = replace(state, health=JobHealth.KILLED)
 
     # --- Report ---
+    # latest_snapshot.json is always refreshed (normal + unhealthy) so Processing's
+    # hpc-status never reads stale state. latest_report.md / reports/ history is
+    # written only when there are findings or a kill action.
     finding_codes = _finding_codes(findings)
     report_path: Path | None = None
     if findings or cancel_result:
@@ -1224,6 +1385,8 @@ def monitor_once(
             monitor_state=state,
             record_history=record_history,
         )
+    else:
+        _persist_snapshot(submission, snapshot, state)
 
     new_state = replace(state, previous_finding_codes=finding_codes)
     return snapshot, findings, cancel_result, report_path, new_state
@@ -1232,30 +1395,21 @@ def monitor_once(
 def validate_terminal_outputs(submission: Submission) -> list[MonitorFinding]:
     """After a head-job reaches a terminal COMPLETED state, verify per-stage outputs.
 
-    Reads every stage metadata YAML in internal/stage_meta/ and checks that each
-    declared output file exists and is non-empty. Returns an error finding for each
-    missing or empty artifact. An empty return means all outputs are present.
+    Reads every stage metadata YAML in internal/stage_meta/ and properly verifies
+    each declared output via verify_output_file (a loadable, non-truncated file —
+    not merely non-empty). Returns an error finding for each missing, empty, or
+    corrupt artifact. An empty return means all outputs verified.
     """
-    stage_meta_dir = Path(submission.run_dir) / "internal" / "stage_meta"
-    if not stage_meta_dir.exists():
-        return []
     findings: list[MonitorFinding] = []
-    for meta_path in sorted(stage_meta_dir.glob("*.yaml")):
-        if meta_path.stem == "head_job":
-            continue
-        try:
-            spec = load_stage_spec(meta_path)
-        except Exception:
-            continue
-        for name, path_str in spec.outputs.items():
-            p = Path(path_str)
-            if not p.exists() or p.stat().st_size == 0:
+    for stage, outputs in verify_stage_outputs(submission).items():
+        for name, (ok, reason) in outputs.items():
+            if not ok:
                 findings.append(MonitorFinding(
                     severity="error",
                     code="output_missing",
                     message=(
-                        f"Stage {spec.stage!r} expected output {name!r} is "
-                        f"{'missing' if not p.exists() else 'empty'}: {path_str}"
+                        f"Stage {stage!r} expected output {name!r} failed "
+                        f"verification ({reason})."
                     ),
                 ))
     return findings
@@ -1264,11 +1418,10 @@ def validate_terminal_outputs(submission: Submission) -> list[MonitorFinding]:
 def monitor_watch(
     submission: Submission,
     *,
-    interval_s: float = 900.0,
+    interval_s: float = 270.0,
     stale_minutes: float = 90.0,
     scheduler_timeout_s: int = 5,
     kill_on_hang: bool = True,
-    fs_hang_policy: str = "hold",
     max_checks: int | None = None,
 ) -> Path | None:
     """Poll until all jobs exit, driving the state machine across iterations."""
@@ -1284,7 +1437,6 @@ def monitor_watch(
             state,
             scheduler_timeout_s=scheduler_timeout_s,
             kill_on_hang=kill_on_hang,
-            fs_hang_policy=fs_hang_policy,
         )
         if report_path is not None:
             last_report = report_path

@@ -434,31 +434,44 @@ def stage_states(paths: RunPaths) -> list[tuple[str, str, str]]:
     return _apply_upstream_blocked(rows)
 
 
-def _first_incomplete_execute(
+def _last_incomplete_execute(
     paths: RunPaths,
     stages: tuple[str, ...],
     branch_stages: set[str],
 ) -> str | None:
+    """Return the LAST incomplete stage in the phase as a Snakemake target.
+
+    Targeting the last incomplete stage lets Snakemake build a single DAG that
+    spans all remaining stages in the phase: it sees intermediate outputs are
+    missing and chains s1a → s1 → s2 → s3 in one head-job submission.
+    Targeting the *first* incomplete stage (the old behaviour) would submit only
+    that single rule per head-job, requiring a separate submit call per stage.
+    """
+    last = None
     for stage in stages:
         if stage not in branch_stages:
             continue
         if not execute_done(paths, stage):
-            return f"{stage}_execute"
-    return None
+            last = f"{stage}_execute"
+    return last
 
 
 def infer_resume_target(run_dir: Path | str) -> str:
-    """Pick the Snakemake target from the first incomplete pipeline step."""
+    """Pick the Snakemake target from the last incomplete step in the current phase.
+
+    Using the last incomplete stage ensures Snakemake builds the full remaining
+    phase DAG in a single head-job submission, rather than one stage per job.
+    """
     paths = RunPaths(run_dir)
     branch_stages = _branch_stages(paths)
 
-    incomplete = _first_incomplete_execute(paths, QC_EXECUTE_STAGES, branch_stages)
+    incomplete = _last_incomplete_execute(paths, QC_EXECUTE_STAGES, branch_stages)
     if incomplete is not None:
         return incomplete
     if not paths.approved_sentinel("post_qc_review").exists():
         return "post_qc_review_propose"
 
-    incomplete = _first_incomplete_execute(paths, POST_QC_EXECUTE_STAGES, branch_stages)
+    incomplete = _last_incomplete_execute(paths, POST_QC_EXECUTE_STAGES, branch_stages)
     if incomplete is not None:
         return incomplete
     if not paths.approved_sentinel(RESOLUTION_REVIEW_STAGE).exists():

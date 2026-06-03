@@ -45,5 +45,7 @@ rule s1a_ambient_execute:
         import json
         from pathlib import Path
         from executor.stages import s1a_ambient
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         s1a_ambient.run(params.run_dir, plan)
+        finalize_cluster_exit()

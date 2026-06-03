@@ -41,4 +41,6 @@ rule s0_ingest_execute:
         runtime=RUNTIME["s0_ingest"],
     run:
         from executor.stages import s0_ingest
+        from executor.cluster_exit import finalize_cluster_exit
         s0_ingest.run(params.run_dir, config)
+        finalize_cluster_exit()

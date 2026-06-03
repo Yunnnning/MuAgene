@@ -153,6 +153,9 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         ok, msg = _io.cross_check_genome(set(frag_info["chromosomes"]), genome_assembly)
         if not ok:
             raise ValueError(f"S0 genome fingerprint mismatch: {msg}")
+        _prov.set_param(params_path, "ingest.genome_assembly", genome_assembly,
+                        source="user", confidence="high",
+                        rationale="Declared in run.yaml; cross-checked against ATAC fragment chromosomes in S0.")
         atac_bc = _io.fragment_barcodes(atac_frag_path, limit=None)
 
     rna_bc: set[str] = set(rna.obs_names) if rna is not None else set()

@@ -1,22 +1,17 @@
 """Command line interface for Execution-MuAgent."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import click
 
 from .monitor import (
     MonitorFinding,
-    MonitorState,
     Submission,
     append_execution_manifest,
-    load_latest_submission,
     load_site_config,
     load_stage_spec,
-    monitor_once,
     monitor_watch,
-    parse_job_ids_from_log,
     register_submission,
     run_monitor_dir,
     submit_from_spec,
@@ -28,149 +23,6 @@ from .monitor import (
 @click.group()
 def main() -> None:
     """Central execution monitor for MuAgene subagents."""
-
-
-@main.command()
-@click.option("--agent", required=True, help="Submitting subagent name, e.g. Processing-MuAgent.")
-@click.option("--executor", required=True, type=click.Choice(["slurm", "pbs"]))
-@click.option("--job-id", required=True, help="Scheduler head-job id.")
-@click.option("--run-dir", required=True, type=click.Path())
-@click.option("--config", required=True, type=click.Path())
-@click.option("--target", required=True)
-@click.option("--repo-root", required=True, type=click.Path())
-@click.option("--log-path", required=True, type=click.Path())
-@click.option("--spec-path", default=None, type=click.Path(),
-              help="Path to the head-job spec YAML. When set, the monitor reads "
-                   "progress_timeout_hint from the spec instead of --stale-minutes.")
-def register(
-    agent: str,
-    executor: str,
-    job_id: str,
-    run_dir: str,
-    config: str,
-    target: str,
-    repo_root: str,
-    log_path: str,
-    spec_path: str | None,
-) -> None:
-    """Break-glass: register a manually-submitted HPC job for monitoring.
-
-    Use this when you submitted the head-job manually with sbatch/qsub (instead of
-    via `Processing-MuAgent submit`). Execution-MuAgent will pick up the job and
-    monitor it as if it had submitted the job itself.
-    """
-    progress_timeout: float | None = None
-    if spec_path and Path(spec_path).exists():
-        try:
-            progress_timeout = load_stage_spec(spec_path).progress_timeout_hint
-        except Exception:
-            pass
-    submission = Submission(
-        agent=agent,
-        executor=executor,
-        job_id=job_id,
-        run_dir=str(Path(run_dir).resolve()),
-        config=str(Path(config).resolve()),
-        target=target,
-        repo_root=str(Path(repo_root).resolve()),
-        log_path=str(Path(log_path).resolve()),
-        submitted_at=utc_now(),
-        spec_path=str(Path(spec_path).resolve()) if spec_path else None,
-        progress_timeout_hint=progress_timeout,
-    )
-    path = register_submission(submission)
-    click.echo(f"registered {executor} job {job_id} for {agent}")
-    click.echo(f"registry: {path}")
-
-
-@main.command()
-@click.option("--run-dir", required=True, type=click.Path(exists=True))
-@click.option("--job-id", default=None, help="Specific registered job id. Defaults to latest.")
-@click.option("--stale-minutes", default=90.0, show_default=True, type=float,
-              help="Fallback timeout (minutes) used to derive tolerance_n when no spec is linked. "
-                   "Spec's progress_timeout_hint takes priority.")
-@click.option("--scheduler-timeout", default=5, show_default=True, type=int)
-@click.option("--kill-on-hang/--no-kill-on-hang", default=True, show_default=True,
-              help="Cancel child jobs first, then the head job, on confirmed-dead classification.")
-@click.option("--watch", is_flag=True, help="Continue polling until all jobs finish.")
-@click.option("--interval", default=900.0, show_default=True, type=float,
-              help="Check interval in seconds. tolerance_n = ceil(progress_timeout / interval).")
-@click.option("--max-checks", default=None, type=int, help="Stop after N checks when --watch is used.")
-@click.option("--json-output", is_flag=True, help="Print machine-readable snapshot.")
-@click.option("--spec-path", default=None, type=click.Path(),
-              help="Per-stage spec YAML; overrides --stale-minutes with spec's progress_timeout_hint.")
-@click.option("--fs-hang-policy", default="hold", show_default=True,
-              type=click.Choice(["hold", "kill_and_resubmit"]),
-              help="What to do when a filesystem hang is detected. "
-                   "'hold' reports and waits; 'kill_and_resubmit' cancels and routes through failure path.")
-def monitor(
-    run_dir: str,
-    job_id: str | None,
-    stale_minutes: float,
-    scheduler_timeout: int,
-    kill_on_hang: bool,
-    watch: bool,
-    interval: float,
-    max_checks: int | None,
-    json_output: bool,
-    spec_path: str | None,
-    fs_hang_policy: str,
-) -> None:
-    """Monitor a registered HPC job and write a report when problems are detected.
-
-    The monitor runs a two-clock state machine: the watcher counts quiet check
-    intervals (no file progress, no log growth); after tolerance_n quiet intervals
-    the job enters SUSPECT and investigation begins. Kill only from CONFIRMED_DEAD.
-    """
-    submission = load_latest_submission(run_dir, job_id=job_id)
-    if spec_path and not submission.spec_path:
-        import dataclasses
-        submission = dataclasses.replace(submission, spec_path=str(Path(spec_path).resolve()))
-    if watch:
-        report = monitor_watch(
-            submission,
-            interval_s=interval,
-            stale_minutes=stale_minutes,
-            scheduler_timeout_s=scheduler_timeout,
-            kill_on_hang=kill_on_hang,
-            fs_hang_policy=fs_hang_policy,
-            max_checks=max_checks,
-        )
-        if report:
-            click.echo(f"problem report: {report}")
-        else:
-            click.echo("no problem report written")
-        return
-    from .monitor import _resolve_tolerance_n
-    tolerance_n = _resolve_tolerance_n(submission, interval, stale_minutes)
-    state = MonitorState(tolerance_n=tolerance_n)
-    snapshot, findings, cancel_result, report, state = monitor_once(
-        submission,
-        state,
-        scheduler_timeout_s=scheduler_timeout,
-        kill_on_hang=kill_on_hang,
-        fs_hang_policy=fs_hang_policy,
-    )
-    if json_output:
-        click.echo(json.dumps({
-            "snapshot": snapshot,
-            "findings": [f.__dict__ for f in findings],
-            "cancel_result": cancel_result,
-            "report": str(report) if report else None,
-            "monitor_state": {"health": state.health.value, "silence_intervals": state.silence_intervals},
-        }, indent=2, sort_keys=True))
-    else:
-        if findings:
-            click.echo(f"{len(findings)} finding(s) detected")
-            for finding in findings:
-                click.echo(f"  {finding.severity}: {finding.code}: {finding.message}")
-        else:
-            click.echo("no monitor problems detected")
-        click.echo(f"health: {state.health.value}  silence: {state.silence_intervals}/{state.tolerance_n}")
-        if cancel_result:
-            click.echo(f"cancel attempted: {cancel_result}")
-        if report:
-            click.echo(f"problem report: {report}")
 
 
 @main.command(name="execute-spec")
@@ -185,7 +37,7 @@ def monitor(
               help="Snakemake target to pass as PMA_TARGET (e.g. 'all', 'post_qc_review_propose'). "
                    "Defaults to '<spec.stage>_execute' when omitted.")
 @click.option("--watch", is_flag=True, help="Monitor the job until it exits after submission.")
-@click.option("--interval", default=900.0, show_default=True, type=float,
+@click.option("--interval", default=270.0, show_default=True, type=float,
               help="Check interval in seconds when --watch is used.")
 @click.option("--kill-on-hang/--no-kill-on-hang", default=True, show_default=True)
 def execute_spec(
@@ -294,7 +146,6 @@ def execute_spec(
             stale_minutes=spec.progress_timeout_hint,
             scheduler_timeout_s=5,
             kill_on_hang=kill_on_hang,
-            fs_hang_policy=site_cfg.fs_hang_policy,
             max_checks=None,
         )
         if report:
@@ -304,11 +155,21 @@ def execute_spec(
 
 
 @main.command()
-@click.argument("log_path", type=click.Path(exists=True))
-def parse_jobs(log_path: str) -> None:
-    """Extract scheduler job ids from a runner or Snakemake log."""
-    for job_id in parse_job_ids_from_log(log_path):
-        click.echo(job_id)
+@click.option("--run-dir", required=True, type=click.Path(exists=True),
+              help="Run directory whose diagnostic report should be printed.")
+def report(run_dir: str) -> None:
+    """Print the latest diagnostic report written by Execution-MuAgent.
+
+    The only human-facing command. Reads
+    `<run_dir>/internal/hpc_monitor/latest_report.md` — the findings and
+    confirmed-dead/verification diagnostics for the most recent monitor check —
+    and prints it to stdout. All other behaviour (submit, monitor, verify, kill)
+    is driven by Processing-MuAgent via `execute-spec`.
+    """
+    latest = run_monitor_dir(run_dir) / "latest_report.md"
+    if not latest.is_file():
+        raise click.ClickException(f"No diagnostic report at {latest}")
+    click.echo(latest.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -105,7 +105,7 @@ Once the user answers, in order:
    - If the user said **local** (or gave no preference and you're not on a cluster login node): `executor configure-execution --config $CFG --mode local`.
    - If the user said **HPC** (or you're on a login node with `qsub`/`sbatch` and the dataset is large):
      a. Run `executor hpc-info` and surface the detected scheduler, available queues/partitions, suggested project/account, and any `PMA_*` vars already in the environment.
-     b. Ask the user to confirm or override: queue/partition, project/account (if required on their site), notify email, optional `PMA_RESOURCES_SCALE`.
+     b. Ask the user to confirm or override: queue/partition, project/account (if required on their site), optional `PMA_RESOURCES_SCALE`.
      c. Write settings: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ...` (or `--slurm-partition` / `--slurm-account`). This records `execution.mode` in `parameters.yaml` and writes `deliverables/pre_run/config/hpc.env`.
    - Do not guess queue/partition/project/account — use `hpc-info` suggestions and ask the user to confirm.
 
@@ -167,7 +167,7 @@ The **Summary** section of `plan_review.md`, verbatim (the appendix is reference
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
-- **`post_qc_review`** (all branches): QC review checkpoint **#2** between S3 and S4/S5. Generates QC figures and `checkpoint/qc_review/qc_summary.md` (S1–S3 metrics; on **paired**, includes S3 union doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/`. They may revise S1/S2 thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between S3 and S4/S5. Generates QC figures and `checkpoint/qc_review/qc_review.md` (S1–S3 metrics; on **paired**, includes S3 union doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/`. They may revise S1/S2 thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
 - **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
@@ -224,8 +224,8 @@ biological-context question. When they choose HPC:
 1. Run `executor hpc-info` on the login node.
 2. Surface detected scheduler, available queues/partitions, suggested project or
    account (from env vars or recent jobs), and any `PMA_*` vars already set.
-3. Ask the user to confirm or override queue/partition, project/account, notify
-   email, and optional `PMA_RESOURCES_SCALE`.
+3. Ask the user to confirm or override queue/partition, project/account, and
+   optional `PMA_RESOURCES_SCALE`.
 4. Run `executor configure-execution --config $CFG --mode pbs|slurm ...` to write:
    - `deliverables/pre_run/config/hpc.env` — shell snippet sourced by runner scripts
    - `deliverables/pre_run/config/site.config` — YAML platform description consumed by Execution-MuAgent
@@ -263,8 +263,7 @@ Poll with `executor status --watch --config $CFG`. Findings and hang reports app
 - **At Step 1–4 otherwise**, behaviour matches local mode until plan review is approved.
 - **When the user runs `submit`**, surface the printed PBS/SLURM job id and remind
   them they can poll with `Processing-MuAgent status --watch --config $CFG`.
-- **When the email arrives (or `status --watch` shows `s7_clustering
-  awaiting_approval`)**, surface the path to `resolution_review.html` (the
+- **When `status --watch` shows `s7_clustering awaiting_approval`**, surface the path to `resolution_review.html` (the
   primary review artifact) AND `resolution_review.ipynb` (for power users who
   want to re-cluster at custom resolutions interactively). Paste the contents
   of `resolution_summary.md` verbatim, plus the proposal's `review_artifacts`

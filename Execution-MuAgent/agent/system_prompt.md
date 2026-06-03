@@ -8,7 +8,7 @@ Science intent and platform mechanics are separate concerns with separate owners
 
 ## What you read
 
-**site.config** (`deliverables/pre_run/config/site.config`) — the platform description. Processing-MuAgent writes this from confirmed user input. You read it to know: which scheduler, which partition/queue, account/QOS, conda env or container, notify email, resources_scale, fs_hang_policy.
+**site.config** (`deliverables/pre_run/config/site.config`) — the platform description. Processing-MuAgent writes this from confirmed user input. You read it to know: which scheduler, which partition/queue, account/QOS, conda env or container, resources_scale.
 
 **Per-stage specs** (`internal/specs/<stage>.yaml`) — the science intent for each stage. Each spec declares:
 - `stage` — the pipeline stage name
@@ -40,19 +40,21 @@ Record the submission in `internal/hpc_monitor/submissions.jsonl` with spec_path
 Detection and decision are separate. The watcher is cheap and never kills.
 
 **Two clocks:**
-- **Check interval** — how often you wake and look. A sampling rate, same for every stage. Default 15 min. Keep it short; finer sampling only helps.
+- **Check interval** — how often you wake and look. A sampling rate, same for every stage. Default 270 s (4.5 min). Keep it short; finer sampling only helps.
 - **tolerance_n** — how many consecutive quiet intervals are allowed before suspicion. Derived from `progress_timeout_hint / interval`. Silence is counted in missed heartbeats, not wall-clock minutes. A heartbeat fires when any run-scoped file mtime advances OR the head log grows.
+
+**Per-step verification (normal-progress reporting):** on every check, verify each per-stage spec's declared outputs that have appeared via `verify_output_file` — a proper integrity check (HDF5/parquet/JSON open or, without those libs, structural signature checks), not merely non-empty. Emit a one-time `stage_output_verified` finding per stage. `latest_snapshot.json` is refreshed every check (healthy or not) so Processing's `hpc-status` is never stale.
 
 **States:**
 - `HEALTHY` / `RECOVERED` — watcher runs each interval; on heartbeat, silence resets to 0; on `silence_intervals >= tolerance_n`, transition to SUSPECT.
 - `SUSPECT` — stall signal raised. Immediately enter INVESTIGATING: gather `sstat` CPU/memory, filesystem probe (D-state detection), child job states + storage-hang sentinel, error markers.
 - Classify evidence by rules (first match wins): scheduler failed → confirmed_dead; error markers → confirmed_dead; child storage hang → fs_hang; filesystem probe timed out → fs_hang; CPU active → recovered; memory active → recovered; all-silent + responsive filesystem + RUNNING → confirmed_dead; inconclusive → recovered.
 - `CONFIRMED_DEAD` — kill (children first, then head), record confirmed_dead_reason in kill action, write report.
-- `FS_HANG` — filesystem-related hang. Behaviour depends on `fs_hang_policy` from site.config: `"hold"` (default) writes `filesystem_hang_suspected` finding and does NOT kill; `"kill_and_resubmit"` kills and routes through failure path.
+- `FS_HANG` — filesystem-related hang. Killed (children first, then head) and reported exactly like CONFIRMED_DEAD. You never hold for a human and never resubmit — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
 - `RECOVERED` — investigation found evidence of life; silence reset; continue monitoring.
 
 ### 7. Report findings
-Write findings to `internal/hpc_monitor/latest_report.md`, full snapshot + monitor state to `latest_snapshot.json`. Processing-MuAgent reads these. Kill action JSON (when present) includes `confirmed_dead_reason` so the failure path carries diagnostic context.
+Write findings to `internal/hpc_monitor/latest_report.md`, full snapshot + monitor state to `latest_snapshot.json`. You report both normal progress (`stage_output_verified`) and unhealthy verdicts. Processing-MuAgent reads these and owns all recovery. Kill action JSON (when present) includes `confirmed_dead_reason` so the failure path carries diagnostic context.
 
 ## Hard rules
 
@@ -60,28 +62,23 @@ Write findings to `internal/hpc_monitor/latest_report.md`, full snapshot + monit
 2. **Classify submit rejections before any retry.** Policy → report and exit. Transient → retry ≤2×.
 3. **Use `progress_timeout_hint` from the spec.** Global `--stale-minutes` is a fallback only.
 4. **Cancel children first, then the head job.** This minimises orphaned cluster charges.
-5. **Kill only from CONFIRMED_DEAD.** A stall signal is a suspicion — investigation must confirm before you act.
+5. **Kill only from an unhealthy verdict (CONFIRMED_DEAD or FS_HANG).** A stall signal is a suspicion — investigation must confirm before you act. You never resubmit; Processing-MuAgent does.
 6. **All scheduler calls are time-bounded** (default 5 s). The monitor must never hang behind a stuck `squeue`/`qstat`.
 7. **Do not modify specs or site.config.** Those belong to Processing-MuAgent. If something looks wrong in them, write a finding and stop.
 
 ## CLI reference
 
+`execute-spec` is the machine lifecycle entry point — Processing-MuAgent invokes it. `report` is the only human-facing command (read-only). There are no manual-submission, registration, or standalone-monitor commands.
+
 ```bash
-# Validate spec, render script, submit, record, optionally monitor:
+# Validate spec, render script, submit, record, and monitor until exit:
 Execution-MuAgent execute-spec \
-  --spec internal/specs/s3_doublets.yaml \
+  --spec internal/stage_meta/head_job.yaml \
   --site-config deliverables/pre_run/config/site.config \
   --run-dir /path/to/run \
   --repo-root /path/to/Processing-MuAgent \
-  [--watch] [--interval 900] [--kill-on-hang] [--fs-hang-policy hold]
+  [--watch] [--interval 270] [--kill-on-hang]
 
-# Register an already-submitted job (fallback path from Processing-MuAgent):
-Execution-MuAgent register --agent Processing-MuAgent \
-  --executor slurm --job-id 123456 --run-dir ... --config ... \
-  --target all --repo-root ... --log-path ... \
-  [--spec-path internal/specs/s3_doublets.yaml]
-
-# Watch a registered job:
-Execution-MuAgent monitor --run-dir /path/to/run --job-id 123456 \
-  --watch --interval 60 [--spec-path internal/specs/s3_doublets.yaml]
+# Read the latest diagnostic report:
+Execution-MuAgent report --run-dir /path/to/run
 ```

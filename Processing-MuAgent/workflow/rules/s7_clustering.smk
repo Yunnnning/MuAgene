@@ -68,5 +68,7 @@ rule s7_clustering_execute:
         import json
         from pathlib import Path
         from executor.stages import s7_clustering
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         s7_clustering.execute(params.run_dir, plan)
+        finalize_cluster_exit()

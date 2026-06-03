@@ -43,7 +43,6 @@ _AMBIENT_METHODS = frozenset({"auto", "none", "decontx", "soupx"})
 
 def _default_ambient_method(
     *,
-    sample_type: str,
     ingest: dict[str, Any] | None,
     study_goal: str | None,
     user_method: str | None,
@@ -68,36 +67,34 @@ def _default_ambient_method(
 
     has_raw = bool((ingest or {}).get("has_raw_matrix"))
     rna_status = (ingest or {}).get("rna_filtered_status")
-    auto_hint = (
-        "SoupX when raw + filtered matrices are present"
-        if has_raw or rna_status == "raw"
-        else "DecontX on filtered counts when no raw matrix"
-    )
+    both_present = has_raw and rna_status == "filtered"
     goal = (study_goal or "clustering_inference").strip().lower()
-    nuclei_note = (
-        " Sample type is nuclei: ambient RNA can still be elevated with debris "
-        "(10x guidance); disable only if you have inspected the data and "
-        "contamination is low."
-        if sample_type == "nuclei"
-        else ""
+    if both_present:
+        method_note = "Filtered and raw RNA → auto uses SoupX."
+    else:
+        method_note = "Filtered RNA only → auto uses DecontX."
+    decision_note = (
+        " Whether to run correction depends on background noise and contamination, "
+        "not which files were supplied."
+    )
+    skip_note = (
+        " Skip at plan review if contamination looks low after inspecting the data."
     )
     if goal == "rare_populations":
         return (
             "auto",
             "recommended",
-            f"study_goal=rare_populations: ambient correction recommended to "
-            f"protect rare types from soup contamination. S0 dispatch: {auto_hint}."
-            f"{nuclei_note} Set method=none at plan review if web summary / markers "
-            "show low background.",
+            method_note
+            + decision_note
+            + " Rare cell types are easily masked by background RNA, so correction "
+            "is usually worth keeping."
+            + skip_note,
             "high",
         )
     return (
         "auto",
         "default",
-        f"Default auto-dispatch from S0 inputs ({auto_hint}). Confirm at plan "
-        f"review: set method=none if major cell types are clear and ambient "
-        f"contamination is low (10x: not every dataset needs correction)."
-        f"{nuclei_note}",
+        method_note + decision_note + skip_note,
         "medium",
     )
 
@@ -117,7 +114,6 @@ def assemble_plan(
         return {"value": value, "source": source, "rationale": rationale, "confidence": confidence}
 
     ambient_method, amb_src, amb_rat, amb_conf = _default_ambient_method(
-        sample_type=sample_type,
         ingest=ingest,
         study_goal=study_goal,
         user_method=s1a_ambient_method,
@@ -163,7 +159,7 @@ def assemble_plan(
                                          "medium"),
                 "n_fragments_k_mad": p(5.0, "default", "Symmetric MAD on log fragments per cell.", "high"),
                 "n_fragments_floor": p(500, "recommended", "Minimum fragments for a real cell.", "medium"),
-                "nucleosome_signal_max": p(2.0, "recommended",
+                "nucleosome_signal_max": p(3.0, "recommended",
                                             "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
                                             "ratio). Cells at or above are removed.", "medium"),
             }

@@ -12,8 +12,8 @@ Top-level layout (direct-write; no symlinks):
             context_summary.md          ← P1 output
             plan_review.md              ← plan review gate (summary + parameter appendix)
         checkpoint/                 intermediate review artifacts (flat subfolders)
-          qc_review/                  QC review checkpoint (figures + qc_summary.md)
-            qc_summary.md
+          qc_review/                  QC review checkpoint (figures + qc_review.md)
+            qc_review.md
             s1_rna_qc_violin_{pre,post}.{png,pdf}
             ...
           resolution_review/          S7 resolution checkpoint
@@ -179,8 +179,8 @@ class RunPaths:
     # checkpoint/qc_review/*
     @property
     def qc_review_summary_md(self) -> Path:
-        """checkpoint/qc_review/qc_summary.md — QC review user checkpoint (after S3)."""
-        return self.deliv_qc_review / "qc_summary.md"
+        """checkpoint/qc_review/qc_review.md — QC review user checkpoint (after S3)."""
+        return self.deliv_qc_review / "qc_review.md"
 
     @property
     def qc_summary_pre_dimred_md(self) -> Path:

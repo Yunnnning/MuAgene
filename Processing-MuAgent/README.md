@@ -24,7 +24,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 | # | CLI name | Internal stage | When | What you decide |
 |---|----------|----------------|------|-----------------|
 | **1** | **Plan review** | `plan_review` | After S0 + P2, before S1 | Approve the preprocessing plan (`pre_run/summary/plan_review.md`) |
-| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_summary.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
+| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_review.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
 | **3** | **Resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
 
 ## Workflow stages
@@ -62,8 +62,8 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **ATAC:** SnapATAC2 scrublet (thresholds configurable in the preprocessing plan).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
-  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_summary.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_summary.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, union doublet policy). Revise quality-filter thresholds and re-run affected stages before approving.
+  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_review.md`).
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_review.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, union doublet policy). Revise quality-filter thresholds and re-run affected stages before approving.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order:
   0. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
@@ -168,6 +168,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 ### Requirements
 
 - **SLURM:** Uses Snakemake's generic cluster executor plus `sbatch`/`sacct`/`squeue`; every heavy rule is submitted as a separate `sbatch` job, even when the Snakemake head-job itself runs under SLURM. Child jobscripts are sanitized before submission so Snakemake does not re-enable `storage-local-copies` on shared NFS (a common cause of jobs finishing Python quickly then hanging at `Storing output in storage.`).
+- **Clean stage exit:** after writing its outputs, every cluster `<stage>_execute` rule calls `executor.cluster_exit.finalize_cluster_exit()` (`gc.collect()` + `os._exit(0)` when `SLURM_JOB_ID`/`PBS_JOBID` is set). This terminates lingering h5py/HDF5 background threads that would otherwise keep the child process alive after the output is complete — the previous cause of jobs stuck RUNNING with `slurmstepd: error: Pid still in cpuset cgroup`. It is a no-op in local mode (job-id env vars unset).
 
 ### How the HPC run proceeds
 
@@ -242,29 +243,17 @@ Poll with `Processing-MuAgent status --watch --config $CFG`. For an unattended b
 2. `configure-execution` writes `site.config` (the single platform source of truth). `hpc.env` is generated from it — the two cannot drift.
 3. `submit` writes `internal/stage_meta/head_job.yaml`, then calls `Execution-MuAgent execute-spec` with it. Execution-MuAgent renders the head-job submission script from spec + site.config, submits it, records to `execution_manifest.jsonl`, and monitors. Snakemake submits per-stage child jobs from within the head-job.
 
-**Job monitoring (two-clock state machine):** the watcher counts quiet check intervals (no file progress, no log growth); after `tolerance_n` consecutive quiet intervals it enters SUSPECT and gathers evidence (CPU via `sstat`, memory, filesystem responsiveness, child job states, error markers in logs). It kills only from CONFIRMED_DEAD — never on a stall signal alone. Check interval default: 15 min; fallback stale threshold: 90 min.
+**Monitoring is owned entirely by Execution-MuAgent.** Processing-MuAgent does not poll the scheduler or detect stalls; its `status` / `hpc-status` only *read* Execution's `latest_snapshot.json` / `latest_report.md`. Execution monitors and reports for **both** normal progress and unhealthy runs.
 
-On terminal COMPLETED, Execution-MuAgent validates that each per-stage output artifact in `internal/stage_meta/` exists and is non-empty. A COMPLETED job with missing outputs is reported as `output_missing` in `latest_report.md`.
+**Job monitoring (two-clock state machine):** the watcher counts quiet check intervals (no file progress, no log growth); after `tolerance_n` consecutive quiet intervals it enters SUSPECT and gathers evidence (CPU via `sstat`, memory, filesystem responsiveness, child job states, error markers in logs). It kills only from an unhealthy verdict — never on a stall signal alone. Check interval default: 4.5 min (270 s); fallback stale threshold: 90 min.
 
-Monitor state and investigation reports are written under `<run_dir>/internal/hpc_monitor/`. The `latest_snapshot.json` includes a `"monitor_state"` section.
+**Per-step output verification:** on every check Execution properly verifies each stage's declared outputs as they appear (opens h5ad/parquet/JSON — not just a non-empty check) and emits a `stage_output_verified` progress finding; `latest_snapshot.json` (`monitor_state.verified_stages`) is refreshed every check so `hpc-status` is never stale. On terminal COMPLETED the same verifier runs over every `internal/stage_meta/<stage>.yaml`; a missing, empty, or corrupt output is reported as `output_missing`.
 
-**Filesystem hang** (`fs_hang_policy` in site.config): when a child job is stuck at `Storing output in storage.` or the filesystem probe times out, the default policy is `"hold"` — report and wait rather than kill reflexively. Set to `"kill_and_resubmit"` to kill and route through the failure path.
+**Unhealthy runs (stuck/failed/corrupt).** Execution kills the job (children first, then head) for cleanup, writes diagnostics to `internal/hpc_monitor/latest_report.md` + `latest_snapshot.json`, and stops there — it never contacts a human and never resubmits. Processing-MuAgent reads the report, reports to the human, implements the fix, and resubmits. Filesystem hangs (`Storing output in storage.` / D-state probe timeout) follow this same kill-and-report path; there is no `fs_hang_policy` knob.
 
 If Execution-MuAgent reports a **policy rejection** (`submit_rejected_policy` in `latest_report.md`), the scheduler rejected the job for an invalid partition, account, or walltime. Re-run `configure-execution` with corrected settings and resubmit.
 
-### Break-glass: manual submission
-
-If you need to submit manually (e.g. for debugging), use `sbatch`/`qsub` directly, then register the job so Execution-MuAgent can monitor it:
-
-```bash
-sbatch --partition cpu-medium --account mylab scripts/runner.slurm
-# → prints job id, e.g. 987654
-
-Execution-MuAgent register \
-  --agent Processing-MuAgent --executor slurm --job-id 987654 \
-  --run-dir <run_dir> --config $CFG --target all \
-  --repo-root <pma_root> --log-path logs/pma_runner-987654.out
-```
+All cluster submission and monitoring goes through `Processing-MuAgent submit` → `Execution-MuAgent execute-spec`. There is no manual-submission path: Execution-MuAgent has no human-facing commands and only ever runs via Processing-MuAgent.
 
 
 ## Run directory layout
@@ -284,7 +273,7 @@ Per-run state lives under `run_dir` from your config — never inside the source
         context_summary.md        ← P1 output
         plan_review.md            ← plan review gate (summary + parameter appendix)
     checkpoint/
-      qc_review/                  ← QC review checkpoint (#2): figures + qc_summary.md
+      qc_review/                  ← QC review checkpoint (#2): figures + qc_review.md
       resolution_review/          ← resolution_summary.md + resolution_review.{html,ipynb}
     post_run/                     ← flat final deliverables
       s8_umap_*.{png,pdf}         ← UMAP figures only

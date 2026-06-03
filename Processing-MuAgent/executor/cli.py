@@ -614,8 +614,7 @@ def submit(config_path: str, executor: str, target: str | None,
 
     Execution-MuAgent is a hard dependency for cluster submission — it renders the
     submission script, submits the head-job, and owns monitoring. If Execution-MuAgent
-    is unavailable, this command fails loudly. Break-glass: submit manually with
-    sbatch/qsub, then use `Execution-MuAgent register` to enable monitoring.
+    is unavailable, this command fails loudly: there is no manual-submission path.
 
     The head-job runs on a compute node, activates the project conda env, and
     invokes snakemake with the cluster profile. Snakemake then submits per-stage
@@ -709,11 +708,7 @@ def submit(config_path: str, executor: str, target: str | None,
             "Execution-MuAgent is required for cluster submission but is not available "
             "or returned an error.\n"
             "  Install it:  pip install -e Execution-MuAgent/\n"
-            "  Break-glass: submit manually with sbatch/qsub, then run\n"
-            "               Execution-MuAgent register --agent Processing-MuAgent "
-            f"--executor {executor} --job-id <id> --run-dir {run_dir} "
-            f"--config {paths.run_yaml} --target {resolved_target} "
-            f"--repo-root <pma_root> --log-path <log>"
+            "  Then re-run `Processing-MuAgent submit`."
         )
 
     import re as _re

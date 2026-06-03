@@ -48,6 +48,8 @@ rule s3_doublets_execute:
         from pathlib import Path
         from executor.stages import s3_doublets
         from executor import provenance
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         branch = provenance.current_branch(str(INTERNAL / "parameters.yaml"))
         s3_doublets.run(params.run_dir, plan, workflow_branch=branch)
+        finalize_cluster_exit()

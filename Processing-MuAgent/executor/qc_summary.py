@@ -17,13 +17,29 @@ Audit-driven rewrite — reporting-only changes, no pipeline-logic edits:
 """
 from __future__ import annotations
 
+import base64
+import html as html_module
 import json
+import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import yaml
+
+
+@dataclass(frozen=True)
+class _FigRender:
+    """Figure inclusion and relative paths for markdown/HTML output."""
+
+    md_parent: Path | None = None
+    embed_figures: bool = True  # False for editable qc_review.md; True for HTML report
+
+
+_DEFAULT_FIG_RENDER = _FigRender()
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +70,19 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _md_table_cell(value: Any) -> str:
+    """Format a table cell; preserve inline markdown (**, trailing *)."""
+    if isinstance(value, str) and ("**" in value or value.endswith("*")):
+        return value
+    return _fmt(value)
+
+
 def _md_table(header: list[str], rows: list[list[Any]]) -> str:
     align = "|" + "|".join("---" for _ in header) + "|"
-    h = "| " + " | ".join(header) + " |"
-    body = "\n".join("| " + " | ".join(_fmt(x) for x in r) + " |" for r in rows)
+    h = "| " + " | ".join(_md_table_cell(c) for c in header) + " |"
+    body = "\n".join(
+        "| " + " | ".join(_md_table_cell(x) for x in r) + " |" for r in rows
+    )
     return f"{h}\n{align}\n{body}"
 
 
@@ -78,6 +103,152 @@ def _stats_row(name: str, vals: np.ndarray) -> list[Any]:
 def _param(params: dict[str, Any], key: str) -> Any:
     entry = params.get(key)
     return entry.get("value") if isinstance(entry, dict) else None
+
+
+def _fig_block(
+    run_dir: Path,
+    stem: str,
+    *,
+    caption: str | None = None,
+    render: _FigRender = _DEFAULT_FIG_RENDER,
+) -> str:
+    """Embed a checkpoint QC figure (markdown/HTML) or skip when embed_figures=False."""
+    from .run_paths import RunPaths
+    if not render.embed_figures:
+        return ""
+    png = RunPaths(run_dir).deliv_qc_review / f"{stem}.png"
+    if not png.exists():
+        return ""
+    alt = caption or stem.replace("_", " ")
+    if render.md_parent is not None:
+        src = Path(os.path.relpath(png, render.md_parent)).as_posix()
+    else:
+        src = f"./{stem}.png"
+    return f"\n![{alt}]({src})\n"
+
+
+def _inline_md(text: str) -> str:
+    """Bold/italic on already-escaped HTML text (preserve snake_case names)."""
+    s = html_module.escape(text)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", s)
+    return s
+
+
+def _md_table_html(table_lines: list[str]) -> str:
+    rows_html: list[str] = []
+    for row in table_lines:
+        if re.fullmatch(r"\|[\s\-:|]+\|", row.strip()):
+            continue
+        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+        if not rows_html:
+            rows_html.append(
+                "<tr>" + "".join(f"<th>{_inline_md(c)}</th>" for c in cells) + "</tr>"
+            )
+        else:
+            rows_html.append(
+                "<tr>" + "".join(f"<td>{_inline_md(c)}</td>" for c in cells) + "</tr>"
+            )
+    return "<table>" + "".join(rows_html) + "</table>"
+
+
+def _markdown_to_html(text: str) -> str:
+    """Convert QC-summary markdown subset to HTML (no third-party deps)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    img_re = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$")
+    hdr_re = re.compile(r"^(#{1,6})\s+(.*)$")
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if stripped.startswith("|"):
+            block: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                block.append(lines[i])
+                i += 1
+            out.append(_md_table_html(block))
+            continue
+
+        hdr = hdr_re.match(line)
+        if hdr:
+            level = len(hdr.group(1))
+            out.append(f"<h{level}>{_inline_md(hdr.group(2))}</h{level}>")
+            i += 1
+            continue
+
+        img = img_re.match(stripped)
+        if img:
+            alt, src = img.group(1), img.group(2)
+            out.append(
+                f'<p><img src="{html_module.escape(src, quote=True)}" '
+                f'alt="{html_module.escape(alt)}"></p>'
+            )
+            i += 1
+            continue
+
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("- "):
+            items: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith("- "):
+                item = lines[i].strip()[2:]
+                cls = ' class="qc-footnote"' if item.startswith("*") else ""
+                items.append(f"<li{cls}>{_inline_md(item)}</li>")
+                i += 1
+            out.append("<ul>" + "".join(items) + "</ul>")
+            continue
+
+        # Footnote annotation (line begins with * referencing table markers like n=7200*)
+        if stripped.startswith("*") and not stripped.startswith("**"):
+            out.append(f'<p class="qc-footnote">{_inline_md(stripped)}</p>')
+            i += 1
+            continue
+
+        para = [_inline_md(line)]
+        i += 1
+        while i < len(lines):
+            nxt = lines[i].strip()
+            if (
+                not nxt
+                or nxt.startswith("|")
+                or hdr_re.match(lines[i])
+                or nxt.startswith("- ")
+                or img_re.match(nxt)
+            ):
+                break
+            para.append(_inline_md(lines[i]))
+            i += 1
+        out.append("<p>" + "<br>\n".join(para) + "</p>")
+
+    return "\n".join(out)
+
+
+def _embed_html_images(html: str, fig_dir: Path) -> str:
+    """Inline sibling PNGs as data URIs so the report works when opened anywhere."""
+
+    def _repl(match: re.Match[str]) -> str:
+        src, alt = match.group(1), match.group(2)
+        if src.startswith("data:"):
+            return match.group(0)
+        path = fig_dir / src
+        if not path.is_file():
+            return match.group(0)
+        data = base64.standard_b64encode(path.read_bytes()).decode("ascii")
+        return (
+            f'<img src="data:image/png;base64,{data}" '
+            f'alt="{html_module.escape(alt)}">'
+        )
+
+    return re.sub(
+        r'<img src="([^"]+)" alt="([^"]*)">',
+        _repl,
+        html,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -194,11 +365,80 @@ def _stage_counts(run_dir: Path) -> dict[str, Any]:
     return counts
 
 
+def _barcode_set_h5ad(path: Path) -> set[str] | None:
+    if not path.exists():
+        return None
+    try:
+        import anndata as ad
+        a = ad.read_h5ad(path, backed="r")
+        bc = set(a.obs_names)
+        try:
+            a.file.close()
+        except Exception:
+            pass
+        return bc
+    except Exception:
+        return None
+
+
+def _barcode_set_snap(path: Path) -> set[str] | None:
+    if not path.exists():
+        return None
+    try:
+        import snapatac2 as snap
+        a = snap.read(str(path))
+        bc = set(a.obs_names)
+        try:
+            a.close()
+        except Exception:
+            pass
+        return bc
+    except Exception:
+        return None
+
+
+def _paired_shared_flow_counts(run_dir: Path, counts: dict[str, Any]) -> list[int | None]:
+    """Shared RNA∩ATAC barcode counts per flow row (paired branch only)."""
+    from .run_paths import RunPaths
+    A = RunPaths(run_dir).artifacts
+    n_rows = 6 if counts.get("rna_final") is not None else 5
+    shared: list[int | None] = [None] * n_rows
+
+    rna_ingest = _barcode_set_h5ad(A / "s0_ingest" / "rna_ingest.h5ad")
+    if rna_ingest is None:
+        return shared
+
+    ingest_shared = len(rna_ingest)
+    shared[0] = ingest_shared
+    shared[1] = ingest_shared
+    shared[2] = ingest_shared
+
+    calls_p = A / "s3_doublets" / "calls.parquet"
+    if calls_p.exists():
+        calls = pd.read_parquet(calls_p)
+        both = calls["scrublet_score"].notna() & calls["atac_doublet_score"].notna()
+        shared[3] = int(both.sum())
+
+    joint = counts.get("n_cells_joint")
+    if joint is not None:
+        shared[4] = int(joint)
+    if n_rows > 5 and counts.get("rna_final") is not None:
+        shared[5] = int(counts["rna_final"])
+
+    return shared
+
+
 # ---------------------------------------------------------------------------
 # Section builders
 # ---------------------------------------------------------------------------
 
-def _flow_section(counts: dict[str, Any], *, include_final_stage: bool = True) -> str:
+def _flow_section(
+    run_dir: Path,
+    counts: dict[str, Any],
+    workflow_branch: str,
+    *,
+    include_final_stage: bool = True,
+) -> str:
     """Cell-count flow across stages; makes transitions visible end-to-end.
 
     QC review checkpoint summaries stop at S3 (``include_final_stage=False``);
@@ -215,28 +455,38 @@ def _flow_section(counts: dict[str, Any], *, include_final_stage: bool = True) -
 
     joint = counts.get("n_cells_joint")
 
+    rna_after_s1a = counts["rna_after_ambient"]
+    if rna_after_s1a is None:
+        rna_after_s1a = counts["rna_ingest"]
+
+    s3_note = (
+        f"union doublet removal; joint cells {fmt(joint)}"
+        if joint is not None
+        else "union doublet removal per modality"
+    )
+
+    paired = workflow_branch == "paired"
+    shared_counts = _paired_shared_flow_counts(run_dir, counts) if paired else []
+
+    def _flow_row(stage: str, rna: Any, atac: Any, note: str, shared_idx: int) -> list[Any]:
+        row = [stage, fmt(rna), fmt(atac)]
+        if paired:
+            sh = shared_counts[shared_idx] if shared_idx < len(shared_counts) else None
+            row.append(fmt(sh))
+        row.append(note)
+        return row
+
     rows = [
-        ["1. raw (Cell Ranger / fragments)", fmt(rna_raw), fmt(atac_raw), "— / —"],
-        ["2. after S0 ingest (paired intersection)",
-         fmt(counts["rna_ingest"]), fmt(atac_raw),
-         "RNA: filtered matrix cells intersected with ATAC barcodes"],
-        ["3. after S1a ambient correction",
-         fmt(counts["rna_after_ambient"]), fmt(atac_raw),
-         "RNA: DecontX/SoupX correction (cells preserved; per-cell counts adjusted)"],
-        ["4. after fragments import (min-fragment pre-filter)",
-         fmt(counts["rna_after_ambient"] if counts["rna_after_ambient"] is not None else counts["rna_ingest"]),
-         fmt(atac_after_import),
-         (f"ATAC: barcodes with too few fragments dropped at import ({fmt(snap_drop)} cells)"
-          if snap_drop else "ATAC: fragments imported into cell matrix")],
-        ["5. after RNA / ATAC quality filtering",
-         fmt(counts["rna_qc_post"]), fmt(counts["atac_qc_post"]),
-         ("RNA: MAD outlier bounds on UMI/gene counts + MT/ribo fraction ceilings; "
-          "ATAC: fragment-count MAD + TSS enrichment + nucleosome-signal filters")],
-        ["6. after S3 doublet removal + paired barcode join",
-         fmt(counts["rna_post_doublet"]), fmt(counts["atac_post_doublet"]),
-         (f"paired: union doublet policy then joint RNA+ATAC barcodes ⇒ n_joint={fmt(joint)}"
-          if joint is not None
-          else "union doublet policy, applied per modality")],
+        _flow_row("1. raw", rna_raw, atac_raw, "—", 0),
+        _flow_row("2. after S1a ambient correction", rna_after_s1a, atac_raw,
+                  "RNA ambient correction (cell count unchanged)", 1),
+        _flow_row("3. after ATAC fragment import", rna_after_s1a, atac_after_import,
+                  (f"ATAC min-fragment pre-filter ({fmt(snap_drop)} barcodes removed)"
+                   if snap_drop else "ATAC fragments imported"), 2),
+        _flow_row("4. after RNA / ATAC QC", counts["rna_qc_post"], counts["atac_qc_post"],
+                  "per-modality MAD and quality thresholds", 3),
+        _flow_row("5. after S3 doublets", counts["rna_post_doublet"], counts["atac_post_doublet"],
+                  s3_note, 4),
     ]
     if include_final_stage:
         rna_inter = (
@@ -248,22 +498,35 @@ def _flow_section(counts: dict[str, Any], *, include_final_stage: bool = True) -
             if (counts["atac_post_doublet"] is not None and counts["atac_final"] is not None) else None
         )
         rows.append(
-            ["7. after S4–S8 (final)",
-             fmt(counts["rna_final"]), fmt(counts["atac_final"]),
-             (f"paired: S8 assembly is a no-op intersection; RNA lost {fmt(rna_inter)}, "
-              f"ATAC lost {fmt(atac_inter)} downstream of S3"
-              if joint is not None
-              else "per-modality final outputs (no joint object on this branch)")]
+            _flow_row("6. after S4–S8 (final)", counts["rna_final"], counts["atac_final"],
+                      (f"paired: S8 assembly is a no-op intersection; RNA lost {fmt(rna_inter)}, "
+                       f"ATAC lost {fmt(atac_inter)} downstream of S3"
+                       if joint is not None
+                       else "per-modality final outputs (no joint object on this branch)"),
+                      5)
         )
+    headers = ["stage", "RNA", "ATAC"] + (["Shared"] if paired else []) + ["note"]
     return (
         "## Cell-count flow across stages\n\n"
-        "Each row's RNA and ATAC columns describe the cell count _entering the "
-        "next stage_ (equivalently, the count _after_ the stage named on that row).\n\n"
-        f"{_md_table(['stage', 'RNA', 'ATAC', 'note'], rows)}\n"
+        f"{_md_table(headers, rows)}\n"
     )
 
 
-def _ambient_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) -> str:
+def _flow_figures(run_dir: Path, *, render: _FigRender = _DEFAULT_FIG_RENDER) -> str:
+    return _fig_block(
+        run_dir, "post_qc_review_cell_counts",
+        caption="Cell counts across preprocessing (RNA and ATAC).",
+        render=render,
+    )
+
+
+def _ambient_section(
+    run_dir: Path,
+    params: dict[str, Any],
+    counts: dict[str, Any],
+    *,
+    render: _FigRender = _DEFAULT_FIG_RENDER,
+) -> str:
     from .run_paths import RunPaths
     s1a = RunPaths(run_dir).stage_dir("s1a_ambient")
     summary_p = s1a / "summary.json"
@@ -313,8 +576,7 @@ def _ambient_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
     if pre_total is not None and post_total is not None:
         counts_note = (
             f"**Total UMI counts** (sum over all cells): {_fmt(pre_total)} pre-correction → "
-            f"{_fmt(post_total)} post-correction{pct_removed}. "
-            "Per-cell depth: `deliverables/checkpoint/qc_review/s1a_ambient_counts_before_after.png`.\n"
+            f"{_fmt(post_total)} post-correction{pct_removed}.\n"
         )
 
     rows = [
@@ -328,21 +590,29 @@ def _ambient_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
         ["post-correction total counts (sum)", post_total],
     ]
 
+    fig = _fig_block(
+        run_dir, "s1a_ambient_counts_before_after",
+        caption="Per-cell total counts before and after ambient correction.",
+        render=render,
+    )
     return (
         "## Ambient RNA correction (S1a)\n"
         "\n"
         + rho_note
         + counts_note
+        + fig
         + "\n"
-        "Decontaminated counts overwrite `.X` and `.layers['counts']`; the "
-        "original counts are preserved in `.layers['counts_raw']`. Per-cell "
-        "rho is in `.obs['ambient_contamination']` and `contamination.parquet`.\n"
-        "\n"
         f"{_md_table(['parameter', 'value'], rows)}\n"
     )
 
 
-def _rna_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) -> str:
+def _rna_section(
+    run_dir: Path,
+    params: dict[str, Any],
+    counts: dict[str, Any],
+    *,
+    render: _FigRender = _DEFAULT_FIG_RENDER,
+) -> str:
     from .run_paths import RunPaths
     s1 = RunPaths(run_dir).stage_dir("s1_rna_qc")
     pre = s1 / "qc_metrics_pre.parquet"
@@ -376,6 +646,12 @@ def _rna_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) 
             stat_rows.append(_stats_row(col, post_df[col].to_numpy()))
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else ""
 
+    figs = (
+        _fig_block(run_dir, "s1_rna_qc_violin_pre",
+                   caption="RNA QC metrics before filtering.", render=render)
+        + _fig_block(run_dir, "s1_rna_qc_violin_post",
+                      caption="RNA QC metrics after filtering.", render=render)
+    )
     return (
         "## RNA quality filtering\n"
         "\n"
@@ -386,7 +662,8 @@ def _rna_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) 
         f"- Cells before filtering: **{n_pre}**\n"
         f"- Cells retained:         **{n_post}**\n"
         f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
-        "\n"
+        + figs
+        + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
         "\n"
@@ -395,7 +672,13 @@ def _rna_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) 
     )
 
 
-def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) -> str:
+def _atac_section(
+    run_dir: Path,
+    params: dict[str, Any],
+    counts: dict[str, Any],
+    *,
+    render: _FigRender = _DEFAULT_FIG_RENDER,
+) -> str:
     from .run_paths import RunPaths
     s2 = RunPaths(run_dir).stage_dir("s2_atac_qc")
     summary_json = s2 / "qc_summary.json"
@@ -451,6 +734,11 @@ def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any])
             f"quality metrics are computed.\n"
         )
 
+    fig = _fig_block(
+        run_dir, "s2_atac_qc_fragment_size_distribution",
+        caption="Fragment size distribution after filtering.",
+        render=render,
+    )
     return (
         "## ATAC quality filtering\n"
         "\n"
@@ -461,7 +749,8 @@ def _atac_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any])
         f"- Cells before filtering: **{n_pre}**\n"
         f"- Cells retained:         **{n_post}**\n"
         f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
-        "\n"
+        + fig
+        + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
         "\n"
@@ -480,33 +769,35 @@ def _workflow_branch(run_dir: Path, params: dict[str, Any]) -> str:
     return str(params.get("plan.workflow_branch", "paired"))
 
 
-def _qc_review_intro(branch: str) -> str:
+def _plan_dataset_assay_line(run_dir: Path) -> str:
+    """One-line dataset type and assay from P1 context (same fields as plan review summary)."""
+    from .run_paths import RunPaths
+    ctx_path = RunPaths(run_dir).artifact("p1_context", "context_extraction.json")
+    if not ctx_path.exists():
+        return ""
+    try:
+        ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    fields = ctx.get("fields", {})
+    dtype = (fields.get("modality_type") or {}).get("value") or "unknown"
+    assay = (fields.get("assay_type") or {}).get("value") or "unknown"
+    return f"**Dataset type:** {dtype} · **Assay:** {assay}"
+
+
+def _qc_review_intro(run_name: str, run_dir: Path) -> str:
     lines = [
         "# QC review checkpoint",
         "",
-        "Review the QC figures in `deliverables/checkpoint/qc_review/` alongside this "
-        "summary. Approve when satisfied, or revise thresholds and "
-        "re-run the affected stages before approving.",
-        "",
-        "**Figures to inspect:** ambient counts pre/post scatter (when S1a ran), RNA QC "
-        "violins (pre/post filtering), ATAC fragment-size distribution, doublet-score "
-        "histograms, and the cell-count waterfall across preprocessing.",
+        f"Review QC plots in `{run_name}/deliverables/checkpoint/qc_review`. "
+        "For a rendered report with images, open **qc_summary.html** in this folder "
+        "(generated alongside this file). Approve when satisfied, or revise thresholds "
+        "and re-run affected stages before approving.",
         "",
     ]
-    if branch == "paired":
-        lines += [
-            "**Paired multiome:** this checkpoint also documents the **S3 cross-modal "
-            "doublet removal policy** (union) and the joint barcode set after doublet "
-            "filtering. Confirm the QC metrics and policy below before approving.",
-            "",
-        ]
-    else:
-        lines += [
-            f"**`{branch}` branch:** RNA and ATAC doublets are removed **independently** "
-            "per modality. There is no cross-modal doublet policy on unpaired / separate "
-            "analyses.",
-            "",
-        ]
+    context = _plan_dataset_assay_line(run_dir)
+    if context:
+        lines += [context, ""]
     return "\n".join(lines)
 
 
@@ -542,7 +833,13 @@ def _qc_review_actions(branch: str) -> str:
     return "\n".join(lines)
 
 
-def _doublet_section(run_dir: Path, params: dict[str, Any], counts: dict[str, Any]) -> str:
+def _doublet_section(
+    run_dir: Path,
+    params: dict[str, Any],
+    counts: dict[str, Any],
+    *,
+    render: _FigRender = _DEFAULT_FIG_RENDER,
+) -> str:
     """Build a corrected doublet summary from the raw per-cell calls.parquet.
 
     Issues with the existing `overlap_summary.json`:
@@ -604,58 +901,66 @@ def _doublet_section(run_dir: Path, params: dict[str, Any], counts: dict[str, An
     branch = _workflow_branch(run_dir, params)
 
     policy_note = ""
+
     if branch == "paired":
         policy_note = (
             "\n"
-            "### Cross-modal policy (paired — confirm at this checkpoint)\n"
+            "### Cross-modal policy (paired)\n"
             "\n"
-            "- Applied policy: **union**\n"
-            "- Meaning: a cell is removed if **either** the RNA (Scrublet) or ATAC "
-            "(SnapATAC2) detector flags it as a doublet. Detectors are prone to false "
-            "negatives, so union minimises doublet contamination.\n"
-            + f"- Joint paired barcodes after S3: **{counts.get('n_cells_joint', 'n/a')}**\n"
+            "- Applied policy: **union** — remove if either RNA (Scrublet) or ATAC "
+            "(SnapATAC2) flags a doublet.\n"
+            + f"- Joint cells after S3: **{counts.get('n_cells_joint', 'n/a')}**\n"
         )
     elif branch == "separate":
         policy_note = (
             "\n"
-            "### Per-modality removal (`separate` branch)\n"
+            "### Per-modality removal (separate branch)\n"
             "\n"
-            "RNA and ATAC doublet calls are applied **independently** — no cross-modal "
-            "reconciliation. Each modality keeps its own survivor set.\n"
+            "RNA and ATAC doublet calls are applied independently; each modality "
+            "keeps its own survivor set.\n"
         )
     else:
         policy_note = (
             "\n"
-            f"### Single-modality removal (`{branch}` branch)\n"
+            f"### Single-modality removal ({branch} branch)\n"
             "\n"
-            "Only one modality is present; doublet filtering runs on that modality alone. "
-            "No cross-modal policy applies.\n"
+            "Doublet filtering runs on the present modality only.\n"
+        )
+
+    rna_before = int(rna_scored.sum())
+    atac_before = int(atac_scored.sum())
+
+    summary_table = ""
+    if branch == "paired":
+        both_scored_label = f"n={n_both}*"
+        doublet_tbl = _md_table(
+            ["", "RNA before", "ATAC before", "RNA-only flagged",
+             "ATAC-only flagged", "Both flagged", "**Retained after removal**"],
+            [[both_scored_label, rna_before, atac_before, rna_only_n, atac_only_n,
+              both_n, neither_n]],
+        )
+        footnote = (
+            "- *Cell barcodes that were evaluated for doublets by both the RNA (Scrublet) "
+            "and ATAC (SnapATAC2) detectors. **Retained** = neither flagged by any detector.\n"
+        )
+        summary_table = (
+            "\n"
+            f"{doublet_tbl}\n"
+            "\n"
+            f"{footnote}"
+        )
+    else:
+        summary_table = (
+            "\n"
+            f"- Applied removal policy: **{policy}**\n"
+            f"- RNA evaluated: **{rna_before}** (flagged **{n_rna_flag_total}**)\n"
+            f"- ATAC evaluated: **{atac_before}** (flagged **{n_atac_flag_total}**)\n"
         )
 
     return (
         "## Doublets (S3)\n"
         f"{policy_note}"
-        "\n"
-        "### Per-detector flagged counts (evaluated cells only)\n"
-        "\n"
-        f"- Flagged by RNA (Scrublet), of {int(rna_scored.sum())} RNA-evaluated cells: **{n_rna_flag_total}**\n"
-        f"- Flagged by ATAC (SnapATAC2), of {int(atac_scored.sum())} ATAC-evaluated cells: **{n_atac_flag_total}**\n"
-        "\n"
-        f"### Four-way overlap  (cells scored by BOTH detectors only — n={n_both})\n"
-        "\n"
-        f"{_md_table(['class', 'count'], [['RNA-only flagged', rna_only_n], ['ATAC-only flagged', atac_only_n], ['both flagged', both_n], ['neither flagged', neither_n]])}\n"
-        "\n"
-        "### Cells scored by only one detector (excluded from the overlap classification)\n"
-        "\n"
-        f"{_md_table(['status', 'count'], [['only RNA-scored (filtered at ATAC QC)', int(only_rna_scored.sum())], ['only ATAC-scored (filtered at RNA QC)', int(only_atac_scored.sum())]])}\n"
-        "\n"
-        "### Removal\n"
-        "\n"
-        f"- Applied removal policy: **{policy}**\n"
-        f"- Removed from RNA (S3 RNA: {counts.get('rna_qc_post')} → {counts.get('rna_post_doublet')}): **{n_removed_rna if n_removed_rna is not None else 'n/a'}**\n"
-        f"- Removed from ATAC (S3 ATAC: {counts.get('atac_qc_post')} → {counts.get('atac_post_doublet')}): **{n_removed_atac if n_removed_atac is not None else 'n/a'}**\n"
-        f"- Distinct barcodes flagged across merged union set: **{n_distinct_flagged}** "
-        f"_(for reference; this is the count the raw `overlap_summary.json` reported as `n_removed` and conflated with per-modality counts)_\n"
+        f"{summary_table}"
     )
 
 
@@ -734,43 +1039,389 @@ def _final_section(run_dir: Path, counts: dict[str, Any]) -> str:
 # Top-level
 # ---------------------------------------------------------------------------
 
+def _qc_review_result_sections(
+    run_dir: Path,
+    params: dict[str, Any],
+    counts: dict[str, Any],
+    render: _FigRender,
+    workflow_branch: str,
+) -> list[str]:
+    """QC metrics and figures only (no workflow intro or approve/revise instructions)."""
+    return [
+        _flow_section(run_dir, counts, workflow_branch, include_final_stage=False)
+        + _flow_figures(run_dir, render=render),
+        _ambient_section(run_dir, params, counts, render=render),
+        _rna_section(run_dir, params, counts, render=render),
+        _atac_section(run_dir, params, counts, render=render),
+        _doublet_section(run_dir, params, counts, render=render),
+    ]
+
+
 def build_qc_review(run_dir: Path | str) -> str:
     """Markdown for the QC review user checkpoint (after S3, before S4/S5)."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
-    params_path = RunPaths(run_dir).parameters_yaml
+    rp = RunPaths(run_dir)
+    params_path = rp.parameters_yaml
+    params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
+    counts = _stage_counts(run_dir)
+    branch = _workflow_branch(run_dir, params)
+    render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=False)
+
+    sections = [
+        _qc_review_intro(run_dir.name, run_dir),
+        *_qc_review_result_sections(run_dir, params, counts, render, branch),
+        _qc_review_actions(branch),
+    ]
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def build_qc_review_report(run_dir: Path | str) -> str:
+    """Results-only markdown for HTML report (title + metrics/figures)."""
+    from .run_paths import RunPaths
+    run_dir = Path(run_dir)
+    rp = RunPaths(run_dir)
+    params_path = rp.parameters_yaml
+    params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
+    counts = _stage_counts(run_dir)
+    render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=True)
+    branch = _workflow_branch(run_dir, params)
+    title = f"# QC review — {run_dir.name}\n"
+    context = _plan_dataset_assay_line(run_dir)
+    header = title + (f"\n{context}\n" if context else "")
+    sections = [header, *_qc_review_result_sections(run_dir, params, counts, render, branch)]
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def _qc_html_styles() -> str:
+    return (
+        "body { font-family: system-ui, sans-serif; max-width: 56rem; "
+        "margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: #111; }\n"
+        "h1 { font-size: 1.5rem; margin-bottom: 1.25rem; }\n"
+        "h2 { font-size: 1.2rem; margin-top: 2rem; border-bottom: 1px solid #e5e5e5; "
+        "padding-bottom: 0.25rem; }\n"
+        "h3 { font-size: 1.05rem; margin-top: 1.25rem; }\n"
+        "table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; "
+        "font-size: 0.92rem; }\n"
+        "th, td { border: 1px solid #ccc; padding: 0.35rem 0.6rem; text-align: left; }\n"
+        "th { background: #f8f8f8; }\n"
+        "ul { margin: 0.5rem 0 1rem 1.25rem; }\n"
+        "p { margin: 0.5rem 0; }\n"
+        "li.qc-footnote { font-size: 0.92rem; color: #444; }\n"
+        ".qc-section { margin-bottom: 1.5rem; }\n"
+        ".qc-side-by-side { display: flex; flex-wrap: wrap; gap: 1rem; "
+        "align-items: flex-start; margin: 1rem 0; }\n"
+        ".qc-side-by-side .qc-panel-table { flex: 1 1 260px; min-width: 0; }\n"
+        ".qc-side-by-side .qc-panel-plot { flex: 0 1 380px; max-width: 52%; "
+        "min-width: 240px; }\n"
+        ".qc-plot-pair { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }\n"
+        ".qc-plot-pair .qc-figure { flex: 1 1 45%; min-width: 260px; margin: 0; }\n"
+        ".qc-plots-below { margin-top: 1rem; }\n"
+        ".qc-figure { margin: 0; }\n"
+        ".qc-figure img { width: 100%; height: auto; display: block; }\n"
+        ".qc-figure figcaption { font-size: 0.85rem; color: #555; margin-top: 0.35rem; }\n"
+    )
+
+
+def _html_figure(fig_dir: Path, stem: str, caption: str) -> str:
+    png = fig_dir / f"{stem}.png"
+    if not png.exists():
+        return ""
+    data = base64.standard_b64encode(png.read_bytes()).decode("ascii")
+    alt = html_module.escape(caption)
+    return (
+        f'<figure class="qc-figure"><img src="data:image/png;base64,{data}" '
+        f'alt="{alt}"><figcaption>{alt}</figcaption></figure>'
+    )
+
+
+def _md_html(md: str) -> str:
+    return _markdown_to_html(md.strip()) if md.strip() else ""
+
+
+def _html_flow_section(
+    run_dir: Path, counts: dict[str, Any], workflow_branch: str, fig_dir: Path,
+) -> str:
+    table_md = _flow_section(run_dir, counts, workflow_branch, include_final_stage=False)
+    plot = _html_figure(fig_dir, "post_qc_review_cell_counts",
+                        "Cell counts across preprocessing (RNA and ATAC).")
+    plots = f'<div class="qc-plots-below">{plot}</div>' if plot else ""
+    return (
+        '<section class="qc-section qc-flow">'
+        f"{_md_html(table_md)}{plots}</section>"
+    )
+
+
+def _html_ambient_section(
+    run_dir: Path, params: dict[str, Any], counts: dict[str, Any], fig_dir: Path,
+) -> str:
+    md = _ambient_section(run_dir, params, counts, render=_FigRender(embed_figures=False))
+    if "## Ambient RNA correction (S1a)" not in md or "| parameter | value |" not in md:
+        return f'<section class="qc-section qc-ambient">{_md_html(md)}</section>'
+
+    parts = md.split("## Ambient RNA correction (S1a)", 1)[1]
+    table_marker = "| parameter | value |"
+    intro, _, rest = parts.partition(table_marker)
+    table_lines = "| parameter | value |" + rest.split("\n\n", 1)[0]
+    intro = intro.strip()
+    plot = _html_figure(
+        fig_dir, "s1a_ambient_counts_before_after",
+        "Per-cell total counts before and after ambient correction.",
+    )
+    return (
+        '<section class="qc-section qc-ambient">'
+        "<h2>Ambient RNA correction (S1a)</h2>"
+        f"{_md_html(intro)}"
+        '<div class="qc-side-by-side">'
+        f'<div class="qc-panel-table">{_md_html(table_lines)}</div>'
+        f'<div class="qc-panel-plot">{plot}</div>'
+        "</div></section>"
+    )
+
+
+def _html_rna_section(
+    run_dir: Path, params: dict[str, Any], counts: dict[str, Any], fig_dir: Path,
+) -> str:
+    from .run_paths import RunPaths
+    s1 = RunPaths(run_dir).stage_dir("s1_rna_qc")
+    pre = s1 / "qc_metrics_pre.parquet"
+    post = s1 / "qc_metrics_post.parquet"
+    if not (pre.exists() and post.exists()):
+        return _md_html(_rna_section(run_dir, params, counts, render=_FigRender(embed_figures=False)))
+
+    pre_df = pd.read_parquet(pre)
+    post_df = pd.read_parquet(post)
+    n_pre, n_post = len(pre_df), len(post_df)
+    n_rm = n_pre - n_post
+
+    thresholds = _md_table(
+        ["parameter", "value"],
+        [
+            ["total_counts_min", _param(params, "s1_rna_qc.total_counts_min")],
+            ["total_counts_max", _param(params, "s1_rna_qc.total_counts_max")],
+            ["n_genes_min", _param(params, "s1_rna_qc.n_genes_min")],
+            ["n_genes_max", _param(params, "s1_rna_qc.n_genes_max")],
+            ["pct_counts_mt_max", _param(params, "s1_rna_qc.pct_counts_mt_max")],
+            ["pct_counts_ribo_max", _param(params, "s1_rna_qc.pct_counts_ribo_max")],
+            ["n_mt_genes_detected", _param(params, "s1_rna_qc.n_mt_genes_detected")],
+            ["n_ribo_genes_detected", _param(params, "s1_rna_qc.n_ribo_genes_detected")],
+        ],
+    )
+    stat_rows: list[list[Any]] = []
+    for col in ("n_genes_by_counts", "total_counts", "pct_counts_mt", "pct_counts_ribo"):
+        if col in post_df.columns:
+            stat_rows.append(_stats_row(col, post_df[col].to_numpy()))
+    stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else ""
+
+    plots = (
+        _html_figure(fig_dir, "s1_rna_qc_violin_pre", "RNA QC metrics before filtering.")
+        + _html_figure(fig_dir, "s1_rna_qc_violin_post", "RNA QC metrics after filtering.")
+    )
+    intro = (
+        "Removes outliers and low-quality cells using MAD-based bounds on total UMI "
+        "counts and detected genes, plus ceilings on mitochondrial (MT) and ribosomal "
+        "read fractions.\n\n"
+        f"- Cells before filtering: **{n_pre}**\n"
+        f"- Cells retained:         **{n_post}**\n"
+        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+    )
+    return (
+        '<section class="qc-section qc-rna">'
+        "<h2>RNA quality filtering</h2>"
+        f"{_md_html(intro)}"
+        "<h3>Thresholds used</h3>"
+        f"{_md_html(thresholds)}"
+        "<h3>Summary statistics (retained cells)</h3>"
+        f"{_md_html(stats)}"
+        f'<div class="qc-plots-below">{plots}</div>'
+        "</section>"
+    )
+
+
+def _html_atac_section(
+    run_dir: Path, params: dict[str, Any], counts: dict[str, Any], fig_dir: Path,
+) -> str:
+    from .run_paths import RunPaths
+    s2 = RunPaths(run_dir).stage_dir("s2_atac_qc")
+    summary_json = s2 / "qc_summary.json"
+    if not summary_json.exists():
+        return _md_html(_atac_section(run_dir, params, counts, render=_FigRender(embed_figures=False)))
+
+    summary = json.loads(summary_json.read_text())
+    n_pre = int(summary.get("n_cells_pre", 0))
+    n_post = int(summary.get("n_cells_post", 0))
+    n_rm = n_pre - n_post
+    atac_raw = counts.get("atac_raw_barcodes")
+    snap_drop = (atac_raw - n_pre) if (atac_raw is not None) else None
+
+    thresholds = _md_table(
+        ["parameter", "value"],
+        [
+            ["n_fragments_min", _param(params, "s2_atac_qc.n_fragments_min")],
+            ["n_fragments_max", _param(params, "s2_atac_qc.n_fragments_max")],
+            ["tss_enrichment_min", _param(params, "s2_atac_qc.tss_enrichment_min")],
+            ["tss_enrichment_max", _param(params, "s2_atac_qc.tss_enrichment_max")],
+            ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max")],
+        ],
+    )
+    stat_rows: list[list[Any]] = []
+    atac_h5ad = s2 / "atac_qc.h5ad"
+    if atac_h5ad.exists():
+        try:
+            import snapatac2 as snap
+            adata = snap.read(str(atac_h5ad))
+            obs = adata.obs[:].to_pandas()
+            try:
+                adata.close()
+            except Exception:
+                pass
+            for src_col, label in [
+                ("n_fragment", "fragment_count"),
+                ("tsse", "tss_enrichment"),
+                ("nucleosome_signal", "nucleosome_signal"),
+            ]:
+                if src_col in obs.columns:
+                    stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
+        except Exception:
+            pass
+    stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else "_(no stats)_"
+
+    import_note = ""
+    if snap_drop is not None and snap_drop > 0:
+        import_note = (
+            f"- **Fragment-count pre-filter (at import):** {snap_drop} barcodes removed "
+            f"({atac_raw} → {n_pre}) — cells with too few fragments are dropped before "
+            f"quality metrics are computed.\n"
+        )
+    intro = (
+        "Removes low-quality cells using MAD-based bounds on fragment counts, plus "
+        "TSS enrichment and nucleosome-signal thresholds.\n\n"
+        f"{import_note}"
+        f"- Cells before filtering: **{n_pre}**\n"
+        f"- Cells retained:         **{n_post}**\n"
+        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+    )
+    plot = _html_figure(
+        fig_dir, "s2_atac_qc_fragment_size_distribution",
+        "Fragment size distribution after filtering.",
+    )
+    return (
+        '<section class="qc-section qc-atac">'
+        "<h2>ATAC quality filtering</h2>"
+        f"{_md_html(intro)}"
+        "<h3>Thresholds used</h3>"
+        f"{_md_html(thresholds)}"
+        "<h3>Summary statistics (retained cells)</h3>"
+        f"{_md_html(stats)}"
+        f'<div class="qc-plots-below">{plot}</div>'
+        "</section>"
+    )
+
+
+def _html_doublet_section(
+    run_dir: Path,
+    params: dict[str, Any],
+    counts: dict[str, Any],
+    fig_dir: Path,
+    workflow_branch: str,
+) -> str:
+    md = _doublet_section(run_dir, params, counts, render=_FigRender(embed_figures=False))
+    policy_html = _md_html(md)
+
+    rna_plot = _html_figure(
+        fig_dir, "post_qc_review_doublet_rna", "RNA doublet scores (Scrublet).",
+    )
+    atac_plot = _html_figure(
+        fig_dir, "post_qc_review_doublet_atac", "ATAC doublet scores (SnapATAC2).",
+    )
+    if workflow_branch == "paired":
+        plots = "".join(p for p in (rna_plot, atac_plot) if p)
+        plot_row = f'<div class="qc-plot-pair">{plots}</div>' if plots else ""
+    else:
+        stacked = "".join(p for p in (rna_plot, atac_plot) if p)
+        plot_row = f'<div class="qc-plots-below">{stacked}</div>' if stacked else ""
+
+    return f'<section class="qc-section qc-doublets">{policy_html}{plot_row}</section>'
+
+
+def build_qc_review_html_body(run_dir: Path | str) -> str:
+    """HTML report with layout: tables before plots; selected side-by-side panels."""
+    from .run_paths import RunPaths
+    run_dir = Path(run_dir)
+    rp = RunPaths(run_dir)
+    fig_dir = rp.deliv_qc_review
+    params_path = rp.parameters_yaml
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
     branch = _workflow_branch(run_dir, params)
 
-    sections = [
-        _qc_review_intro(branch),
-        _flow_section(counts, include_final_stage=False),
-        _ambient_section(run_dir, params, counts),
-        _rna_section(run_dir, params, counts),
-        _atac_section(run_dir, params, counts),
-        _doublet_section(run_dir, params, counts),
-        _qc_review_actions(branch),
+    title = f"<h1>QC review — {html_module.escape(run_dir.name)}</h1>"
+    context = _plan_dataset_assay_line(run_dir)
+    context_html = f"<p>{_inline_md(context)}</p>" if context else ""
+
+    parts = [
+        title,
+        context_html,
+        _html_flow_section(run_dir, counts, branch, fig_dir),
+        _html_ambient_section(run_dir, params, counts, fig_dir),
+        _html_rna_section(run_dir, params, counts, fig_dir),
+        _html_atac_section(run_dir, params, counts, fig_dir),
+        _html_doublet_section(run_dir, params, counts, fig_dir, branch),
     ]
-    return "\n".join(sections).rstrip() + "\n"
+    return "\n".join(p for p in parts if p)
+
+
+def write_qc_review_html(run_dir: Path | str) -> Path | None:
+    """Write qc_summary.html — formatted results with embedded figures and layout CSS."""
+    from .run_paths import RunPaths
+    run_dir = Path(run_dir)
+    rp = RunPaths(run_dir)
+    out = rp.deliv_qc_review / "qc_summary.html"
+    body = build_qc_review_html_body(run_dir)
+    doc = (
+        "<!DOCTYPE html>\n<html lang=\"en\"><head>\n"
+        "<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<title>QC review — {html_module.escape(run_dir.name)}</title>\n"
+        "<style>\n"
+        f"{_qc_html_styles()}"
+        "</style>\n</head><body>\n"
+        f"{body}\n</body></html>\n"
+    )
+    out.write_text(doc, encoding="utf-8")
+    return out
+
+
+def write_qc_review(run_dir: Path | str) -> Path:
+    """Write editable qc_review.md and browser-friendly qc_summary.html."""
+    from .run_paths import RunPaths
+    run_dir = Path(run_dir)
+    rp = RunPaths(run_dir)
+    rp.deliv_qc_review.mkdir(parents=True, exist_ok=True)
+    rp.qc_review_summary_md.write_text(build_qc_review(run_dir), encoding="utf-8")
+    write_qc_review_html(run_dir)
+    return rp.qc_review_summary_md
 
 
 def build(run_dir: Path | str) -> str:
     """Full end-to-end QC summary (written at manifest to post_run/)."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
-    params_path = RunPaths(run_dir).parameters_yaml
+    rp = RunPaths(run_dir)
+    params_path = rp.parameters_yaml
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
+    render = _FigRender(md_parent=rp.deliv_post_run)
 
+    branch = _workflow_branch(run_dir, params)
     sections = [
         "# QC Summary",
         "",
-        _flow_section(counts),
-        _ambient_section(run_dir, params, counts),
-        _rna_section(run_dir, params, counts),
-        _atac_section(run_dir, params, counts),
-        _doublet_section(run_dir, params, counts),
+        _flow_section(run_dir, counts, branch) + _flow_figures(run_dir, render=render),
+        _ambient_section(run_dir, params, counts, render=render),
+        _rna_section(run_dir, params, counts, render=render),
+        _atac_section(run_dir, params, counts, render=render),
+        _doublet_section(run_dir, params, counts, render=render),
         _final_section(run_dir, counts),
     ]
     return "\n".join(sections).rstrip() + "\n"

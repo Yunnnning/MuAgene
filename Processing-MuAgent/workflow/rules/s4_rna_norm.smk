@@ -32,5 +32,7 @@ rule s4_rna_norm_execute:
         import json
         from pathlib import Path
         from executor.stages import s4_rna_norm
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         s4_rna_norm.run(params.run_dir, plan)
+        finalize_cluster_exit()

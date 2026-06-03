@@ -33,5 +33,7 @@ rule s5_atac_spectral_execute:
         import json
         from pathlib import Path
         from executor.stages import s5_atac_spectral
+        from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
         s5_atac_spectral.run(params.run_dir, plan)
+        finalize_cluster_exit()
