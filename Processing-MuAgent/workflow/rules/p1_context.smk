@@ -33,7 +33,9 @@ rule p1_context_execute:
         default_report_path = str(PRE_RUN / "config" / "biological_context.md")
         report_path = config.get("biological_context_path") or default_report_path
         payload = ctx.extract_context(report_path, params.run_dir,
-                                      file_input_signals={})
+                                      file_input_signals={
+                                          "genome_assembly": config.get("genome_assembly"),
+                                      })
         ctx.write_context_extraction(params.run_dir, payload)
         Path(output.summary).parent.mkdir(parents=True, exist_ok=True)
         Path(output.summary).write_text(ctx.render_summary(payload))

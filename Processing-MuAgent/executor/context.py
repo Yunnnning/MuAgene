@@ -95,21 +95,12 @@ def _infer_sample_type(assay: str) -> tuple[str, str, str]:
     return "unknown", "low", "Assay string does not indicate cells vs nuclei."
 
 
-def _infer_genome_build(organism: str) -> tuple[str, str, str]:
-    o = organism.lower()
-    if "mouse" in o or "mus musculus" in o:
-        return "mm10", "medium", "Default mouse build; confirm against file annotations."
-    if "human" in o or "homo sapiens" in o:
-        return "GRCh38", "medium", "Default human build; confirm against file annotations."
-    return "unknown", "low", "Organism not recognised; no default build."
-
-
 def _infer_modality_type(assay: str) -> tuple[str, str, str]:
     a = assay.lower()
     has_rna = any(t in a for t in ["rna", "gex", "gene expression"])
     has_atac = "atac" in a
     if has_rna and has_atac:
-        return "paired_multiome_candidate", "medium", "Assay string names both RNA and ATAC; paired multiome likely, confirm via barcode overlap in S0."
+        return "paired_multiome_candidate", "medium", "Assay describes both RNA and ATAC; confirm pairing after ingest."
     if has_rna and not has_atac:
         return "rna_only", "high", "Assay names RNA only."
     if has_atac and not has_rna:
@@ -151,7 +142,7 @@ def extract_context(
     if parsed.get("organism"):
         fields["organism"] = _entry(
             parsed["organism"], "report", "high", "explicit",
-            "User-declared in report.", [str(report_path)]
+            "User-declared in biological context.", [str(report_path)]
         )
     else:
         fields["organism"] = _entry("unknown", "inferred", "low", "missing",
@@ -185,16 +176,26 @@ def extract_context(
         [str(report_path)],
     )
 
-    # Derived: genome_build
-    gb_value, gb_conf, gb_rationale = _infer_genome_build(str(parsed.get("organism", "") or ""))
-    fields["genome_build"] = _entry(
-        gb_value,
-        "inferred" if gb_value != "unknown" else "inferred",
-        gb_conf,
-        "inferred" if gb_value != "unknown" else "missing",
-        gb_rationale,
-        [str(report_path)],
-    )
+    # Genome reference: user-declared in run.yaml only (no organism-based default).
+    file_genome = file_input_signals.get("genome_assembly")
+    if file_genome:
+        fields["genome_build"] = _entry(
+            file_genome,
+            "run_yaml",
+            "high",
+            "explicit",
+            "User-declared.",
+        )
+        gb_value = file_genome
+    else:
+        fields["genome_build"] = _entry(
+            "unknown",
+            "run_yaml",
+            "low",
+            "missing",
+            "Declare the reference genome as part of the biological context.",
+        )
+        gb_value = "unknown"
 
     # Derived: modality_type
     mt_value, mt_conf, mt_rationale = _infer_modality_type(assay_txt)
@@ -230,18 +231,7 @@ def extract_context(
         [str(report_path)] if doi_entries else [],
     )
 
-    # Conflict detection (minimal MVP: genome_build vs user-declared, organism vs file_input)
     conflicts: list[dict[str, Any]] = []
-    file_genome = file_input_signals.get("genome_assembly")
-    if file_genome and gb_value != "unknown" and file_genome != gb_value:
-        conflicts.append({
-            "field": "genome_build",
-            "values": [
-                {"source": "inferred", "value": gb_value},
-                {"source": "file_input", "value": file_genome},
-            ],
-            "severity": "high",
-        })
     file_chroms = set(file_input_signals.get("fragment_chromosomes", []) or [])
     if file_chroms:
         has_chr = any(c.startswith("chr") for c in file_chroms)

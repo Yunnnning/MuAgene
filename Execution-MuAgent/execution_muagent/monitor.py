@@ -356,7 +356,7 @@ def render_submission_script(
     walltime_min = spec.resources.get("walltime_min", 60)
     cpus = spec.resources.get("cpus", 1)
     mem_mb = spec.resources.get("mem_mb", 4000)
-    conda_env = site_config.conda_env or "base"
+    conda_env = site_config.conda_env or "grn"
 
     if site_config.scheduler == "slurm":
         hh, mm = divmod(walltime_min, 60)

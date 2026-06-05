@@ -181,7 +181,7 @@ def configure_execution(
             str(int(resources_scale)) if resources_scale is not None
             else os.environ.get("PMA_RESOURCES_SCALE")
         ),
-        "conda_env": conda_env or os.environ.get("PMA_CONDA_ENV"),
+        "conda_env": conda_env or os.environ.get("PMA_CONDA_ENV") or os.environ.get("CONDA_DEFAULT_ENV"),
     }
 
     if mode == "local":

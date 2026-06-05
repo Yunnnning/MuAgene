@@ -12,6 +12,44 @@ def _load_json(p: Path) -> dict:
     return json.loads(p.read_text()) if p.exists() else {}
 
 
+_CONTEXT_FIELD_LABELS: dict[str, str] = {
+    "organism": "organism",
+    "tissue": "tissue",
+    "assay_type": "assay",
+    "genome_build": "reference genome",
+    "dois": "publication DOIs",
+    "modality_type": "dataset type",
+    "sample_type": "sample type",
+}
+
+
+def _pairing_review_reason(pairing: dict[str, Any]) -> str:
+    method = pairing.get("method", "")
+    overlap = float(pairing.get("overlap", 0) or 0)
+    labels = {
+        "pairing.single_file_multiome": (
+            "RNA and ATAC from the same Cell Ranger ARC output; "
+            "barcodes linked via the combined matrix file."
+        ),
+        "pairing.exact_barcode_match": "RNA and ATAC barcodes match directly.",
+        "pairing.prefix_suffix_normalized": (
+            "RNA and ATAC barcodes matched after normalising prefix/suffix differences."
+        ),
+        "pairing.translation_table": "RNA and ATAC barcodes matched via a user-supplied translation table.",
+        "pairing.rna_subset_of_atac": "RNA barcodes are largely a subset of ATAC barcodes.",
+        "pairing.atac_subset_of_rna": "ATAC barcodes are largely a subset of RNA barcodes.",
+        "pairing.rna_only_input": "Only RNA input was provided.",
+        "pairing.atac_only_input": "Only ATAC input was provided.",
+        "pairing.ambiguous_overlap": f"Barcode overlap is ambiguous ({overlap:.1%}); confirm pairing before continuing.",
+        "pairing.no_match": "No reliable RNA–ATAC barcode overlap detected.",
+    }
+    if method in labels:
+        return labels[method]
+    if method:
+        return f"Pairing established during ingest ({overlap:.1%} barcode overlap)."
+    return "Pairing assessed during ingest."
+
+
 def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     """Produce an ordered list of review items: {label, value, reason, certainty}."""
     from .run_paths import RunPaths
@@ -41,14 +79,20 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         "certainty": "certain" if modality.get("status") == "explicit" else "needs confirmation",
     })
 
-    # 2. Organism + genome build
     organism = field("organism")
+    items.append({
+        "label": "Organism",
+        "value": organism.get("value", "unknown"),
+        "reason": organism.get("rationale", ""),
+        "certainty": "certain" if organism.get("status") == "explicit" else "needs confirmation",
+    })
+
     genome = field("genome_build")
     items.append({
-        "label": "Organism / genome build",
-        "value": f"{organism.get('value', 'unknown')} / {genome.get('value', 'unknown')}",
-        "reason": (f"{organism.get('rationale', '')} | {genome.get('rationale', '')}").strip(" |"),
-        "certainty": "certain" if organism.get("status") == "explicit" and genome.get("confidence") != "low" else "needs confirmation",
+        "label": "Genome reference",
+        "value": genome.get("value", "unknown"),
+        "reason": genome.get("rationale", ""),
+        "certainty": "certain" if genome.get("status") == "explicit" else "needs confirmation",
     })
 
     # 3. Pairing
@@ -56,7 +100,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     items.append({
         "label": "Pairing (RNA ↔ ATAC)",
         "value": f"{pairing.get('status', 'unknown')} (overlap={pairing.get('overlap', 0):.2%})",
-        "reason": f"{pairing.get('method', '')} at confidence={pairing.get('confidence', '')}; shared barcodes={pairing.get('n_shared', 0)}.",
+        "reason": _pairing_review_reason(pairing),
         "certainty": "certain" if pairing.get("confidence") == "high" else "needs confirmation",
     })
 
@@ -105,13 +149,26 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     tss_min = param("s2_atac_qc", "tss_enrichment_min")
     tss_max = param("s2_atac_qc", "tss_enrichment_max")
     nuc_max = param("s2_atac_qc", "nucleosome_signal_max")
+    frip_min = param("s2_atac_qc", "frip_min")
+    frip_val = frip_min.get("value", 0.0)
+    # Peak source knowable at plan time: user-supplied path (highest priority) or ARC h5.
+    # MACS3 is a runtime fallback — flag as conditional if neither is confirmed.
+    has_user_peaks = bool(ingest.get("atac_peaks_path"))
+    has_arc_peaks = bool(ingest.get("single_file_multiome"))
+    if frip_val and float(frip_val) > 0:
+        if has_user_peaks or has_arc_peaks:
+            frip_note = f", FRiP >= {frip_val}"
+        else:
+            frip_note = f", FRiP >= {frip_val} (if peaks available at runtime)"
+    else:
+        frip_note = ""
     items.append({
         "label": "QC strategy",
         "value": (
             f"RNA: MAD on total_counts/n_genes, pct_mt ceiling={pct_mt_ceil.get('value', '?')}, "
             f"pct_ribo ceiling={pct_ribo_max.get('value', '?')} | "
             f"ATAC: TSS in ({tss_min.get('value', '?')}, {tss_max.get('value', '?')}), "
-            f"MAD on log(n_fragments), nucleosome_signal<{nuc_max.get('value', '?')}"
+            f"MAD on log(n_fragments), nucleosome_signal<{nuc_max.get('value', '?')}{frip_note}"
         ),
         "reason": f"Sample type = {sample_type}; MAD thresholds adapt to the observed distribution.",
         "certainty": "certain",
@@ -182,10 +239,19 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         "paired": f"{_s8}/processed.h5mu",
         "separate": f"{_s8}/rna_processed.h5ad + atac_processed.h5ad",
     }.get(branch, "(branch unknown)")
+    branch_labels = {
+        "paired": "Paired multiome run",
+        "separate": "Separate RNA and ATAC samples",
+        "rna_only": "RNA-only run",
+        "atac_only": "ATAC-only run",
+    }
     items.append({
         "label": "Output location",
         "value": outputs,
-        "reason": f"workflow_branch={branch}; run_manifest.json written alongside as handoff artifact.",
+        "reason": (
+            f"{branch_labels.get(branch, 'Run')}; "
+            "a deliverable manifest is written alongside the processed object."
+        ),
         "certainty": "certain",
     })
 
@@ -195,15 +261,17 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     conflicts = ctx.get("conflicts", [])
     parts = []
     if missing:
-        parts.append(f"missing: {', '.join(missing)}")
+        labels = [_CONTEXT_FIELD_LABELS.get(k, k.replace("_", " ")) for k in missing]
+        parts.append(f"not provided: {', '.join(labels)}")
     if low_conf:
-        parts.append(f"low-confidence: {', '.join(low_conf)}")
+        labels = [_CONTEXT_FIELD_LABELS.get(k, k.replace("_", " ")) for k in low_conf]
+        parts.append(f"low confidence: {', '.join(labels)}")
     if conflicts:
-        parts.append(f"conflicts: {len(conflicts)}")
+        parts.append(f"{len(conflicts)} unresolved conflict(s)")
     items.append({
         "label": "Missing / uncertain info",
         "value": "; ".join(parts) if parts else "none",
-        "reason": "Derived from P1 context field statuses and conflict list.",
+        "reason": "Gaps or uncertainty flagged during biological context intake.",
         "certainty": "certain" if not parts else "needs confirmation",
     })
 
@@ -269,13 +337,12 @@ def _execution_review_items(run_dir: Path, plan: dict[str, Any]) -> list[dict[st
             if val:
                 parts.append(f"{label}={val}")
 
-    env_ref = exec_block.get("hpc_env_path") or "deliverables/pre_run/config/hpc.env"
     items.append({
         "label": "HPC configuration",
         "value": ", ".join(parts) if parts else "not set",
         "reason": (
-            f"Source `{env_ref}` before cluster submit/resume. "
-            + (f"Missing required: {', '.join(missing)}." if missing else "Scheduler settings recorded for this run.")
+            "Cluster scheduler settings for this run. "
+            + (f"Still needed: {', '.join(missing)}." if missing else "Recorded and ready for submit/resume.")
         ),
         "certainty": "needs confirmation" if missing else ("certain" if user_configured else "needs confirmation"),
     })
