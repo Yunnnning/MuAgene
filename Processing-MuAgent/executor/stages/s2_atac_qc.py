@@ -368,8 +368,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     n_pre = int(adata.n_obs)
     n_after_3m = int(len(keep_3m_idx))
 
-    # Write 3-metric-filtered AnnData to /tmp (NFS safety; same pattern as final subset).
-    fd_3m, tmp_3m = tempfile.mkstemp(suffix=".h5ad", dir="/tmp")
+    # Write 3-metric-filtered AnnData to the artifact dir (NFS has guaranteed space;
+    # /tmp on shared compute nodes is small and fills up with large ATAC datasets).
+    fd_3m, tmp_3m = tempfile.mkstemp(suffix=".h5ad", dir=str(art))
     Path(tmp_3m).unlink(missing_ok=True)
     os.close(fd_3m)
     adata_3m = adata.subset(obs_indices=keep_3m_idx, out=tmp_3m, inplace=False)
@@ -488,8 +489,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             "before continuing; downstream stages cannot run on an empty ATAC cell set."
         )
 
-    # Subset to final cell set and write via /tmp (NFS safety)
-    fd_f, tmp_final = tempfile.mkstemp(suffix=".h5ad", dir="/tmp")
+    # Subset to final cell set; write to artifact dir (NFS has space, /tmp can fill).
+    fd_f, tmp_final = tempfile.mkstemp(suffix=".h5ad", dir=str(art))
     Path(tmp_final).unlink(missing_ok=True)
     os.close(fd_f)
 
@@ -543,6 +544,15 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         "peak_source": peak_source if peak_source else None,
     }, indent=2))
 
+    # Capture post-QC fragment size distribution before adata_f is closed.
+    fsd_after: np.ndarray | None = None
+    try:
+        snap.metrics.frag_size_distr(adata_f, max_recorded_size=1000)
+        fsd_after = np.asarray(adata_f.uns["frag_size_distr"])
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_post_failed",
+                             "error": str(e)})
+
     # Figures: (1) fragment-size distribution before vs after QC (normalised),
     #          (2) FRiP histogram with threshold line — in that order.
     try:
@@ -555,7 +565,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             _fig.plot_fragment_size_distribution(
                 fsd_for_fig, out_dir=figs_dir,
                 stem="s2_atac_qc_fragment_size_distribution",
-                title="ATAC fragment size distribution (before vs after QC)",
+                title="ATAC fragment size distribution (after QC)",
                 distr_after=fsd_after if (fsd_after is not None and fsd_after.size) else None,
             )
 
@@ -567,16 +577,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             )
     except Exception as e:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "figures_failed",
-                             "error": str(e)})
-
-    # Capture post-QC fragment size distribution for before/after comparison figure.
-    # Must happen before adata_f is closed.
-    fsd_after: np.ndarray | None = None
-    try:
-        snap.metrics.frag_size_distr(adata_f, max_recorded_size=1000)
-        fsd_after = np.asarray(adata_f.uns["frag_size_distr"])
-    except Exception as e:
-        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_post_failed",
                              "error": str(e)})
 
     try:

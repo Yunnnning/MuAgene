@@ -16,6 +16,14 @@ import numpy as np
 
 FIGURE_DPI = 300
 FONT_SIZE = 12
+MEDIUM_BLUE = "mediumblue"
+QC_FILL_COLOR = "#f97316"
+QC_FILL_ALPHA = 0.50
+QC_EDGE_COLOR = "#c2410c"
+QC_EDGE_LINEWIDTH = 0.4
+ANNOTATION_LINEWIDTH = 1.5
+FSD_ANNOTATION_LINEWIDTH = 1.2
+ANNOTATION_FONTSIZE = FONT_SIZE - 2
 TITLE_SIZE = 14
 UMAP_SIZE = (6.5, 5.5)
 QC_VIOLIN_SIZE = (12, 4.5)
@@ -126,8 +134,8 @@ def plot_fragment_size_distribution(
     `i` (the SnapATAC2 `frag_size_distr` format; index 0 holds the over-max bucket).
     A well-prepared ATAC library shows distinct peaks at ~150, ~300, ~450 bp.
 
-    When `distr_after` is supplied, both distributions are normalised to fractions
-    (so cell-count differences don't bias the comparison) and overlaid in two colours.
+    When `distr_after` is supplied, only the post-QC distribution is plotted
+    (normalised to fraction of fragments).
     """
     _apply_style()
     import matplotlib.pyplot as plt
@@ -140,50 +148,53 @@ def plot_fragment_size_distribution(
         x = np.arange(1, body.size + 1)
         return x, normed
 
-    fig, ax = plt.subplots(figsize=(8.0, 4.5))
     d = np.asarray(distr, dtype=float).ravel()
     if d.size == 0:
+        fig, ax = plt.subplots(figsize=(8.0, 4.5))
         ax.set_title(title + " (no data)")
         return save_figure(fig, out_dir, stem)
 
     x_b, body_b = _prep(d)
     x_right = min(1000, body_b.size)
+    ylabel = "fraction of fragments"
+
+    def _annotate_nucleosome(ax, y_top: float) -> None:
+        for vline in (147, 294, 441):
+            if vline < x_right:
+                ax.axvline(
+                    vline, color=MEDIUM_BLUE, linestyle="--",
+                    linewidth=FSD_ANNOTATION_LINEWIDTH, zorder=5,
+                )
+        for x0, x1, label in [(1, 147, "nucleosome\nfree"),
+                              (147, 294, "mono"),
+                              (294, 441, "di"),
+                              (441, x_right, "tri")]:
+            xc = (x0 + x1) / 2
+            if xc < x_right:
+                ax.text(
+                    xc, y_top * 0.97, label, ha="center", va="top",
+                    fontsize=ANNOTATION_FONTSIZE, color=MEDIUM_BLUE,
+                )
 
     if distr_after is not None and np.asarray(distr_after).size > 0:
-        _, body_a = _prep(np.asarray(distr_after, dtype=float))
-        # Trim both to the same length for clean overlap
-        common = min(body_b.size, body_a.size, x_right)
-        x = np.arange(1, common + 1)
-        ax.fill_between(x, 0, body_b[:common], alpha=0.40, color="#1f77b4", linewidth=0)
-        ax.plot(x, body_b[:common], color="#1f4f8b", linewidth=1.0, label="before QC")
-        ax.fill_between(x, 0, body_a[:common], alpha=0.40, color="#ff7f0e", linewidth=0)
-        ax.plot(x, body_a[:common], color="#b85c00", linewidth=1.0, label="after QC")
-        ax.legend(fontsize=FONT_SIZE - 1, loc="upper right")
-        y_top = max(body_b[:common].max(), body_a[:common].max())
-        ylabel = "fraction of fragments"
+        x_plot, body_plot = _prep(np.asarray(distr_after, dtype=float))
     else:
-        ax.fill_between(x_b[:x_right], 0, body_b[:x_right], alpha=0.55, color="#1f77b4", linewidth=0)
-        ax.plot(x_b[:x_right], body_b[:x_right], color="#1f4f8b", linewidth=1.0)
-        y_top = body_b[:x_right].max() if body_b[:x_right].size else 1.0
-        ylabel = "fraction of fragments"
+        x_plot, body_plot = x_b, body_b
 
+    fig, ax = plt.subplots(figsize=(8.0, 4.5))
+    x = x_plot[:x_right]
+    y = body_plot[:x_right]
+    ax.fill_between(x, 0, y, alpha=QC_FILL_ALPHA, color=QC_FILL_COLOR, linewidth=0)
+    ax.plot(x, y, color=QC_EDGE_COLOR, linewidth=QC_EDGE_LINEWIDTH)
     ax.set_xlim(left=0, right=x_right)
-    for vline in (147, 294, 441):
-        if vline < x_right:
-            ax.axvline(vline, color="firebrick", linestyle=":", linewidth=0.9, alpha=0.6)
-    for x0, x1, label in [(1, 147, "nucleosome-free"),
-                          (147, 294, "mono"),
-                          (294, 441, "di"),
-                          (441, x_right, "tri")]:
-        xc = (x0 + x1) / 2
-        if xc < x_right:
-            ax.text(xc, y_top * 0.97, label, ha="center", va="top",
-                    fontsize=FONT_SIZE - 3, color="firebrick")
-    ax.set_xlabel("fragment length (bp)")
     ax.set_ylabel(ylabel)
-    ax.set_title(title)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+    y_top = float(y.max()) if y.size else 1.0
+    _annotate_nucleosome(ax, y_top)
+    ax.set_xlabel("fragment length (bp)")
+    ax.set_title(title)
+
     return save_figure(fig, out_dir, stem)
 
 
@@ -215,13 +226,20 @@ def plot_frip_histogram(
     pct_pass = 100.0 * n_pass / n_total if n_total > 0 else 0.0
 
     bins = np.linspace(0, 1, 51)
-    ax.hist(frip, bins=bins, color="#1f77b4", alpha=0.70, edgecolor="none")
-    ax.axvline(frip_min, color="firebrick", linestyle="--", linewidth=1.5,
-               label=f"threshold = {frip_min:.2f}")
-    ymax = ax.get_ylim()[1]
-    ax.text(frip_min + 0.01, ymax * 0.95,
-            f"threshold = {frip_min:.2f}\n{n_pass}/{n_total} pass ({pct_pass:.1f}%)",
-            ha="left", va="top", fontsize=FONT_SIZE - 2, color="firebrick")
+    ax.hist(
+        frip, bins=bins, color=QC_FILL_COLOR, alpha=QC_FILL_ALPHA,
+        edgecolor=QC_EDGE_COLOR, linewidth=QC_EDGE_LINEWIDTH,
+    )
+    ax.axvline(
+        frip_min, color=MEDIUM_BLUE, linestyle="--",
+        linewidth=ANNOTATION_LINEWIDTH, zorder=5,
+    )
+    ax.text(
+        0.98, 0.98,
+        f"threshold = {frip_min:.2f}\n{n_pass}/{n_total} passed ({pct_pass:.1f}%)",
+        transform=ax.transAxes,
+        ha="right", va="top", fontsize=ANNOTATION_FONTSIZE, color=MEDIUM_BLUE,
+    )
     ax.set_xlabel("FRiP (fraction of reads in peaks)")
     ax.set_ylabel("number of cells")
     ax.set_title("FRiP distribution")

@@ -761,7 +761,7 @@ def _atac_section(
 
     fig_fsd = _fig_block(
         run_dir, "s2_atac_qc_fragment_size_distribution",
-        caption="ATAC fragment size distribution before (blue) and after (orange) QC filtering.",
+        caption="ATAC fragment size distribution after QC filtering.",
         render=render,
     )
     fig_frip = _fig_block(
@@ -1283,6 +1283,9 @@ def _html_atac_section(
     atac_raw = counts.get("atac_raw_barcodes")
     snap_drop = (atac_raw - n_pre) if (atac_raw is not None) else None
 
+    peak_source = summary.get("peak_source")
+    frip_min_val = _param(params, "s2_atac_qc.frip_min")
+    frip_threshold_note = frip_min_val if peak_source else f"{frip_min_val} _(not applied — no peaks available)_"
     thresholds = _md_table(
         ["parameter", "value"],
         [
@@ -1291,6 +1294,7 @@ def _html_atac_section(
             ["tss_enrichment_min", _param(params, "s2_atac_qc.tss_enrichment_min")],
             ["tss_enrichment_max", _param(params, "s2_atac_qc.tss_enrichment_max")],
             ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max")],
+            ["frip_min", frip_threshold_note],
         ],
     )
     stat_rows: list[list[Any]] = []
@@ -1308,6 +1312,7 @@ def _html_atac_section(
                 ("n_fragment", "fragment_count"),
                 ("tsse", "tss_enrichment"),
                 ("nucleosome_signal", "nucleosome_signal"),
+                ("frip", "frip"),
             ]:
                 if src_col in obs.columns:
                     stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
@@ -1324,25 +1329,30 @@ def _html_atac_section(
         )
     intro = (
         "Removes low-quality cells using MAD-based bounds on fragment counts, plus "
-        "TSS enrichment and nucleosome-signal thresholds.\n\n"
+        "TSS enrichment, nucleosome-signal, and FRiP thresholds.\n\n"
         f"{import_note}"
         f"- Cells before filtering: **{n_pre}**\n"
         f"- Cells retained:         **{n_post}**\n"
         f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
     )
-    plot = _html_figure(
+    plot_fsd = _html_figure(
         fig_dir, "s2_atac_qc_fragment_size_distribution",
-        "Fragment size distribution after filtering.",
+        "ATAC fragment size distribution after QC filtering.",
     )
+    plot_frip = _html_figure(
+        fig_dir, "s2_atac_qc_frip_histogram",
+        "FRiP distribution; dashed line marks the filter threshold.",
+    )
+    plots = plot_fsd + plot_frip
     return (
         '<section class="qc-section qc-atac">'
         "<h2>ATAC quality filtering</h2>"
         f"{_md_html(intro)}"
+        f'<div class="qc-plots-below">{plots}</div>'
         "<h3>Thresholds used</h3>"
         f"{_md_html(thresholds)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
-        f'<div class="qc-plots-below">{plot}</div>'
         "</section>"
     )
 

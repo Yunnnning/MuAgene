@@ -174,6 +174,22 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         if rel_report.relation == "rna_subset_of_atac":
             atac_n_cells_report = len(rna_bc)
 
+    # When the fragments file carries all droplets but RNA defines the cell-called
+    # subset (typical Cell Ranger ARC), persist an explicit whitelist for S2's
+    # SnapATAC2 import so n_cells_pre matches the filtered matrix, not every
+    # barcode with ATAC reads.
+    if (
+        rna_bc
+        and atac_frag_path is not None
+        and atac_fragments_file_barcodes_n is not None
+        and atac_fragments_file_barcodes_n > atac_n_cells_report
+    ):
+        atac_cell_whitelist_path = artifacts / "atac_cell_barcodes.tsv"
+        _io.write_text_safe(
+            atac_cell_whitelist_path,
+            "\n".join(sorted(rna_bc)) + "\n",
+        )
+
     # Pairing — accepts empty sets on one side for single-modality branches.
     pr_initial = _pair.detect_pairing(rna_bc, atac_bc, single_file_multiome=single_file_multiome)
 
