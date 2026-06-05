@@ -496,7 +496,7 @@ def _flow_section(
         rna_after_s1a = counts["rna_ingest"]
 
     s3_note = (
-        "union doublet removal and keep the joint cells"
+        "union doublet removal and joint cell retention"
         if joint is not None
         else "union doublet removal per modality"
     )
@@ -514,11 +514,11 @@ def _flow_section(
 
     rows = [
         _flow_row("1. raw", rna_raw, atac_raw, "—", 0),
-        _flow_row("2. after S1a ambient correction", rna_after_s1a, atac_raw,
+        _flow_row("2. after ambient RNA correction", rna_after_s1a, atac_raw,
                   "RNA ambient correction (cell count unchanged)", 1),
         _flow_row("3. after RNA / ATAC QC", counts["rna_qc_post"], counts["atac_qc_post"],
                   "per-modality MAD and quality thresholds", 2),
-        _flow_row("4. after S3 doublets", counts["rna_post_doublet"], counts["atac_post_doublet"],
+        _flow_row("4. after doublet removal", counts["rna_post_doublet"], counts["atac_post_doublet"],
                   s3_note, 3),
     ]
     if include_final_stage:
@@ -574,10 +574,10 @@ def _ambient_section(
             "skipped_no_r": (
                 "**SKIPPED — R packages unavailable at runtime.** "
                 "Counts are uncorrected (pass-through). "
-                "Install missing R packages and re-run S1a before approving QC."
+                "Install missing R packages and re-run ambient RNA correction before approving QC."
             ),
         }[method]
-        return "## Ambient RNA correction (S1a)\n\n" + note + "\n"
+        return "## Ambient RNA correction\n\n" + note + "\n"
 
     summary: dict[str, Any] = {}
     if summary_p.exists():
@@ -629,7 +629,7 @@ def _ambient_section(
         render=render,
     )
     return (
-        "## Ambient RNA correction (S1a)\n"
+        "## Ambient RNA correction\n"
         "\n"
         + rho_note
         + counts_note
@@ -884,7 +884,7 @@ def _qc_review_actions(branch: str) -> str:
         "- **S3 (doublets)** — RNA Scrublet and ATAC SnapATAC2 score cutoffs",
         "",
         "The agent can change the settings for the affected stage, re-run downstream steps "
-        "as needed, and regenerate this QC review.",
+        "as needed, and regenerate the reports.",
         "",
         "### Approve and continue to downstream analysis",
         "",
@@ -919,7 +919,7 @@ def _doublet_section(
     calls_path = s3 / "calls.parquet"
     overlap_path = s3 / "overlap_summary.json"
     if not (calls_path.exists() and overlap_path.exists()):
-        return "## Doublets (S3)\n\n_(artifacts not available)_\n"
+        return "## Doublet removal\n\n_(artifacts not available)_\n"
 
     calls = pd.read_parquet(calls_path)
     # Evaluation status per cell (based on whether each detector scored it)
@@ -971,7 +971,7 @@ def _doublet_section(
             "\n"
             "- Applied policy: **union** — remove if either RNA (Scrublet) or ATAC "
             "(SnapATAC2) flags a doublet.\n"
-            + f"- Joint cells after S3: **{counts.get('n_cells_joint', 'n/a')}**\n"
+            + f"- Joint cells after doublet removal: **{counts.get('n_cells_joint', 'n/a')}**\n"
         )
     elif branch == "separate":
         policy_note = (
@@ -1051,7 +1051,7 @@ def _doublet_section(
     )
 
     return (
-        "## Doublets (S3)\n"
+        "## Doublet removal\n"
         f"{threshold_lines}"
         f"{policy_note}"
         f"{summary_table}"
@@ -1255,10 +1255,10 @@ def _html_ambient_section(
     run_dir: Path, params: dict[str, Any], counts: dict[str, Any], fig_dir: Path,
 ) -> str:
     md = _ambient_section(run_dir, params, counts, render=_FigRender(embed_figures=False))
-    if "## Ambient RNA correction (S1a)" not in md or "| parameter | value |" not in md:
+    if "## Ambient RNA correction\n" not in md or "| parameter | value |" not in md:
         return f'<section class="qc-section qc-ambient">{_md_html(md)}</section>'
 
-    parts = md.split("## Ambient RNA correction (S1a)", 1)[1]
+    parts = md.split("## Ambient RNA correction\n", 1)[1]
     table_marker = "| parameter | value |"
     intro, _, rest = parts.partition(table_marker)
     table_lines = "| parameter | value |" + rest.split("\n\n", 1)[0]
@@ -1269,7 +1269,7 @@ def _html_ambient_section(
     )
     return (
         '<section class="qc-section qc-ambient">'
-        "<h2>Ambient RNA correction (S1a)</h2>"
+        "<h2>Ambient RNA correction</h2>"
         f"{_md_html(intro)}"
         '<div class="qc-side-by-side">'
         f'<div class="qc-panel-table">{_md_html(table_lines)}</div>'

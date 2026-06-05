@@ -137,9 +137,9 @@ def _plot_cell_count_waterfall(run_dir: Path, figs_dir: Path) -> list[Path]:
     rna_after_s1a = counts.get("rna_after_ambient") or counts.get("rna_ingest")
     stages = [
         ("raw", counts.get("rna_raw"), counts.get("atac_raw_barcodes")),
-        ("after S1a", rna_after_s1a, counts.get("atac_raw_barcodes")),
-        ("after S1/S2 QC", counts.get("rna_qc_post"), counts.get("atac_qc_post")),
-        ("after S3", counts.get("rna_post_doublet"), counts.get("atac_post_doublet")),
+        ("after ambient\nRNA correction", rna_after_s1a, counts.get("atac_raw_barcodes")),
+        ("after RNA /\nATAC QC", counts.get("rna_qc_post"), counts.get("atac_qc_post")),
+        ("after doublet\nremoval", counts.get("rna_post_doublet"), counts.get("atac_post_doublet")),
     ]
 
     stages = [(lbl, r, a) for lbl, r, a in stages if r is not None or a is not None]
@@ -172,7 +172,7 @@ def _plot_cell_count_waterfall(run_dir: Path, figs_dir: Path) -> list[Path]:
     ax.set_xticks(x)
     ax.set_xticklabels(labels, ha="center")
     ax.set_ylabel("cells")
-    ax.set_title("Cell count across preprocessing stages (S0–S3)")
+    ax.set_title("Cell counts across preprocessing")
     ax.legend()
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

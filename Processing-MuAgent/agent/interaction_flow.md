@@ -26,8 +26,8 @@ Before you answer, one other thing I'll need: a run directory — a writable fol
 
 Mandatory approval points depend on the branch:
 
-- All branches: (1) biological context, (2) the full preprocessing plan, (3) **QC review** (after S3, before S6 PCA + neighbor graph), (4) clustering resolution.
-- `paired` only: (5) doublet-policy reconciliation at S3 — how to combine the RNA and ATAC detector calls.
+- All branches: (1) biological context, (2) the full preprocessing plan, (3) **QC review** (after quality filtering and doublet removal, before dimensionality reduction), (4) clustering resolution.
+- On **paired** multiome, the QC review summary also documents the **union doublet removal policy** for confirmation — there is no separate S3 user gate.
 - `separate` / `rna_only` / `atac_only`: S3 runs automatically — each modality's doublets are filtered by its own detector with no cross-modal reconciliation; no pause unless you ask for per-stage review.
 
 Which analysis, and where should I write the run?"
@@ -172,7 +172,7 @@ The **Summary** section of `plan_review.md`, verbatim (the appendix is reference
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
-- **`post_qc_review`** (all branches): QC review checkpoint **#2** between S3 and S4/S5. Generates QC figures and `checkpoint/qc_review/qc_review.md` (S1–S3 metrics; on **paired**, includes S3 union doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/`. They may revise S1/S2 thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures and `checkpoint/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/`. They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
 - **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
@@ -194,48 +194,10 @@ Approve, revise, or abort?"
      c. If the stage has a linked summary in `deliverables/checkpoint/resolution_review/` (e.g., `resolution_summary.md` for s7), read that too and surface both.
      d. Based on user decision:
         - Approve → `executor approve <stage> --config $CFG`.
-        - Revise → see **QC threshold revision** below if the current stage is `post_qc_review`; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
+        - Revise → if the current stage is `post_qc_review`, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
      e. Re-invoke the appropriate run command (see HPC section below). Continue until `manifest` completes.
 
-**QC threshold revision at `post_qc_review` (detailed procedure):**
-
-When the user asks to adjust an S1, S2, or S3 parameter at the QC review checkpoint, execute these steps in order — do not skip any:
-
-1. **Update parameters.** For each changed parameter run:
-   ```
-   executor revise <stage> <stage>.<param>=<value> --config $CFG --rationale "<user's reason>"
-   ```
-   This writes the new value to `parameters.yaml` and marks the stage `awaiting_approval`.
-
-2. **Delete stale artifacts** so Snakemake re-runs the affected stages:
-   - **S1 revised:** `internal/artifacts/s1_rna_qc/rna_qc.h5ad` — plus all S3 artifacts listed below.
-   - **S2 revised:** `internal/artifacts/s2_atac_qc/atac_qc.h5ad`, `atac_snap.h5ad`, `qc_summary.json`. Keep `atac_fragments_cbf_chrnorm.tsv.gz*` (expensive to regenerate) — plus all S3 artifacts listed below.
-   - **S3 revised:** `internal/artifacts/s3_doublets/rna_post_doublet.h5ad`, `atac_post_doublet.h5ad`, `calls.parquet`, `joint_barcodes.txt`, `overlap_summary.json`.
-   - Any revision at S1 or S2 also invalidates S3 — always delete S3 artifacts too.
-
-3. **Approve revised stages.** For each stage whose artifacts were deleted:
-   ```
-   executor approve <stage> --config $CFG
-   ```
-   Do **not** pass `--auto-approve` to `submit` (it refreshes timestamps on all sentinels and can trigger spurious re-runs of already-complete stages).
-
-4. **Pre-submit check.** An old head job still alive will recreate the sentinels you just deleted and confuse the new run. Cancel it before submitting:
-   ```
-   squeue -u $USER | grep pma_head   # scancel <JOBID> for each listed
-   ```
-   Confirm the queue is clear, then submit and start the monitor:
-   ```
-   source deliverables/pre_run/config/hpc.env
-   executor submit --config $CFG --executor pbs|slurm
-   executor hpc-status --watch --config $CFG
-   ```
-
-5. **Regenerate QC reports.** The submit target is `s3_doublets_execute`; the head job exits after S3 without running the local propose rule. After S3 completes, run the propose rule explicitly on the login node:
-   ```
-   executor propose post_qc_review --config $CFG
-   ```
-
-6. **Surface the updated report.** Read and relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` verbatim. Ask the user to approve or revise again.
+**QC threshold revision at `post_qc_review`:** see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, and what to surface back.
 
 2. When `manifest` finishes:
    - Read `deliverables/post_run/run_manifest.json` and extract `workflow_branch`, `outputs`.
@@ -244,6 +206,7 @@ When the user asks to adjust an S1, S2, or S3 parameter at the QC review checkpo
 ### WHAT_TO_SURFACE_BACK
 
 - At each pause: the full proposal yaml content + any linked summary markdown.
+- At **`post_qc_review` after a threshold revision:** relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` **verbatim** (not the proposal yaml alone). Mention `qc_summary_<run_name>.html` for the rendered report.
 - At completion: the manifest's `outputs` keys + a one-line sign-off ("Run complete. Outputs at `deliverables/post_run/`. I stop here — integration/annotation is out of scope.").
 
 ---
