@@ -2,7 +2,8 @@
 
 Runs after S3 doublet filtering and before S4/S5 and S6 PCA (RNA) + neighbor graph.
 Generates QC figures and writes the QC review summary at
-  deliverables/checkpoint/qc_review/qc_review.md
+  deliverables/checkpoint/qc_review/qc_review_<run>.md
+  deliverables/checkpoint/qc_review/qc_summary_<run>.html
 
 This is the single user-facing QC checkpoint: inspect S1/S2 QC figures, S3
 doublet histograms, and the cell-count waterfall; adjust S1/S2 thresholds or
@@ -30,6 +31,7 @@ def _plot_score_hist(
     title: str,
     out_dir: Path,
     stem: str,
+    threshold: float | None = None,
 ) -> list[Path]:
     from .. import figures as _fig
     import matplotlib
@@ -50,6 +52,9 @@ def _plot_score_hist(
             label=f"singlet (n={n_sing})", edgecolor="none")
     ax.hist(scores[flags], bins=bins, color="#ef4444", alpha=0.75,
             label=f"doublet (n={n_doub})", edgecolor="none")
+    if threshold is not None:
+        ax.axvline(threshold, color="#dc2626", linestyle="--", linewidth=1.5,
+                   label=f"threshold = {threshold:g}")
     ax.set_xlabel("doublet score")
     ax.set_ylabel("cells")
     ax.set_title(title)
@@ -59,6 +64,31 @@ def _plot_score_hist(
     return _fig.save_figure(fig, out_dir, stem)
 
 
+def _doublet_score_thresholds(run_dir: Path) -> tuple[float | None, float | None]:
+    """Read fixed doublet score cutoffs from parameters.yaml (post-S3 provenance)."""
+    import yaml
+    params_path = RunPaths(run_dir).parameters_yaml
+    if not params_path.exists():
+        return None, None
+    params = yaml.safe_load(params_path.read_text()) or {}
+
+    def _val(key: str, legacy: str | None = None) -> float | None:
+        entry = params.get(key)
+        if isinstance(entry, dict) and entry.get("value") is not None:
+            return float(entry["value"])
+        if legacy:
+            leg = params.get(legacy)
+            if isinstance(leg, dict) and leg.get("value") is not None:
+                return float(leg["value"])
+        return None
+
+    rna_thr = _val("s3_doublets.rna_doublet_score_threshold") or 0.25
+    atac_thr = (_val("s3_doublets.atac_doublet_score_threshold",
+                     legacy="s3_doublets.atac_doublet_threshold")
+                or 0.5)
+    return rna_thr, atac_thr
+
+
 def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
     """Doublet-score histograms (RNA + ATAC) from S3 calls.parquet."""
     calls_path = RunPaths(run_dir).stage_dir("s3_doublets") / "calls.parquet"
@@ -66,6 +96,7 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
         return []
 
     calls = pd.read_parquet(calls_path)
+    rna_thr, atac_thr = _doublet_score_thresholds(run_dir)
     result: list[Path] = []
 
     if "scrublet_score" in calls.columns:
@@ -80,6 +111,7 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
                 title="RNA doublet scores (Scrublet)",
                 out_dir=figs_dir,
                 stem="post_qc_review_doublet_rna",
+                threshold=rna_thr,
             ))
 
     if "atac_doublet_score" in calls.columns:
@@ -94,6 +126,7 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
                 title="ATAC doublet scores (SnapATAC2)",
                 out_dir=figs_dir,
                 stem="post_qc_review_doublet_atac",
+                threshold=atac_thr,
             ))
 
     return result

@@ -401,7 +401,7 @@ def _paired_shared_flow_counts(run_dir: Path, counts: dict[str, Any]) -> list[in
     """Shared RNA∩ATAC barcode counts per flow row (paired branch only)."""
     from .run_paths import RunPaths
     A = RunPaths(run_dir).artifacts
-    n_rows = 6 if counts.get("rna_final") is not None else 5
+    n_rows = 5 if counts.get("rna_final") is not None else 4
     shared: list[int | None] = [None] * n_rows
 
     rna_ingest = _barcode_set_h5ad(A / "s0_ingest" / "rna_ingest.h5ad")
@@ -411,19 +411,18 @@ def _paired_shared_flow_counts(run_dir: Path, counts: dict[str, Any]) -> list[in
     ingest_shared = len(rna_ingest)
     shared[0] = ingest_shared
     shared[1] = ingest_shared
-    shared[2] = ingest_shared
 
     calls_p = A / "s3_doublets" / "calls.parquet"
     if calls_p.exists():
         calls = pd.read_parquet(calls_p)
         both = calls["scrublet_score"].notna() & calls["atac_doublet_score"].notna()
-        shared[3] = int(both.sum())
+        shared[2] = int(both.sum())
 
     joint = counts.get("n_cells_joint")
     if joint is not None:
-        shared[4] = int(joint)
-    if n_rows > 5 and counts.get("rna_final") is not None:
-        shared[5] = int(counts["rna_final"])
+        shared[3] = int(joint)
+    if n_rows > 4 and counts.get("rna_final") is not None:
+        shared[4] = int(counts["rna_final"])
 
     return shared
 
@@ -449,9 +448,6 @@ def _flow_section(
 
     rna_raw = counts["rna_raw"]
     atac_raw = counts["atac_raw_barcodes"]
-    atac_after_import = counts["atac_after_snap_import"]
-    # Derived gaps
-    snap_drop = (atac_raw - atac_after_import) if (atac_raw is not None and atac_after_import is not None) else None
 
     joint = counts.get("n_cells_joint")
 
@@ -460,7 +456,7 @@ def _flow_section(
         rna_after_s1a = counts["rna_ingest"]
 
     s3_note = (
-        f"union doublet removal; joint cells {fmt(joint)}"
+        "union doublet removal and keep the joint cells"
         if joint is not None
         else "union doublet removal per modality"
     )
@@ -480,13 +476,10 @@ def _flow_section(
         _flow_row("1. raw", rna_raw, atac_raw, "—", 0),
         _flow_row("2. after S1a ambient correction", rna_after_s1a, atac_raw,
                   "RNA ambient correction (cell count unchanged)", 1),
-        _flow_row("3. after ATAC fragment import", rna_after_s1a, atac_after_import,
-                  (f"ATAC min-fragment pre-filter ({fmt(snap_drop)} barcodes removed)"
-                   if snap_drop else "ATAC fragments imported"), 2),
-        _flow_row("4. after RNA / ATAC QC", counts["rna_qc_post"], counts["atac_qc_post"],
-                  "per-modality MAD and quality thresholds", 3),
-        _flow_row("5. after S3 doublets", counts["rna_post_doublet"], counts["atac_post_doublet"],
-                  s3_note, 4),
+        _flow_row("3. after RNA / ATAC QC", counts["rna_qc_post"], counts["atac_qc_post"],
+                  "per-modality MAD and quality thresholds", 2),
+        _flow_row("4. after S3 doublets", counts["rna_post_doublet"], counts["atac_post_doublet"],
+                  s3_note, 3),
     ]
     if include_final_stage:
         rna_inter = (
@@ -498,12 +491,12 @@ def _flow_section(
             if (counts["atac_post_doublet"] is not None and counts["atac_final"] is not None) else None
         )
         rows.append(
-            _flow_row("6. after S4–S8 (final)", counts["rna_final"], counts["atac_final"],
+            _flow_row("5. after S4–S8 (final)", counts["rna_final"], counts["atac_final"],
                       (f"paired: S8 assembly is a no-op intersection; RNA lost {fmt(rna_inter)}, "
                        f"ATAC lost {fmt(atac_inter)} downstream of S3"
                        if joint is not None
                        else "per-modality final outputs (no joint object on this branch)"),
-                      5)
+                      4)
         )
     headers = ["stage", "RNA", "ATAC"] + (["Shared"] if paired else []) + ["note"]
     return (
@@ -764,9 +757,10 @@ def _atac_section(
         caption="ATAC fragment size distribution after QC filtering.",
         render=render,
     )
+    from .figures import FRIP_DISTRIBUTION_TITLE
     fig_frip = _fig_block(
         run_dir, "s2_atac_qc_frip_histogram",
-        caption="FRiP distribution; dashed line marks the filter threshold.",
+        caption=f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold.",
         render=render,
     )
     return (
@@ -819,7 +813,7 @@ def _qc_review_intro(run_name: str, run_dir: Path) -> str:
         "# QC review checkpoint",
         "",
         f"Review QC plots in `{run_name}/deliverables/checkpoint/qc_review`. "
-        "For a rendered report with images, open **qc_summary.html** in this folder "
+        f"For a rendered report with images, open **qc_summary_{run_name}.html** in this folder "
         "(generated alongside this file). Approve when satisfied, or revise thresholds "
         "and re-run affected stages before approving.",
         "",
@@ -846,6 +840,18 @@ def _qc_review_actions(branch: str) -> str:
         f"Processing-MuAgent revise s2_atac_qc s2_atac_qc.tss_enrichment_min=1.5 --config {cfg}",
         f"Processing-MuAgent run --config {cfg} --target s2_atac_qc_execute",
         "# Re-run S3 + post_qc_review if S2 changed:",
+        f"Processing-MuAgent run --config {cfg} --target post_qc_review_propose",
+        "```",
+        "",
+        "### Adjust doublet score thresholds (S3)",
+        "",
+        "If the doublet histograms look too strict or too lenient, revise the fixed "
+        "score cutoffs and re-run S3 + this checkpoint:",
+        "",
+        "```bash",
+        "# Example — lower RNA Scrublet cutoff (flags more cells):",
+        f"Processing-MuAgent revise s3_doublets s3_doublets.rna_doublet_score_threshold=0.2 --config {cfg}",
+        f"Processing-MuAgent run --config {cfg} --target s3_doublets_execute",
         f"Processing-MuAgent run --config {cfg} --target post_qc_review_propose",
         "```",
         "",
@@ -959,6 +965,32 @@ def _doublet_section(
     rna_before = int(rna_scored.sum())
     atac_before = int(atac_scored.sum())
 
+    rna_thr = (_param(params, "s3_doublets.rna_doublet_score_threshold") if params else None)
+    if rna_thr is None and params is not None:
+        rna_thr = 0.25
+    atac_thr = None
+    if params:
+        atac_thr = (_param(params, "s3_doublets.atac_doublet_score_threshold")
+                    or _param(params, "s3_doublets.atac_doublet_threshold"))
+        if atac_thr is None:
+            atac_thr = 0.5
+    threshold_lines = ""
+    if rna_thr is not None or atac_thr is not None:
+        thr_rows: list[list[Any]] = []
+        if rna_thr is not None:
+            thr_rows.append(["rna_doublet_score_threshold", rna_thr])
+        if atac_thr is not None:
+            thr_rows.append(["atac_doublet_score_threshold", atac_thr])
+        threshold_lines = (
+            "\n"
+            "### Score thresholds\n"
+            "\n"
+            f"{_md_table(['parameter', 'value'], thr_rows)}\n"
+            "\n"
+            "- Cells are flagged when their doublet score is **strictly greater** than "
+            "the threshold (fixed cutoffs; no automatic threshold selection).\n"
+        )
+
     summary_table = ""
     if branch == "paired":
         both_scored_label = f"n={n_both}*"
@@ -989,6 +1021,7 @@ def _doublet_section(
     return (
         "## Doublets (S3)\n"
         f"{policy_note}"
+        f"{threshold_lines}"
         f"{summary_table}"
     )
 
@@ -1339,9 +1372,10 @@ def _html_atac_section(
         fig_dir, "s2_atac_qc_fragment_size_distribution",
         "ATAC fragment size distribution after QC filtering.",
     )
+    from .figures import FRIP_DISTRIBUTION_TITLE
     plot_frip = _html_figure(
         fig_dir, "s2_atac_qc_frip_histogram",
-        "FRiP distribution; dashed line marks the filter threshold.",
+        f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold.",
     )
     plots = plot_fsd + plot_frip
     return (
@@ -1394,7 +1428,7 @@ def build_qc_review_html_body(run_dir: Path | str) -> str:
     counts = _stage_counts(run_dir)
     branch = _workflow_branch(run_dir, params)
 
-    title = f"<h1>QC review — {html_module.escape(run_dir.name)}</h1>"
+    title = f"<h1>QC summary — {html_module.escape(run_dir.name)}</h1>"
     context = _plan_dataset_assay_line(run_dir)
     context_html = f"<p>{_inline_md(context)}</p>" if context else ""
 
@@ -1411,17 +1445,17 @@ def build_qc_review_html_body(run_dir: Path | str) -> str:
 
 
 def write_qc_review_html(run_dir: Path | str) -> Path | None:
-    """Write qc_summary.html — formatted results with embedded figures and layout CSS."""
+    """Write qc_summary_<run>.html — formatted results with embedded figures and layout CSS."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
-    out = rp.deliv_qc_review / "qc_summary.html"
+    out = rp.qc_summary_html
     body = build_qc_review_html_body(run_dir)
     doc = (
         "<!DOCTYPE html>\n<html lang=\"en\"><head>\n"
         "<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        f"<title>QC review — {html_module.escape(run_dir.name)}</title>\n"
+        f"<title>QC summary — {html_module.escape(run_dir.name)}</title>\n"
         "<style>\n"
         f"{_qc_html_styles()}"
         "</style>\n</head><body>\n"
@@ -1432,11 +1466,14 @@ def write_qc_review_html(run_dir: Path | str) -> Path | None:
 
 
 def write_qc_review(run_dir: Path | str) -> Path:
-    """Write editable qc_review.md and browser-friendly qc_summary.html."""
+    """Write editable qc_review_<run>.md and browser-friendly qc_summary_<run>.html."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
     rp.deliv_qc_review.mkdir(parents=True, exist_ok=True)
+    for legacy in (rp.deliv_qc_review / "qc_review.md", rp.deliv_qc_review / "qc_summary.html"):
+        if legacy.exists():
+            legacy.unlink()
     rp.qc_review_summary_md.write_text(build_qc_review(run_dir), encoding="utf-8")
     write_qc_review_html(run_dir)
     return rp.qc_review_summary_md

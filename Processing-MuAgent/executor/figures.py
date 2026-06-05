@@ -25,6 +25,7 @@ ANNOTATION_LINEWIDTH = 1.5
 FSD_ANNOTATION_LINEWIDTH = 1.2
 ANNOTATION_FONTSIZE = FONT_SIZE - 2
 TITLE_SIZE = 14
+FRIP_DISTRIBUTION_TITLE = "Fraction of Reads in Peaks (FRiP) distribution"
 UMAP_SIZE = (6.5, 5.5)
 QC_VIOLIN_SIZE = (12, 4.5)
 
@@ -203,7 +204,7 @@ def plot_frip_histogram(
     *,
     out_dir: Path | str,
     stem: str,
-    frip_min: float = 0.15,
+    frip_min: float = 0.2,
 ) -> list[Path]:
     """Histogram of per-cell FRiP values with a vertical threshold line.
 
@@ -218,7 +219,7 @@ def plot_frip_histogram(
 
     fig, ax = plt.subplots(figsize=(7.0, 4.5))
     if frip.size == 0:
-        ax.set_title("FRiP distribution (no data)")
+        ax.set_title(f"{FRIP_DISTRIBUTION_TITLE} (no data)")
         return save_figure(fig, out_dir, stem)
 
     n_total = frip.size
@@ -242,7 +243,7 @@ def plot_frip_histogram(
     )
     ax.set_xlabel("FRiP (fraction of reads in peaks)")
     ax.set_ylabel("number of cells")
-    ax.set_title("FRiP distribution")
+    ax.set_title(FRIP_DISTRIBUTION_TITLE)
     ax.set_xlim(0, 1)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

@@ -61,12 +61,12 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   1. **n_fragments** — MAD-based bounds on log-scale fragment count (with an absolute floor).
   2. **TSS enrichment** — min/max bounds on SnapATAC2's TSS score.
   3. **Nucleosome signal** — upper bound on Signac-style `mono / nucleosome_free` ratio.
-  4. **FRiP** — Fraction of Reads in Peaks (`frip_min`; default 0.15). S2 acquires a peak set using the same priority order as S5 feature export (see below), calls the peak × cell matrix via SnapATAC2, and filters cells with FRiP below threshold. The peak BED written here is reused by S5 so no redundant peak calling occurs. FRiP filtering is silently skipped when no peak source is available.
+  4. **FRiP** — Fraction of Reads in Peaks (`frip_min`; default 0.2). S2 acquires a peak set using the same priority order as S5 feature export (see below), calls the peak × cell matrix via SnapATAC2, and filters cells with FRiP below threshold. The peak BED written here is reused by S5 so no redundant peak calling occurs. FRiP filtering is silently skipped when no peak source is available.
 
   Writes fragment-size distribution figures to `deliverables/checkpoint/qc_review/`.
 - **S3 Doublets** — Per-modality doublet detection, then branch-specific reconciliation:
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
-  - **ATAC:** SnapATAC2 scrublet (thresholds configurable in the preprocessing plan).
+  - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
   - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_review.md`).
 - **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_review.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Revise quality-filter thresholds and re-run affected stages before approving.

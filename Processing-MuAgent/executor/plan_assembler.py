@@ -131,7 +131,7 @@ def assemble_plan(
         "s1a_ambient": {
             "parameters": {
                 "method": p(ambient_method, amb_src, amb_rat, amb_conf),
-                "max_contamination": p(0.5, "recommended",
+                "max_contamination": p(0.5, "default",
                                         "Cap per-cell rho/contamination at this fraction; "
                                         "prevents pathological over-correction on noisy cells.", "medium"),
             }
@@ -141,35 +141,35 @@ def assemble_plan(
                 "k_mad": p(5.0, "default", "Project convention for symmetric MAD on log1p counts.", "high"),
                 "pct_mt_k": p(3.0, "default", "MAD multiplier for mito upper bound.", "high"),
                 "pct_mt_ceiling": p(pct_mt_ceil, "inferred", pct_mt_rat, "medium"),
-                "pct_mt_floor": p(5.0, "recommended", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),
-                "pct_ribo_max": p(50.0, "recommended",
+                "pct_mt_floor": p(5.0, "default", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),
+                "pct_ribo_max": p(50.0, "default",
                                     "Soft ceiling on pct_counts_ribo (Rps/Rpl/Mrps/Mrpl). "
                                     "Stressed/dying cells often exceed this; tissues with very high "
                                     "ribo expression (e.g. plasma cells) may need a higher value.", "medium"),
                 "min_cells_per_gene": p(3, "default", "scanpy convention.", "high"),
-                "min_counts_floor": p(500, "recommended",
+                "min_counts_floor": p(500, "default",
                                         "Absolute minimum total_counts per cell; also clamps the "
                                         "MAD-derived lower bound when it falls below this value.", "medium"),
-                "min_genes_floor": p(200, "recommended",
+                "min_genes_floor": p(200, "default",
                                       "Absolute minimum n_genes_by_counts per cell; also clamps the "
                                       "MAD-derived lower bound when it falls below this value.", "medium"),
             }
         },
         "s2_atac_qc": {
             "parameters": {
-                "tss_enrichment_min": p(1.5, "recommended",
+                "tss_enrichment_min": p(1.5, "default",
                                         "Minimum TSS enrichment; cells at or below are removed.", "high"),
-                "tss_enrichment_max": p(50.0, "recommended",
+                "tss_enrichment_max": p(50.0, "default",
                                          "Maximum TSS enrichment; very high values often indicate artifacts.",
                                          "medium"),
                 "n_fragments_k_mad": p(5.0, "default", "Symmetric MAD on log fragments per cell.", "high"),
-                "n_fragments_floor": p(1500, "recommended",
+                "n_fragments_floor": p(1500, "default",
                                         "Absolute minimum fragments per cell; also clamps the "
                                         "MAD-derived lower bound when it falls below this value.", "medium"),
-                "nucleosome_signal_max": p(3.0, "recommended",
+                "nucleosome_signal_max": p(3.0, "default",
                                             "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
                                             "ratio). Cells at or above are removed.", "medium"),
-                "frip_min": p(0.15, "recommended",
+                "frip_min": p(0.2, "default",
                                "Minimum Fraction of Reads in Peaks (FRiP) per cell. "
                                "Cells below this value are removed. Set to 0 to disable. "
                                "Only applied when a peak set is available "
@@ -179,12 +179,16 @@ def assemble_plan(
         },
         "s3_doublets": {
             "parameters": {
-                "scrublet_expected_rate": p("auto", "recommended",
+                "scrublet_expected_rate": p("auto", "default",
                                               "If 'auto', the rate scales as min(0.10, 0.0008 * n_cells) "
                                               "to track 10x's empirical doublet curve (~0.8% per 1000 cells). "
                                               "Override with a float to force a fixed rate.", "high"),
-                "atac_doublet_threshold": p(0.5, "recommended",
-                                              "SnapATAC2 scrublet doublet-probability threshold.", "medium"),
+                "rna_doublet_score_threshold": p(0.25, "default",
+                                                 "RNA Scrublet doublet-score cutoff; cells with "
+                                                 "scrublet_score above this value are flagged.", "medium"),
+                "atac_doublet_score_threshold": p(0.5, "default",
+                                                  "SnapATAC2 scrublet doublet-score cutoff; cells with "
+                                                  "doublet_score above this value are flagged.", "medium"),
                 "removal_policy_recommendation": p(
                     "independent" if workflow_branch == "separate" else "union",
                     "derived" if workflow_branch == "separate" else "recommended",
@@ -211,7 +215,7 @@ def assemble_plan(
                 "drop_first": p(True, "default",
                                 "Drop the first spectral component (depth-correlated); "
                                 "applied to obsm['X_spectral'].", "high"),
-                "max_top_peaks": p(50000, "recommended", "Cap on feature selection.", "medium"),
+                "max_top_peaks": p(50000, "default", "Cap on feature selection.", "medium"),
             }
         },
         "s6_neighbors": {
@@ -222,7 +226,7 @@ def assemble_plan(
                                 "with an int to force a fixed value.", "medium"),
                 "rna_n_pcs_max": p(50, "default",
                                      "Upper cap for the auto-elbow search.", "high"),
-                "rna_scale": p(True, "recommended",
+                "rna_scale": p(True, "default",
                                  "Apply sc.pp.scale(max_value=10) before PCA — the scanpy-standard "
                                  "preprocessing path. Disable to PCA the unscaled log-normalized data.", "high"),
                 "n_neighbors": p(15, "default", "scanpy convention.", "high"),

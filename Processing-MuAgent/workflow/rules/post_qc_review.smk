@@ -1,11 +1,12 @@
 rule post_qc_review_propose:
-    """QC review user checkpoint (#2): figures + qc_review.md after S3.
+    """QC review user checkpoint (#2): figures + qc_review_<run>.md after S3.
 
     Generates:
       - deliverables/checkpoint/qc_review/post_qc_review_cell_counts.{png,pdf}
       - deliverables/checkpoint/qc_review/post_qc_review_doublet_rna.{png,pdf}
       - deliverables/checkpoint/qc_review/post_qc_review_doublet_atac.{png,pdf}
-      - deliverables/checkpoint/qc_review/qc_review.md
+      - deliverables/checkpoint/qc_review/qc_review_<run>.md
+      - deliverables/checkpoint/qc_review/qc_summary_<run>.html
 
     S1/S2 QC figures are already in deliverables/checkpoint/qc_review/.
     On paired multiome, the summary documents the S3 union doublet policy for
@@ -18,7 +19,7 @@ rule post_qc_review_propose:
     output:
         proposal = str(INTERNAL / "proposals" / "post_qc_review.yaml"),
         awaiting = str(INTERNAL / "proposals" / "post_qc_review.awaiting_approval"),
-        summary  = str(CHECKPOINT / "qc_review" / "qc_review.md"),
+        summary  = str(CHECKPOINT / "qc_review" / f"qc_review_{RUN_DIR.name}.md"),
     params:
         run_dir = str(RUN_DIR),
     run:
@@ -31,7 +32,7 @@ rule post_qc_review_propose:
             "stage": "post_qc_review",
             "action": (
                 "QC review checkpoint — inspect deliverables/checkpoint/qc_review/ "
-                "and qc_review.md (includes paired S3 union doublet policy when applicable). "
+                f"and qc_review_{RUN_DIR.name}.md (includes paired S3 union doublet policy when applicable). "
                 "Revise S1/S2 thresholds if needed, "
                 "then run: Processing-MuAgent approve post_qc_review --config $CFG"
             ),

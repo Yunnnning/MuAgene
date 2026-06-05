@@ -181,13 +181,29 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     policy = param("s3_doublets", "removal_policy_recommendation")
     goal = param("s3_doublets", "study_goal")
 
+    rna_doub_thr = param("s3_doublets", "rna_doublet_score_threshold")
+    atac_doub_thr = param("s3_doublets", "atac_doublet_score_threshold") or param(
+        "s3_doublets", "atac_doublet_threshold"
+    )
+
     def _paired_doublet_policy_detail(recommended: str) -> list[str]:
-        return [
+        lines = [
             "- paired-multiome policy: Each modality runs its own doublet detector. "
             "Cells flagged by **either** detector are removed (union). Detectors are "
             "prone to false negatives, so union minimises doublet contamination.",
             f"- applied policy: `{recommended}`",
         ]
+        if rna_doub_thr.get("value") is not None:
+            lines.append(
+                f"- RNA Scrublet score threshold: `{rna_doub_thr.get('value')}` "
+                "(cells with score above are flagged)"
+            )
+        if atac_doub_thr.get("value") is not None:
+            lines.append(
+                f"- ATAC SnapATAC2 score threshold: `{atac_doub_thr.get('value')}` "
+                "(cells with score above are flagged)"
+            )
+        return lines
 
     if branch == "paired":
         policy_val = policy.get("value", "?")
@@ -199,24 +215,39 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "certainty": "certain",
         })
     elif branch == "separate":
+        detail = [
+            "- separate branch: each modality's doublets removed independently "
+            "(Scrublet for RNA, SnapATAC2 for ATAC).",
+        ]
+        if rna_doub_thr.get("value") is not None:
+            detail.append(f"- RNA Scrublet score threshold: `{rna_doub_thr.get('value')}`")
+        if atac_doub_thr.get("value") is not None:
+            detail.append(f"- ATAC SnapATAC2 score threshold: `{atac_doub_thr.get('value')}`")
         items.append({
             "label": "Doublet removal policy",
-            "value": "independent (per-modality; Scrublet for RNA, SnapATAC2 for ATAC; raw calls preserved)",
+            "value": "independent (per-modality; fixed score thresholds)",
+            "detail": detail,
             "reason": ("separate branch: modalities are independent samples with disjoint barcodes; "
-                       "each modality's doublets removed by its own detector."),
+                       "each modality's doublets are removed by its own detector."),
             "certainty": "certain",
         })
     elif branch == "rna_only":
+        rna_thr_note = ""
+        if rna_doub_thr.get("value") is not None:
+            rna_thr_note = f"; score threshold={rna_doub_thr.get('value')}"
         items.append({
             "label": "Doublet removal policy",
-            "value": "auto-applied (Scrublet only; raw calls preserved)",
+            "value": f"Scrublet only (fixed score threshold{rna_thr_note})",
             "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
             "certainty": "certain",
         })
     elif branch == "atac_only":
+        atac_thr_note = ""
+        if atac_doub_thr.get("value") is not None:
+            atac_thr_note = f"; score threshold={atac_doub_thr.get('value')}"
         items.append({
             "label": "Doublet removal policy",
-            "value": "auto-applied (ATAC detector only; raw calls preserved)",
+            "value": f"SnapATAC2 scrublet only (fixed score threshold{atac_thr_note})",
             "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
             "certainty": "certain",
         })

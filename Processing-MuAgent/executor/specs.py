@@ -21,7 +21,7 @@ _SCIENCE_DESCRIPTIONS: dict[str, str] = {
     "s1a_ambient":      "Correct ambient RNA contamination using SoupX or DecontX",
     "s1_rna_qc":        "Apply MAD-based QC thresholds to filter low-quality RNA cells",
     "s2_atac_qc":       "Apply TSS enrichment and nucleosome signal QC to filter low-quality ATAC cells",
-    "s3_doublets":      "Detect and remove doublets using Scrublet (RNA) and SnapATAC2 (ATAC)",
+    "s3_doublets":      "Detect and remove doublets using Scrublet (RNA) and SnapATAC2 (ATAC); fixed score thresholds",
     "s4_rna_norm":      "Normalize RNA counts and select highly variable genes",
     "s5_atac_spectral": "Compute ATAC spectral embedding from peak-by-cell matrix",
     "s6_neighbors":     "Build RNA PCA and shared nearest-neighbor graph",

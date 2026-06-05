@@ -46,15 +46,37 @@ def _as_sparse(matrix: Any) -> sp.csr_matrix:
     return sp.csr_matrix(np.asarray(matrix))
 
 
-def _score_atac_doublets_snapatac(atac, *, probability_threshold: float):
-    """Use SnapATAC2's native doublet detector (`snap.pp.scrublet` + `filter_doublets`).
+def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any = None) -> Any:
+    """parameters.yaml wins over plan (so `executor revise` takes effect on re-run)."""
+    v = _prov.get_value(params_path, f"s3_doublets.{name}", None)
+    if v is not None:
+        return v
+    entry = plan_params.get(name, {})
+    if isinstance(entry, dict) and "value" in entry:
+        return entry["value"]
+    return default
+
+
+def _resolve_atac_score_threshold(params_path: Path, plan_params: dict) -> float:
+    """Resolve ATAC doublet score threshold; accept legacy plan key."""
+    v = _resolve_param(params_path, plan_params, "atac_doublet_score_threshold", None)
+    if v is not None:
+        return float(v)
+    legacy = _resolve_param(params_path, plan_params, "atac_doublet_threshold", None)
+    if legacy is not None:
+        return float(legacy)
+    return 0.5
+
+
+def _score_atac_doublets_snapatac(atac, *, score_threshold: float):
+    """Use SnapATAC2's native doublet detector (`snap.pp.scrublet`).
 
     Deviation from the approved design: the plan names AMULET (fragment-level
     multi-allelic overlap). AMULET is not practical in this environment; SnapATAC2 2.8
-    ships `pp.scrublet` which is an ATAC-adapted Scrublet on the tile matrix and
-    `pp.filter_doublets` which applies the threshold. The raw scores + boolean flag
-    are preserved in the output parquet regardless, so downstream agents can re-derive
-    a different policy.
+    ships `pp.scrublet` which is an ATAC-adapted Scrublet on the tile matrix.
+    We apply a fixed user-configured score cutoff (not SnapATAC2's probability
+    threshold or any automatic picker). Raw scores + flags are preserved in
+    calls.parquet.
 
     Returns (scores, flags). Adds a 'tile_matrix' to `atac` if not present.
     """
@@ -84,14 +106,11 @@ def _score_atac_doublets_snapatac(atac, *, probability_threshold: float):
             return np.array([])
 
     scores = _to_arr("doublet_score")
-    probs = _to_arr("doublet_probability")
-    if probs.size:
-        flags = probs > probability_threshold
-    elif scores.size:
-        flags = scores > probability_threshold
+    if scores.size:
+        flags = scores > score_threshold
     else:
         flags = np.zeros(atac.n_obs, dtype=bool)
-    return (scores if scores.size else probs), flags
+    return scores, flags
 
 
 def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict[str, Any]:
@@ -108,6 +127,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     scores = np.array([], dtype=float)
     flags = np.array([], dtype=bool)
     _SCRUBLET_HVG_CAP = 3000  # max genes passed to Scrublet; HVG-filter above this
+    s3_plan_params = plan["stages"]["s3_doublets"]["parameters"]
     if has_rna:
         rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad")
         raw_counts = rna.layers["counts"] if "counts" in rna.layers else rna.X
@@ -126,8 +146,11 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             counts = counts[:, hvg_mask]
             n_hvg_used = int(hvg_mask.sum())
             del tmp
-        rate_param = plan["stages"]["s3_doublets"]["parameters"]["scrublet_expected_rate"]["value"]
+        rate_param = s3_plan_params["scrublet_expected_rate"]["value"]
         expected_rate, rate_reason = _resolve_doublet_rate(rate_param, int(rna.n_obs))
+        rna_score_threshold = float(
+            _resolve_param(params_path, s3_plan_params, "rna_doublet_score_threshold", 0.25)
+        )
         _prov.set_param(params_path, "s3_doublets.scrublet_expected_rate_resolved",
                         float(expected_rate),
                         source="derived", confidence="high",
@@ -136,13 +159,17 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                                    f"Scrublet run on top {n_hvg_used} HVGs."),
                         method={"name": "s3.resolve_doublet_rate",
                                 "code_ref": "executor/stages/s3_doublets.py"})
+        _prov.set_param(params_path, "s3_doublets.rna_doublet_score_threshold",
+                        rna_score_threshold, source="recommended", confidence="medium",
+                        rationale=("Fixed RNA Scrublet doublet-score cutoff; cells with "
+                                   "scrublet_score above this value are flagged."),
+                        method={"name": "s3.rna_doublet_score_threshold",
+                                "code_ref": "executor/stages/s3_doublets.py"})
         try:
             sd = scr.Scrublet(counts, expected_doublet_rate=expected_rate, random_state=0)
-            scores, flags = sd.scrub_doublets(verbose=False)
-            if flags is None or not np.any(flags):
-                # Scrublet's auto-threshold occasionally fails (bimodality unclear).
-                # Fall back to a conservative score-based cutoff.
-                flags = scores > 0.2
+            scores, _ = sd.scrub_doublets(verbose=False)
+            scores = np.asarray(scores, dtype=float)
+            flags = scores > rna_score_threshold
         except Exception as e:
             log_event(run_dir, {"stage": "s3_doublets", "event": "scrublet_failed", "error": str(e)})
             scores = np.zeros(rna.n_obs)
@@ -160,18 +187,17 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         import snapatac2 as snap
         atac_h5 = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
         atac = snap.read(str(atac_h5))
-        atac_method = "snapatac2.pp.scrublet+filter_doublets"
-        atac_threshold = float(plan["stages"]["s3_doublets"]["parameters"]
-                                .get("atac_doublet_threshold", {}).get("value", 0.5))
-        _prov.set_param(params_path, "s3_doublets.atac_doublet_threshold",
+        atac_method = "snapatac2.pp.scrublet+score_threshold"
+        atac_threshold = _resolve_atac_score_threshold(params_path, s3_plan_params)
+        _prov.set_param(params_path, "s3_doublets.atac_doublet_score_threshold",
                         atac_threshold, source="recommended", confidence="medium",
-                        rationale=("SnapATAC2 scrublet doublet-probability cutoff "
-                                   "above which a barcode is flagged."),
-                        method={"name": "s3.atac_doublet_threshold",
+                        rationale=("Fixed SnapATAC2 scrublet doublet-score cutoff; cells with "
+                                   "doublet_score above this value are flagged."),
+                        method={"name": "s3.atac_doublet_score_threshold",
                                 "code_ref": "executor/stages/s3_doublets.py"})
         try:
             atac_scores, atac_flags = _score_atac_doublets_snapatac(
-                atac, probability_threshold=atac_threshold)
+                atac, score_threshold=atac_threshold)
             atac_bc = list(atac.obs_names)
         except Exception as e:
             log_event(run_dir, {"stage": "s3_doublets", "event": "atac_snap_doublet_failed",
@@ -343,10 +369,10 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         _prov.set_param(params_path, "s3_doublets.atac_method", atac_method,
                         source="derived", confidence="high",
                         rationale=("Plan named AMULET (fragment multi-allelic overlap). "
-                                   "Current environment uses SnapATAC2's native scrublet + "
-                                   "filter_doublets instead (Scrublet adapted to ATAC tile "
-                                   "matrix). Deviation explicitly recorded; raw scores + flags "
-                                   "preserved in calls.parquet."),
+                                   "Current environment uses SnapATAC2's native scrublet on "
+                                   "the tile matrix with a fixed score threshold. Deviation "
+                                   "explicitly recorded; raw scores + flags preserved in "
+                                   "calls.parquet."),
                         method={"name": atac_method,
                                 "code_ref": "executor/stages/s3_doublets.py::_score_atac_doublets_snapatac"})
 
