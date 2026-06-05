@@ -149,23 +149,25 @@ executor declare-branch <rna_only|atac_only|paired|separate> --config $CFG
 
 This writes `plan.workflow_branch_declared` to `parameters.yaml` as a `source=user` assertion. S0 will confirm it against its own pairing detection and raise with a clear diff if they don't match.
 
-### 6. Run to the plan-review gate (flexible S0)
+### 6. Run to the plan-review gate
 
-**Default — try local first:**
+S0 execution location is determined by the configured mode.
 
-```
-executor run --config $CFG --target p2_plan_execute
-```
-
-Runs P1 → S0 → P2 and stops at `plan_review`. Small inputs: ~30s.
-
-**Large dataset upfront** (user says so, or dense_txt / very large h5): configure HPC first, then:
+**HPC mode (`execution.mode` is `pbs` or `slurm`) — run S0 on the cluster directly:**
 
 ```
 source deliverables/pre_run/config/hpc.env
 executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute
 executor run --config $CFG --target p2_plan_execute
 ```
+
+**Local mode (`execution.mode` is `local`) — run everything locally:**
+
+```
+executor run --config $CFG --target p2_plan_execute
+```
+
+Runs P1 → S0 → P2 and stops at `plan_review`. Small inputs: ~30s.
 
 **S0 failed locally with a resource error** (OOM, Killed, walltime — check with
 `from executor.hpc import looks_like_resource_failure` on snakemake stderr):

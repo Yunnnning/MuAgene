@@ -112,16 +112,21 @@ Once the user answers, in order:
 5. Invoke `executor declare-branch <paired|separate|rna_only|atac_only> --config $CFG`.
    - S0 will confirm this assertion against its own pairing detection; if they mismatch, S0 raises with a clear diff — relay it verbatim.
 
-6. **Run planning (P1 → S0 → P2) with flexible S0 execution:**
-   - **Default:** `executor run --config $CFG --target p2_plan_execute` (local; ~30s on small inputs).
-   - **If the user flagged a very large dataset** (e.g. dense GEO matrix, >100k cells, or `PMA_RESOURCES_SCALE` > 1): ensure HPC is configured, `source hpc.env`, then `executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute` before `executor run --config $CFG --target p2_plan_execute`.
-   - **If step (a) fails on S0 with a resource error** (OOM, `Killed`, MemoryError, walltime exceeded — use `executor.hpc.looks_like_resource_failure()` on the snakemake stderr):
-     1. Configure HPC if not done (`hpc-info` + `configure-execution`; bump `PMA_RESOURCES_SCALE` if appropriate).
-     2. `source deliverables/pre_run/config/hpc.env`
-     3. `executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute`
-     4. Resume planning locally: `executor run --config $CFG --target p2_plan_execute`
+6. **Run planning (P1 → S0 → P2) — S0 execution location depends on configured mode:**
+   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, then run S0 on the cluster:
+     ```
+     source deliverables/pre_run/config/hpc.env
+     executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute
+     executor run --config $CFG --target p2_plan_execute
+     ```
+   - **Local mode (`execution.mode` is `local`):** `executor run --config $CFG --target p2_plan_execute` (runs P1 → S0 → P2; ~30s on small inputs).
+     - **If S0 fails with a resource error** (OOM, `Killed`, MemoryError, walltime exceeded — use `executor.hpc.looks_like_resource_failure()` on the snakemake stderr):
+       1. Configure HPC if not done (`hpc-info` + `configure-execution`; bump `PMA_RESOURCES_SCALE` if appropriate).
+       2. `source deliverables/pre_run/config/hpc.env`
+       3. `executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute`
+       4. `executor run --config $CFG --target p2_plan_execute`
    - **Do not** retry logic errors on the cluster (pairing ambiguous, declared-vs-detected mismatch, missing index). Relay the message; user fixes inputs or branch declaration.
-   - After S0 completes (local or cluster), surface `validation_report.json` pairing fields if `paired` was downgraded or ambiguous.
+   - After S0 completes, surface `validation_report.json` pairing fields if `paired` was downgraded or ambiguous.
 
 ### WHAT_TO_SURFACE_BACK
 
@@ -211,10 +216,10 @@ model differs: heavy `_execute` rules dispatch to scheduler jobs, while every
 `plan_review`) plus `manifest` are declared `localrules` and run on the orchestrator
 host (login node in interactive mode; the head-job in headless mode).
 
-**S0 ingest** is cluster-capable: tried locally first; retried as a cluster job
-when ingest fails for resource reasons or when the user/dataset size warrants it.
-Pairing-detection conflicts are still resolved interactively on the login node after
-S0 finishes.
+**S0 ingest** runs on the cluster directly when `execution.mode` is `pbs` or
+`slurm`; runs locally when `execution.mode` is `local` (with cluster retry on
+resource failure). Pairing-detection conflicts are always resolved interactively
+on the login node after S0 finishes.
 
 ### Intake (Step 2) — ask before P1 runs
 
@@ -239,7 +244,7 @@ for confirmation.
 | Step | Stages | Executes on | You |
 |------|--------|-------------|-----|
 | Planning | P1 → P2 | Login node | — |
-| S0 ingest | S0 | Login node (default); **cluster if local fails or dataset is large** | — |
+| S0 ingest | S0 | Cluster (HPC mode) / Login node (local mode) | — |
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S3 | Cluster | — |
 | Checkpoint **#2** | post_qc_review | — | Review QC |

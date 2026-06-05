@@ -137,13 +137,17 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "chrom_bound_filter_failed",
                              "error": str(_e), "falling_back_to": "unfiltered"})
 
-    # Import fragments into a fresh SnapATAC2-backed h5ad
+    # Import fragments into a fresh SnapATAC2-backed h5ad.
+    # For Cell Ranger ARC paired multiome, S0 writes a RNA cell-barcode whitelist
+    # so we do not import the millions of empty-droplet barcodes in the fragments file.
+    whitelist = atac_meta.get("cell_barcode_whitelist")
     h5_out = art / "atac_snap.h5ad"
     adata = snap.pp.import_fragments(
         fragments_path,
         chrom_sizes=genome_ref,
         file=str(h5_out),
         sorted_by_barcode=False,
+        whitelist=whitelist,
     )
 
     # TSS enrichment (per-cell)
@@ -177,7 +181,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
 
     plan_params = plan["stages"]["s2_atac_qc"]["parameters"]
     k_mad = _resolve_param(params_path, plan_params, "n_fragments_k_mad", 5.0)
-    n_frag_floor = _resolve_param(params_path, plan_params, "n_fragments_floor", 500)
+    n_frag_floor = _resolve_param(params_path, plan_params, "n_fragments_floor", 1500)
     tss_min = float(_resolve_param(params_path, plan_params, "tss_enrichment_min", 1.5))
     tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", 50.0))
     nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 3.0))
@@ -190,10 +194,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             f_lo, f_hi = float(n_frag_floor), float(n_frag_values.max() if n_frag_values.size else 1e6)
     else:
         f_lo, f_hi = float(n_frag_floor), 1e12
+    f_lo = max(f_lo, float(n_frag_floor))
 
     _prov.set_param(params_path, "s2_atac_qc.n_fragments_min", float(f_lo),
                     source="derived", confidence="high",
-                    rationale="MAD lower bound on log1p(n_fragments) after applying floor",
+                    rationale=(f"max(MAD lower bound on log1p(n_fragments), "
+                               f"n_fragments_floor={n_frag_floor})"),
                     method={"name": "mad_thresholds.log_mad_bounds",
                             "code_ref": "executor/methods/mad_thresholds.py"})
     _prov.set_param(params_path, "s2_atac_qc.n_fragments_max", float(f_hi),

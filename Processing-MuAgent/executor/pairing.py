@@ -228,15 +228,24 @@ def detect_pairing(
 
     if single_file_multiome:
         shared = rna_barcodes & atac_barcodes
+        overlap, _, _, _ = jaccard_overlap(rna_barcodes, atac_barcodes)
+        rel = detect_subset_relation(rna_barcodes, atac_barcodes)
+        assumptions = [
+            "RNA and ATAC came from the same Cell Ranger ARC run; "
+            "fragments.tsv.gz uses the GEX barcode namespace (all droplets), "
+            "while the filtered matrix carries the cell-called subset.",
+        ]
         return PairingResult(
             status="paired",
             confidence="high",
             method="pairing.single_file_multiome",
-            overlap=1.0,
+            overlap=overlap,
             n_rna=n_rna,
             n_atac=n_atac,
             n_shared=len(shared),
-            assumptions=["RNA and ATAC came from the same Cell Ranger ARC .h5"],
+            subset_relation=rel.relation if rel.relation != "none" else None,
+            subset_coverage=rel.coverage if rel.relation != "none" else None,
+            assumptions=assumptions,
         )
 
     overlap, n_shared, _, _ = jaccard_overlap(rna_barcodes, atac_barcodes)

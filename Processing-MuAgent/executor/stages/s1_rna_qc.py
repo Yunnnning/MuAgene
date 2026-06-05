@@ -63,6 +63,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     pct_mt_floor = params["pct_mt_floor"]["value"]
     min_cells = int(params["min_cells_per_gene"]["value"])
     min_counts_floor = params["min_counts_floor"]["value"]
+    min_genes_floor = float(params.get("min_genes_floor", {}).get("value", 200))
     # Ribosomal upper-bound is recommended (not enforced strictly): some
     # tissues legitimately have very high ribo-protein expression.
     pct_ribo_max = float(params.get("pct_ribo_max", {}).get("value", 50.0))
@@ -71,17 +72,21 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     keep_floor = a.obs["total_counts"] >= min_counts_floor
     a_for_mad = a[keep_floor].copy()
 
-    # Derive thresholds
+    # Derive thresholds; absolute floors win when MAD lower bounds fall below them.
     c_lo, c_hi = _mad.log_mad_bounds(a_for_mad.obs["total_counts"].to_numpy(), k=k_mad)
+    c_lo = max(c_lo, float(min_counts_floor))
     g_lo, g_hi = _mad.log_mad_bounds(a_for_mad.obs["n_genes_by_counts"].to_numpy(), k=k_mad)
+    g_lo = max(g_lo, min_genes_floor)
     pct_mt_upper = _mad.upper_bound(a_for_mad.obs["pct_counts_mt"].to_numpy(),
                                      k=pct_mt_k, floor=pct_mt_floor, ceiling=pct_mt_ceil)
 
     # Record as provenance
     for key, value, rat in [
-        ("s1_rna_qc.total_counts_min", float(c_lo), "MAD lower bound on log1p(total_counts)"),
+        ("s1_rna_qc.total_counts_min", float(c_lo),
+         f"max(MAD lower bound on log1p(total_counts), min_counts_floor={min_counts_floor})"),
         ("s1_rna_qc.total_counts_max", float(c_hi), "MAD upper bound on log1p(total_counts)"),
-        ("s1_rna_qc.n_genes_min", float(g_lo), "MAD lower bound on log1p(n_genes)"),
+        ("s1_rna_qc.n_genes_min", float(g_lo),
+         f"max(MAD lower bound on log1p(n_genes), min_genes_floor={min_genes_floor})"),
         ("s1_rna_qc.n_genes_max", float(g_hi), "MAD upper bound on log1p(n_genes)"),
         ("s1_rna_qc.pct_counts_mt_max", float(pct_mt_upper),
          f"{pct_mt_k}*MAD above median(pct_counts_mt); clamped to [{pct_mt_floor}, {pct_mt_ceil}]"),

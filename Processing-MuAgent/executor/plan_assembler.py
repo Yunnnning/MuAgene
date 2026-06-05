@@ -147,7 +147,12 @@ def assemble_plan(
                                     "Stressed/dying cells often exceed this; tissues with very high "
                                     "ribo expression (e.g. plasma cells) may need a higher value.", "medium"),
                 "min_cells_per_gene": p(3, "default", "scanpy convention.", "high"),
-                "min_counts_floor": p(500, "recommended", "Guard against empty droplets dragging MAD down.", "medium"),
+                "min_counts_floor": p(500, "recommended",
+                                        "Absolute minimum total_counts per cell; also clamps the "
+                                        "MAD-derived lower bound when it falls below this value.", "medium"),
+                "min_genes_floor": p(200, "recommended",
+                                      "Absolute minimum n_genes_by_counts per cell; also clamps the "
+                                      "MAD-derived lower bound when it falls below this value.", "medium"),
             }
         },
         "s2_atac_qc": {
@@ -158,7 +163,9 @@ def assemble_plan(
                                          "Maximum TSS enrichment; very high values often indicate artifacts.",
                                          "medium"),
                 "n_fragments_k_mad": p(5.0, "default", "Symmetric MAD on log fragments per cell.", "high"),
-                "n_fragments_floor": p(500, "recommended", "Minimum fragments for a real cell.", "medium"),
+                "n_fragments_floor": p(1500, "recommended",
+                                        "Absolute minimum fragments per cell; also clamps the "
+                                        "MAD-derived lower bound when it falls below this value.", "medium"),
                 "nucleosome_signal_max": p(3.0, "recommended",
                                             "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
                                             "ratio). Cells at or above are removed.", "medium"),

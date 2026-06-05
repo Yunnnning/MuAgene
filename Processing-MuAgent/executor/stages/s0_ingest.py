@@ -127,6 +127,9 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     # --- ATAC side --------------------------------------------------------
     frag_info: dict[str, Any] | None = None
     atac_bc: set[str] = set()
+    atac_fragments_file_barcodes_n: int | None = None
+    atac_n_cells_report = 0
+    atac_cell_whitelist_path: Path | None = None
     genome_assembly = config.get("genome_assembly")
     if atac_frag_path is not None:
         if not genome_assembly:
@@ -157,8 +160,19 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
                         source="user", confidence="high",
                         rationale="Declared in run.yaml; cross-checked against ATAC fragment chromosomes in S0.")
         atac_bc = _io.fragment_barcodes(atac_frag_path, limit=None)
+        atac_fragments_file_barcodes_n = len(atac_bc)
 
     rna_bc: set[str] = set(rna.obs_names) if rna is not None else set()
+
+    # Cell-level ATAC count for reporting. Cell Ranger ARC fragments.tsv.gz carries
+    # GEX barcodes for every droplet; the filtered RNA matrix is the cell-called
+    # subset. Do not restrict atac_bc here — pairing and downstream import still
+    # see the full fragments barcode set.
+    atac_n_cells_report = len(atac_bc)
+    if rna_bc and atac_bc:
+        rel_report = _pair.detect_subset_relation(rna_bc, atac_bc)
+        if rel_report.relation == "rna_subset_of_atac":
+            atac_n_cells_report = len(rna_bc)
 
     # Pairing — accepts empty sets on one side for single-modality branches.
     pr_initial = _pair.detect_pairing(rna_bc, atac_bc, single_file_multiome=single_file_multiome)
@@ -431,7 +445,13 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         report["rna_raw_n_barcodes"] = int(rna_raw_full.n_obs)
     if frag_info is not None:
         report["atac_fragment_peek"] = frag_info
-        report["atac_n_unique_barcodes"] = len(atac_bc)
+        report["atac_n_unique_barcodes"] = atac_n_cells_report
+        if (
+            atac_fragments_file_barcodes_n is not None
+            and atac_fragments_file_barcodes_n != atac_n_cells_report
+        ):
+            report["atac_fragments_file_barcodes_n"] = atac_fragments_file_barcodes_n
+            report["atac_barcodes_source"] = "rna_cell_call"
     _io.write_text_safe(artifacts / "validation_report.json", json.dumps(report, indent=2, default=str))
 
     # --- RNA ingest h5ad (always declared as an s0 output for DAG stability;
@@ -457,15 +477,25 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
 
     # --- ATAC ingest metadata (only if ATAC present) ---------------------
     if atac_frag_path is not None:
-        _io.write_text_safe(artifacts / "atac_ingest.json", json.dumps({
+        atac_ingest_meta: dict[str, Any] = {
             "fragments_path": str(atac_frag_path),
             "tbi_path": str(Path(str(atac_frag_path) + ".tbi")),
-            "barcodes_n": len(atac_bc),
+            "barcodes_n": atac_n_cells_report,
             "chromosomes": sorted(set((frag_info or {}).get("chromosomes", []))),
-        }, indent=2))
+        }
+        if (
+            atac_fragments_file_barcodes_n is not None
+            and atac_fragments_file_barcodes_n != atac_n_cells_report
+        ):
+            atac_ingest_meta["fragments_file_barcodes_n"] = atac_fragments_file_barcodes_n
+            atac_ingest_meta["barcodes_source"] = "rna_cell_call"
+        if atac_cell_whitelist_path is not None:
+            atac_ingest_meta["cell_barcode_whitelist"] = str(atac_cell_whitelist_path)
+        _io.write_text_safe(artifacts / "atac_ingest.json", json.dumps(atac_ingest_meta, indent=2))
 
     log_event(run_dir, {"stage": "s0_ingest", "event": "done",
                         "workflow_branch": workflow_branch,
                         "n_cells_rna": int(rna.n_obs) if rna is not None else 0,
-                        "n_barcodes_atac": len(atac_bc)})
+                        "n_barcodes_atac": atac_n_cells_report,
+                        "n_fragments_file_barcodes": atac_fragments_file_barcodes_n})
     return report

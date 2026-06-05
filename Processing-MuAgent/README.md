@@ -32,7 +32,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 ### Planning (pre-QC)
 
 - **P1 Context extraction** — Biological Context Report (organism, tissue, assay, DOIs) plus DOI-based prior-analysis extraction.
-- **S0 Ingest** — Accepts Cell Ranger **filtered** and **raw** matrices, auto-detecting RNA and ATAC formats (see tables below) and validating fragments files. Performs a **diagnostic barcode check for paired multiome**: S0 checks for direct barcode matches, then tries matching after removing suffixes. If those don't match, it looks for a `barcode_translation_path` or `cell_metadata_path` provided by the user. No barcode intersection is performed here. If pairing can’t be confirmed, S0 downgrades the workflow from `paired` to `separate` and logs the reason in `validation_report.json`. S0 runs after P1 and before P2; its validation report feeds into the preprocessing plan. By default, S0 runs on the login node, but will auto-retry as a **cluster job** for large datasets using the same HPC setup as later stages.
+- **S0 Ingest** — Accepts Cell Ranger **filtered** and **raw** matrices, auto-detecting RNA and ATAC formats (see tables below) and validating fragments files. Performs a **diagnostic barcode check for paired multiome**: S0 checks for direct barcode matches, then tries matching after removing suffixes. If those don't match, it looks for a `barcode_translation_path` or `cell_metadata_path` provided by the user. No barcode intersection is performed here. If pairing can’t be confirmed, S0 downgrades the workflow from `paired` to `separate` and logs the reason in `validation_report.json`. S0 runs after P1 and before P2; its validation report feeds into the preprocessing plan. When HPC is configured (`execution.mode = pbs | slurm`), S0 runs as a **cluster job** directly. In local mode, S0 runs on the login node and is retried on the cluster only if it hits a resource limit (OOM or walltime).
 
   **Supported RNA input formats (`rna_path`):**
 
@@ -175,7 +175,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Step | Stages | Executes on | You |
 |------|--------|-------------|-----|
 | Planning | P1 → P2 | Login node (default), or `srun` on a compute node if the login node memory is limited| — |
-| S0 ingest | S0 | Login node (default); Cluster if local fails for large dataset | — |
+| S0 ingest | S0 | Cluster (HPC mode) / Login node (local mode) | — |
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S1 → S2 → S3 | Cluster | — |
 | Checkpoint **#2** | post_qc_review | — | Review QC |
@@ -183,7 +183,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Checkpoint **#3** | s7_clustering | — | Review resolution |
 | Finish | S7 (labels) → S8 → manifest | Cluster | — |
 
-**Flexible S0:** the agent runs ingest locally first. On OOM or walltime failure it configures HPC (if needed), sources `hpc.env`, and retries `s0_ingest_execute` on the cluster before continuing with P2.
+**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), the agent runs S0 on the cluster directly (after sourcing `hpc.env`). In local mode, S0 runs on the login node; on OOM or walltime failure the agent configures HPC (if needed) and retries `s0_ingest_execute` on the cluster before continuing with P2.
 
 Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`. Findings and hang reports are written to `internal/hpc_monitor/latest_report.md` by Execution-MuAgent.
 
