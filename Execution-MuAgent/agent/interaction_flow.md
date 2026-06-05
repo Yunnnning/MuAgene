@@ -91,6 +91,26 @@ Poll loop at `interval_s` (default 270 s / 4.5 min). The monitor drives a state 
 
 6. **Loop exit** when no jobs are active in scheduler (all terminal states).
 
+7. **PID cleanup** — `monitor.pid` is removed in a `finally` block whether the loop exits normally, via an exception, or after a kill verdict. A missing `monitor.pid` is the signal Processing-MuAgent uses to detect that the daemon has stopped.
+
+---
+
+## Triggered by: `resume-monitor`
+
+Processing-MuAgent calls this (via `supervisor-restart`) when the supervision daemon dies mid-run but the cluster job is still active. It does not submit a new job.
+
+### Step 1 — Load submission
+
+Read `internal/hpc_monitor/latest_submission.json` and reconstruct the `Submission` dataclass. This file is written by `execute-spec` at step 5 above and is never modified afterward.
+
+### Step 2 — Resume watch loop
+
+Call `monitor_watch()` with the reconstructed `Submission` object and the same parameters that would have been used by the original `execute-spec --watch` invocation (`progress_timeout_hint` from the submission record, default `interval_s=270`). The watch loop is identical — same state machine, same file writes, same kill logic.
+
+### Step 3 — PID cleanup
+
+Remove `monitor.pid` in a `finally` block, same as `execute-spec --watch`.
+
 ---
 
 ## Reporting back to Processing-MuAgent

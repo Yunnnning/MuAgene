@@ -40,9 +40,21 @@ Steps performed in order:
    - **Transient failure**: retries up to 2× with 10 s backoff; reports `submit_rejected_transient` if still failing.
 4. **Record** — appends to `internal/hpc_monitor/execution_manifest.jsonl` (stage, science_description, job_id, spec_path, script_path, expected_outputs).
 5. **Register** — writes to `internal/hpc_monitor/submissions.jsonl` with `spec_path` and `progress_timeout_hint`.
-6. **Monitor** (with `--watch`) — runs the state machine until all jobs exit.
+6. **Monitor** (with `--watch`) — runs the watch loop until all jobs exit, then removes `internal/hpc_monitor/monitor.pid`.
 
-### `report` — read the latest diagnostic report (the only human-facing command)
+### `resume-monitor` — restart supervision without resubmitting
+
+Reads `internal/hpc_monitor/latest_submission.json`, reconstructs the monitoring context, and runs the same watch loop as `execute-spec --watch` — but without submitting a new job. Invoked by `Processing-MuAgent supervisor-restart` when the supervision daemon dies mid-run.
+
+```bash
+Execution-MuAgent resume-monitor \
+  --run-dir /path/to/run \
+  [--interval 270] [--kill-on-hang]
+```
+
+This is not a command you call directly — Processing-MuAgent starts it as a background daemon. It removes `monitor.pid` when it finishes (whether the job completed, was killed, or the command crashed).
+
+### `report` — read the latest diagnostic report
 
 Prints `<run_dir>/internal/hpc_monitor/latest_report.md` — the findings and diagnostics from the most recent monitor check.
 
@@ -50,7 +62,7 @@ Prints `<run_dir>/internal/hpc_monitor/latest_report.md` — the findings and di
 Execution-MuAgent report --run-dir /path/to/run
 ```
 
-These are the only two commands. `execute-spec` is the machine lifecycle entry point invoked by Processing-MuAgent (submit + monitor at the `--watch` interval + per-step output verification + unhealthy-run kill+report all happen inside it); `report` is the single read-only command a human uses to inspect what Execution-MuAgent found. There are no manual-submission, registration, or standalone-monitor commands.
+`report` is the only command a human uses to inspect what Execution-MuAgent found. `execute-spec` and `resume-monitor` are machine entry points invoked by Processing-MuAgent. There are no manual-submission, registration, or standalone-monitor commands beyond these three.
 
 ## Monitoring state machine
 
@@ -147,10 +159,13 @@ All output lives under `<run_dir>/internal/hpc_monitor/`:
 ```
 internal/hpc_monitor/
 ├── submissions.jsonl            ← append-only registration log
-├── latest_submission.json       ← most recent submission record
+├── latest_submission.json       ← most recent submission record (used by resume-monitor)
 ├── execution_manifest.jsonl     ← append-only per-submit record (execute-spec path)
 ├── latest_report.md             ← most recent findings (Processing-MuAgent reads this)
 ├── latest_snapshot.json         ← full snapshot + monitor_state at last check
+├── monitor.pid                  ← PID of the running supervision daemon (removed on exit)
+├── monitor.log                  ← symlink → most recent monitor_<timestamp>.log
+├── monitor_<timestamp>.log      ← daemon output for each submit or supervisor-restart
 ├── scripts/
 │   └── <stage>_<timestamp>.sh   ← rendered submission scripts
 └── reports/

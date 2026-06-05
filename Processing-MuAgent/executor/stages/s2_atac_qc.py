@@ -401,19 +401,36 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     peak_source if peak_source else "none",
                     source="derived", confidence="high",
                     rationale=("Peak source used for FRiP computation: "
-                               "user_peaks | arc_h5 | macs3 | none (FRiP skipped)."))
+                               "user_peaks | arc_h5 | macs3 | none (FRiP skipped)."),
+                    method={"name": "_acquire_peaks_for_frip",
+                            "code_ref": "executor/stages/s2_atac_qc.py::_acquire_peaks_for_frip"})
 
     # --- Step C + D: FRiP computation and filter ---
     frip_values: np.ndarray | None = None
     frip_applied = False
 
     if peaks_bed is not None and frip_min > 0.0:
+        frip_h5 = art / "_frip_tmp.h5ad"
+        # SnapATAC2 make_peak_matrix panics on comment lines (e.g. Cell Ranger ARC
+        # BED headers starting with '#'). Strip them into a temp file so any peak
+        # source — user-supplied, ARC h5 export, or MACS3 — is safe to pass.
+        frip_bed_tmp = art / "_peaks_stripped_tmp.bed"
         try:
-            frip_h5 = art / "_frip_tmp.h5ad"
-            if frip_h5.exists():
-                frip_h5.unlink()
+            frip_h5.unlink(missing_ok=True)
+            with open(peaks_bed) as _src, open(frip_bed_tmp, "w") as _dst:
+                for _line in _src:
+                    if _line.startswith("#"):
+                        continue
+                    if add_chr_prefix:
+                        # Match the chr-prefix added to fragments; BED chrom is
+                        # the first whitespace-delimited field.
+                        sep = "\t" if "\t" in _line else " "
+                        chrom = _line.split(sep, 1)[0]
+                        if chrom and not chrom.startswith("chr"):
+                            _line = "chr" + _line
+                    _dst.write(_line)
             pm_out = snap.pp.make_peak_matrix(
-                adata_3m, peak_file=str(peaks_bed), inplace=False, file=str(frip_h5),
+                adata_3m, peak_file=str(frip_bed_tmp), inplace=False, file=str(frip_h5),
             )
             peak_ad = pm_out if pm_out is not None else snap.read(str(frip_h5))
 
@@ -440,6 +457,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                 "error": str(e), "fallback": "frip_filter_skipped"})
             frip_values = None
             frip_applied = False
+        finally:
+            frip_bed_tmp.unlink(missing_ok=True)
     elif peaks_bed is None:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_skipped_no_peaks"})
     # frip_min == 0 means user explicitly disabled FRiP filtering (no log needed)

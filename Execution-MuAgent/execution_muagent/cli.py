@@ -140,18 +140,63 @@ def execute_spec(
     click.echo(f"  monitor registry: {registry}")
 
     if watch:
-        report = monitor_watch(
-            submission,
-            interval_s=interval,
-            stale_minutes=spec.progress_timeout_hint,
-            scheduler_timeout_s=5,
-            kill_on_hang=kill_on_hang,
-            max_checks=None,
-        )
+        pid_path = run_dir_path / "internal" / "hpc_monitor" / "monitor.pid"
+        try:
+            report = monitor_watch(
+                submission,
+                interval_s=interval,
+                stale_minutes=spec.progress_timeout_hint,
+                scheduler_timeout_s=5,
+                kill_on_hang=kill_on_hang,
+                max_checks=None,
+            )
+        finally:
+            pid_path.unlink(missing_ok=True)
         if report:
             click.echo(f"problem report: {report}")
         else:
             click.echo("no problem report written")
+
+
+@main.command(name="resume-monitor")
+@click.option("--run-dir", required=True, type=click.Path())
+@click.option("--interval", default=270.0, show_default=True, type=float,
+              help="Check interval in seconds.")
+@click.option("--kill-on-hang/--no-kill-on-hang", default=True, show_default=True)
+def resume_monitor(run_dir: str, interval: float, kill_on_hang: bool) -> None:
+    """Resume monitoring an existing submission without resubmitting the cluster job.
+
+    Reads latest_submission.json from the run's hpc_monitor directory, reconstructs
+    the Submission dataclass, and calls monitor_watch(). Intended to be invoked as a
+    background daemon by Processing-MuAgent supervisor-restart. All output is captured
+    by the caller (goes to monitor_<ts>.log — never the user terminal).
+    """
+    import dataclasses
+    import json
+
+    run_dir_path = Path(run_dir).resolve()
+    sub_path = run_dir_path / "internal" / "hpc_monitor" / "latest_submission.json"
+    if not sub_path.exists():
+        raise click.ClickException(f"No submission found: {sub_path}")
+    data = json.loads(sub_path.read_text())
+    field_names = {f.name for f in dataclasses.fields(Submission)}
+    sub = Submission(**{k: v for k, v in data.items() if k in field_names})
+    stale_minutes = sub.progress_timeout_hint or 90.0
+    pid_path = run_dir_path / "internal" / "hpc_monitor" / "monitor.pid"
+    try:
+        report_path = monitor_watch(
+            sub,
+            interval_s=interval,
+            stale_minutes=stale_minutes,
+            scheduler_timeout_s=5,
+            kill_on_hang=kill_on_hang,
+        )
+    finally:
+        pid_path.unlink(missing_ok=True)
+    if report_path:
+        click.echo(report_path.read_text())
+    else:
+        click.echo("no problem report written")
 
 
 @main.command()

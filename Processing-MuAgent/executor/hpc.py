@@ -184,6 +184,85 @@ def submitted_log_path(executor: Executor, output_log: Path | str, job_id: str) 
     return path
 
 
+def kill_existing_supervisor(run_dir: Path | str) -> bool:
+    """Kill the running supervisor daemon for a run, if one exists.
+
+    Reads internal/hpc_monitor/monitor.pid; sends SIGTERM if the process is alive
+    and removes the PID file. Returns True when a live supervisor was killed.
+    Gate-resubmit cycles are safe: the old supervisor exits when the job finishes,
+    so os.kill(pid, 0) raises OSError (dead PID) and nothing is killed.
+    """
+    import signal as _signal
+    pid_path = Path(run_dir) / "internal" / "hpc_monitor" / "monitor.pid"
+    if not pid_path.exists():
+        return False
+    try:
+        pid = int(pid_path.read_text().strip())
+        os.kill(pid, 0)           # raises OSError if dead
+        os.kill(pid, _signal.SIGTERM)
+        pid_path.unlink(missing_ok=True)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _wait_for_manifest(run_dir: Path | str, timeout_s: float = 90.0) -> str | None:
+    """Poll execution_manifest.jsonl until a job_id appears or timeout_s elapses.
+
+    Returns the job_id string, or None on timeout. The caller must warn explicitly
+    on None — do NOT silently log "unknown".
+    """
+    import time as _time
+    deadline = _time.monotonic() + timeout_s
+    while _time.monotonic() < deadline:
+        job_id = last_manifest_job_id(run_dir)
+        if job_id:
+            return job_id
+        _time.sleep(0.5)
+    return None
+
+
+def start_supervisor_daemon(
+    run_dir: Path | str,
+    cmd: list[str],
+    env: dict[str, str],
+) -> dict[str, object] | None:
+    """Launch execute-spec (or resume-monitor) as a detached background daemon.
+
+    Uses a timestamped log file with a `monitor.log` symlink pointing to the latest,
+    so history is preserved across gate-resubmit cycles. `start_new_session=True`
+    puts the child in a new OS session with no controlling terminal:
+    - SSH SIGHUP only reaches the old session → daemon survives SSH disconnect.
+    - Ctrl-C SIGINT targets the foreground process group only → daemon unaffected.
+    Caveat: sites with KillUserProcesses=yes (systemd) kill all user processes on
+    logout regardless of session; use tmux/screen on those systems.
+
+    Returns {"pid": int, "log": str} on success, None on failure.
+    """
+    from datetime import datetime as _dt
+    log_dir = Path(run_dir) / "internal" / "hpc_monitor"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"monitor_{ts}.log"
+    symlink = log_dir / "monitor.log"
+    if symlink.exists() or symlink.is_symlink():
+        symlink.unlink()
+    symlink.symlink_to(log_path.name)
+    pid_path = log_dir / "monitor.pid"
+    try:
+        with open(log_path, "w") as log_fh:
+            proc = subprocess.Popen(
+                cmd, env=env,
+                stdout=log_fh, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        pid_path.write_text(str(proc.pid))
+        return {"pid": proc.pid, "log": str(log_path)}
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _execution_muagent_env() -> dict[str, str] | None:
     """Return an environment that can import sibling Execution-MuAgent, if present."""
     exec_root = REPO_ROOT.parent / "Execution-MuAgent"
@@ -193,6 +272,23 @@ def _execution_muagent_env() -> dict[str, str] | None:
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(exec_root) if not existing else f"{exec_root}:{existing}"
     return env
+
+
+def last_manifest_job_id(run_dir: Path | str) -> str | None:
+    """Return the most-recently recorded job_id from execution_manifest.jsonl, or None."""
+    import json as _json
+    p = Path(run_dir) / "internal" / "hpc_monitor" / "execution_manifest.jsonl"
+    if not p.exists():
+        return None
+    for line in reversed(p.read_text().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return _json.loads(line).get("job_id")
+        except Exception:
+            continue
+    return None
 
 
 def submit_via_execution_muagent(
@@ -206,9 +302,17 @@ def submit_via_execution_muagent(
 ) -> dict[str, object] | None:
     """Delegate HPC submission to Execution-MuAgent via execute-spec.
 
-    Execution-MuAgent is a hard dependency for cluster submission. Returns a dict
-    with stdout/stderr on success, None when unavailable or when the call errors.
-    The caller must raise a hard error when None is returned — no direct-submit fallback.
+    watch=False: captures stdout/stderr for job-ID parsing; returns within 120 s.
+    No supervisor daemon is started — no stall detection, no auto-cancel.
+
+    watch=True: starts execute-spec --watch as a detached daemon (start_new_session=True).
+    The daemon survives SSH disconnect (unless the site uses KillUserProcesses=yes;
+    use tmux/screen there). Polls execution_manifest.jsonl for up to 90 s to read the
+    job_id, then returns. Execution-MuAgent output goes to monitor_<ts>.log — it is
+    NOT streamed to the terminal (Processing-MuAgent is the sole UX layer).
+
+    Returns None when Execution-MuAgent is unavailable or on error.
+    The caller must raise a hard error on None — there is no direct-submit fallback.
     """
     env = _execution_muagent_env()
     if env is None:
@@ -228,8 +332,26 @@ def submit_via_execution_muagent(
     else:
         cmd.append("--no-kill-on-hang")
     try:
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120, check=True)
-        return {"stdout": result.stdout, "stderr": result.stderr}
+        if watch:
+            killed = kill_existing_supervisor(run_dir)
+            if killed:
+                sys.stderr.write("[submit] Stopped previous supervisor before starting new one.\n")
+            result = start_supervisor_daemon(run_dir, cmd, env)
+            if result is None:
+                return None
+            job_id = _wait_for_manifest(run_dir, timeout_s=90.0)
+            return {
+                "watch": True,
+                "pid": result["pid"],
+                "log": result["log"],
+                "job_id": job_id,   # None → caller warns explicitly
+                "stdout": "",
+                "stderr": "",
+            }
+        else:
+            r = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                               timeout=120, check=True)
+            return {"watch": False, "stdout": r.stdout, "stderr": r.stderr}
     except (subprocess.SubprocessError, OSError):
         return None
 

@@ -304,6 +304,17 @@ def hpc_status(config_path: str, watch: bool, interval: float) -> None:
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
 
+    def _supervisor_status() -> str:
+        pid_path = paths.run_dir / "internal" / "hpc_monitor" / "monitor.pid"
+        if not pid_path.exists():
+            return "not started"
+        try:
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, 0)
+            return f"alive (PID {pid})"
+        except (ValueError, OSError):
+            return "not running"
+
     def _print_hpc_header() -> None:
         submission = _sp.load_latest_hpc_submission(paths)
         snapshot = _sp.load_hpc_monitor_state(paths)
@@ -321,12 +332,24 @@ def hpc_status(config_path: str, watch: bool, interval: float) -> None:
         health = ms.get("health", "unknown")
         silence = ms.get("silence_intervals", "?")
         tolerance = ms.get("tolerance_n", "?")
+        sup_status = _supervisor_status()
+        sup_offline = "not running" in sup_status
+        displayed_health = "stale (supervisor offline)" if sup_offline else health
         click.echo(f"  Stage: {stage}  Job: {job_id}  Submitted: {submitted_at}")
         click.echo(f"  Scheduler: {sched_state}  Elapsed: {elapsed} / {timelimit}")
-        click.echo(f"  Health: {health}  (silence {silence}/{tolerance} intervals)")
+        click.echo(f"  Health: {displayed_health}  (silence {silence}/{tolerance} intervals)")
+        click.echo(f"  Supervisor: {sup_status}")
         reason = ms.get("confirmed_dead_reason")
         if reason:
             click.echo(f"  Confirmed-dead reason: {reason}")
+        if "not running" in sup_status:
+            active_states = {"running", "pending", "r", "q", "cf"}
+            if any(s in sched_state.lower() for s in active_states):
+                click.echo(
+                    "\n  WARNING: Supervision offline — stalled/failed jobs will NOT be "
+                    "auto-cancelled. Restart with:\n"
+                    f"    Processing-MuAgent supervisor-restart --config {paths.run_yaml}"
+                )
 
     def _print(states: list[tuple[str, str, str]]) -> None:
         click.echo("")
@@ -366,6 +389,53 @@ def hpc_status(config_path: str, watch: bool, interval: float) -> None:
             click.echo("\n→ run_manifest.json present; pipeline complete.")
             return
         time.sleep(max(2.0, interval))
+
+
+@main.command(name="supervisor-restart")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+@click.option("--kill-existing/--no-kill-existing", default=True, show_default=True,
+              help="Kill any running supervisor before starting the new one.")
+def supervisor_restart(config_path: str, kill_existing: bool) -> None:
+    """Restart the background supervisor daemon without resubmitting the cluster job.
+
+    Use when the supervisor process died mid-run (crash, OOM, site reboot) but the
+    cluster job is still active. Reads latest_submission.json and re-invokes
+    resume-monitor as a new daemon (no resubmit).
+
+    The supervisor is the kill-on-hang safety layer. Restarting it restores stall
+    detection and auto-cancel protection for the running job.
+    """
+    run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
+    sub_path = paths.run_dir / "internal" / "hpc_monitor" / "latest_submission.json"
+    if not sub_path.exists():
+        raise click.ClickException(
+            "No submission recorded for this run. Use `submit` to start a job."
+        )
+    if kill_existing:
+        killed = hpc.kill_existing_supervisor(run_dir)
+        if killed:
+            click.echo("Stopped existing supervisor.")
+    env = hpc._execution_muagent_env()
+    if env is None:
+        raise click.ClickException(
+            "Execution-MuAgent not found. Install it: pip install -e Execution-MuAgent/"
+        )
+    cmd = [
+        sys.executable, "-m", "execution_muagent.cli", "resume-monitor",
+        "--run-dir", str(run_dir),
+    ]
+    result = hpc.start_supervisor_daemon(run_dir, cmd, env)
+    if result is None:
+        raise click.ClickException("Failed to start supervisor daemon.")
+    pid = result["pid"]
+    log = result["log"]
+    log_event(run_dir, {
+        "stage": "supervisor_restart", "event": "restarted",
+        "supervisor_pid": pid, "supervisor_log": log,
+    })
+    click.echo(f"Supervisor restarted (PID {pid}), logging to {log}")
+    click.echo(f"Monitor: Processing-MuAgent hpc-status --watch --config {paths.run_yaml}")
 
 
 @main.command(name="plan-review")
@@ -607,9 +677,17 @@ def _prepare_submit_approvals(
 @click.option("--unlock-stale-locks", is_flag=True,
               help="If Snakemake locks exist and no local process owns this workdir, "
                    "run snakemake --unlock before submitting.")
+@click.option("--watch/--no-watch", default=True,
+              help="Start a background supervisor daemon that monitors the cluster job and "
+                   "cancels it if it hangs (default: on). The daemon survives SSH disconnect "
+                   "unless the site uses KillUserProcesses=yes — use tmux/screen there. "
+                   "Returns after job submission is confirmed (≤90 s). "
+                   "--no-watch: submit only, NO supervisor daemon started — no stall "
+                   "detection, no auto-cancel.")
 def submit(config_path: str, executor: str, target: str | None,
            auto_approve: bool, auto_except: tuple[str, ...],
-           output_log: str | None, unlock_stale_locks: bool) -> None:
+           output_log: str | None, unlock_stale_locks: bool,
+           watch: bool) -> None:
     """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
 
     Execution-MuAgent is a hard dependency for cluster submission — it renders the
@@ -695,12 +773,15 @@ def submit(config_path: str, executor: str, target: str | None,
     # Write the head-job spec so Execution-MuAgent can render + submit it.
     head_spec_path = _specs.write_head_job_spec(run_dir, resolved_target)
 
+    if watch:
+        click.echo("Starting supervision daemon (background)...")
+
     ea_result = hpc.submit_via_execution_muagent(
         head_spec_path,
         paths.site_config,
         run_dir,
         resolved_target,
-        watch=False,
+        watch=watch,
         kill_on_hang=True,
     )
     if ea_result is None:
@@ -712,26 +793,64 @@ def submit(config_path: str, executor: str, target: str | None,
         )
 
     import re as _re
-    m = _re.search(r"(?:head-job|job[_-]id)[:\s]+(\S+)", ea_result.get("stdout", ""))
-    job_id = m.group(1).strip() if m else ea_result.get("stdout", "").strip().splitlines()[-1]
-
-    submitted_log_path = hpc.submitted_log_path(executor, out_path, job_id)
-    log_event(run_dir, {"stage": "submit", "event": "head_job_submitted",
-                        "executor": executor, "target": resolved_target,
-                        "job_id": job_id, "auto_approve": auto_approve,
-                        "kept_gates": sorted(set(auto_except)),
-                        "phase_auto_approved": phase_seeded,
-                        "via_execution_agent": True,
-                        "head_job_log": str(submitted_log_path)})
-    click.echo(f"Submitted {executor} head-job: {job_id} (via Execution-MuAgent)")
-    click.echo(f"  config:  {paths.run_yaml}")
-    click.echo(f"  target:  {resolved_target}")
-    if phase_seeded:
-        click.echo(f"  phase-auto-approved: {', '.join(phase_seeded)}")
-    click.echo(f"  log:     {submitted_log_path}")
-    click.echo("  monitor: managed by Execution-MuAgent")
-    click.echo("\nPoll progress with: Processing-MuAgent status --watch "
-               f"--config {paths.run_yaml}")
+    if watch:
+        pid = ea_result.get("pid", "?")
+        mon_log = ea_result.get("log", "")
+        job_id = ea_result.get("job_id") or hpc.last_manifest_job_id(run_dir)
+        if not job_id:
+            click.echo(
+                "Warning: job ID not yet in execution_manifest.jsonl "
+                "(scheduler slow or NFS lag). Check `hpc-status` to confirm submission.",
+                err=True,
+            )
+            job_id = "unknown"
+        submitted_log_path = hpc.submitted_log_path(executor, out_path, job_id)
+        log_event(run_dir, {
+            "stage": "submit", "event": "head_job_submitted",
+            "executor": executor, "target": resolved_target,
+            "job_id": job_id, "auto_approve": auto_approve,
+            "kept_gates": sorted(set(auto_except)),
+            "phase_auto_approved": phase_seeded,
+            "via_execution_agent": True,
+            "supervisor_pid": pid, "supervisor_log": mon_log,
+            "head_job_log": str(submitted_log_path),
+        })
+        click.echo(f"Submitted {executor} head-job: {job_id}")
+        click.echo(f"  config:     {paths.run_yaml}")
+        click.echo(f"  target:     {resolved_target}")
+        if phase_seeded:
+            click.echo(f"  phase-auto-approved: {', '.join(phase_seeded)}")
+        click.echo(f"  log:        {submitted_log_path}")
+        click.echo(f"  supervisor: PID {pid}, log → {mon_log}")
+        click.echo(
+            "\nThe supervisor daemon runs kill-on-hang protection for this job. "
+            "It survives SSH disconnect (unless the site uses KillUserProcesses=yes).\n"
+            f"Monitor: Processing-MuAgent hpc-status --watch --config {paths.run_yaml}"
+        )
+    else:
+        m = _re.search(r"(?:head-job|job[_-]id)[:\s]+(\S+)", ea_result.get("stdout", ""))
+        job_id = m.group(1).strip() if m else ea_result.get("stdout", "").strip().splitlines()[-1]
+        submitted_log_path = hpc.submitted_log_path(executor, out_path, job_id)
+        log_event(run_dir, {
+            "stage": "submit", "event": "head_job_submitted",
+            "executor": executor, "target": resolved_target,
+            "job_id": job_id, "auto_approve": auto_approve,
+            "kept_gates": sorted(set(auto_except)),
+            "phase_auto_approved": phase_seeded,
+            "via_execution_agent": True,
+            "head_job_log": str(submitted_log_path),
+        })
+        click.echo(f"Submitted {executor} head-job: {job_id} (via Execution-MuAgent)")
+        click.echo(f"  config:  {paths.run_yaml}")
+        click.echo(f"  target:  {resolved_target}")
+        if phase_seeded:
+            click.echo(f"  phase-auto-approved: {', '.join(phase_seeded)}")
+        click.echo(f"  log:     {submitted_log_path}")
+        click.echo(
+            "\nNote: --no-watch — no supervisor daemon started. "
+            "Stalled/hung jobs will NOT be auto-cancelled.\n"
+            f"Poll progress: Processing-MuAgent status --watch --config {paths.run_yaml}"
+        )
 
 
 def _snakemake(args: list[str], run_dir: Path, *, executor: str = "local") -> None:

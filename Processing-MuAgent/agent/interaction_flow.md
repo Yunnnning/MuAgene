@@ -258,16 +258,17 @@ After plan review approval, `source deliverables/pre_run/config/hpc.env`, then:
 - **After QC approval:** same submit with `--auto-approve-except s7_clustering` only
 - **After resolution approval:** `executor submit --config $CFG --executor pbs|slurm`
 
-`executor submit` is a hard dependency on Execution-MuAgent — it writes `internal/stage_meta/head_job.yaml`, then delegates to `Execution-MuAgent execute-spec`, which reads the spec and `site.config`, renders the submission script, submits the head-job, and monitors. Snakemake submits per-stage child jobs from within the head-job. If Execution-MuAgent is absent, `submit` fails loudly.
+`executor submit` is a hard dependency on Execution-MuAgent — it writes `internal/stage_meta/head_job.yaml`, then starts `Execution-MuAgent execute-spec` as a **background supervision daemon**. The daemon submits the head-job, records the job ID to `execution_manifest.jsonl`, and then runs the watch loop (stall detection + kill-on-hang) for the full lifetime of the job. `submit` returns within ~90 seconds, as soon as the job ID is confirmed. If Execution-MuAgent is absent, `submit` fails loudly.
 
-Poll with `executor status --watch --config $CFG`. Findings and hang reports appear in `internal/hpc_monitor/latest_report.md`.
+The daemon survives SSH disconnects on most clusters. On sites with `KillUserProcesses=yes`, remind the user to run inside `tmux` or `screen`. The daemon writes its output to `internal/hpc_monitor/monitor_<timestamp>.log` (with a `monitor.log` symlink to the latest) and removes `monitor.pid` when it exits.
+
+Poll job health with `executor hpc-status --watch --config $CFG`. Findings and hang reports appear in `internal/hpc_monitor/latest_report.md`.
 
 ### How Claude surfaces things during the HPC flow
 
 - **At Step 2**, if execution mode is unknown, ask local vs HPC before `executor run --target p2_plan_execute`. Run `hpc-info` and walk through `hpc.env` setup when HPC is chosen.
 - **At Step 1–4 otherwise**, behaviour matches local mode until plan review is approved.
-- **When the user runs `submit`**, surface the printed PBS/SLURM job id and remind
-  them they can poll with `Processing-MuAgent status --watch --config $CFG`.
+- **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path. Remind them that the daemon is running in the background and they can follow job health with `Processing-MuAgent hpc-status --watch --config $CFG`.
 - **When `status --watch` shows `s7_clustering awaiting_approval`**, surface the path to `resolution_review.html` (the
   primary review artifact) AND `resolution_review.ipynb` (for power users who
   want to re-cluster at custom resolutions interactively). Paste the contents
@@ -306,3 +307,5 @@ These are written to `deliverables/pre_run/config/hpc.env` by `configure-executi
 - **A stage execute fails at runtime** — relay the traceback from snakemake. Do not retry silently; root-cause first. If the user insists on retry, use `executor run --config $CFG --target <stage>_execute`.
 - **Execution-MuAgent reports `submit_rejected_policy`** — the scheduler rejected the job as a policy error (invalid partition, account, or walltime over the site limit). Read `internal/hpc_monitor/latest_report.md` for the scheduler's exact message. Tell the user which field to correct: partition/account via `executor configure-execution --mode <scheduler> ...` (rewrites `site.config`), or walltime by reducing `PMA_RESOURCES_SCALE`. Then `executor submit` again.
 - **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/specs/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.
+- **`hpc-status` shows "Supervisor: not running" alongside a RUNNING or PENDING scheduler state** — the supervision daemon has died but the cluster job is still active. Without the daemon, stalled jobs will not be auto-cancelled. Restart the daemon: `executor supervisor-restart --config $CFG`. This resumes the full watch loop (stall detection, kill-on-hang) against the already-running job without resubmitting. Tell the user what happened and what you did.
+- **Supervision daemon crashes on a site with KillUserProcesses=yes** — when the user's SSH session ends, systemd kills all their processes including the daemon. The cluster job keeps running, but protection is gone. For the current run, tell them to use `supervisor-restart` as soon as they reconnect. Going forward, suggest running `submit` inside a `tmux` or `screen` session on that cluster.
