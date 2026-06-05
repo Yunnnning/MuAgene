@@ -186,9 +186,10 @@ def assemble_plan(
                 "rna_doublet_score_threshold": p(0.25, "default",
                                                  "RNA Scrublet doublet-score cutoff; cells with "
                                                  "scrublet_score above this value are flagged.", "medium"),
-                "atac_doublet_score_threshold": p(0.5, "default",
-                                                  "SnapATAC2 scrublet doublet-score cutoff; cells with "
-                                                  "doublet_score above this value are flagged.", "medium"),
+                "atac_doublet_probability_threshold": p(0.5, "default",
+                                                        "SnapATAC2 scrublet doublet-probability cutoff; "
+                                                        "cells with doublet_probability above this value "
+                                                        "are flagged (SnapATAC2 default is 0.5).", "medium"),
                 "removal_policy_recommendation": p(
                     "independent" if workflow_branch == "separate" else "union",
                     "derived" if workflow_branch == "separate" else "recommended",

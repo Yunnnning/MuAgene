@@ -182,8 +182,10 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     goal = param("s3_doublets", "study_goal")
 
     rna_doub_thr = param("s3_doublets", "rna_doublet_score_threshold")
-    atac_doub_thr = param("s3_doublets", "atac_doublet_score_threshold") or param(
-        "s3_doublets", "atac_doublet_threshold"
+    atac_doub_thr = (
+        param("s3_doublets", "atac_doublet_probability_threshold")
+        or param("s3_doublets", "atac_doublet_threshold")
+        or param("s3_doublets", "atac_doublet_score_threshold")
     )
 
     def _paired_doublet_policy_detail(recommended: str) -> list[str]:
@@ -200,8 +202,8 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             )
         if atac_doub_thr.get("value") is not None:
             lines.append(
-                f"- ATAC SnapATAC2 score threshold: `{atac_doub_thr.get('value')}` "
-                "(cells with score above are flagged)"
+                f"- ATAC SnapATAC2 probability threshold: `{atac_doub_thr.get('value')}` "
+                "(cells with doublet_probability above are flagged)"
             )
         return lines
 

@@ -57,28 +57,32 @@ def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any
     return default
 
 
-def _resolve_atac_score_threshold(params_path: Path, plan_params: dict) -> float:
-    """Resolve ATAC doublet score threshold; accept legacy plan key."""
-    v = _resolve_param(params_path, plan_params, "atac_doublet_score_threshold", None)
+def _resolve_atac_probability_threshold(params_path: Path, plan_params: dict) -> float:
+    """Resolve ATAC doublet probability threshold; accept legacy plan keys."""
+    v = _resolve_param(params_path, plan_params, "atac_doublet_probability_threshold", None)
     if v is not None:
         return float(v)
     legacy = _resolve_param(params_path, plan_params, "atac_doublet_threshold", None)
     if legacy is not None:
         return float(legacy)
+    # Transitional plan key from a brief score-threshold experiment; treat as probability.
+    legacy_score = _resolve_param(params_path, plan_params, "atac_doublet_score_threshold", None)
+    if legacy_score is not None:
+        return float(legacy_score)
     return 0.5
 
 
-def _score_atac_doublets_snapatac(atac, *, score_threshold: float):
+def _score_atac_doublets_snapatac(atac, *, probability_threshold: float):
     """Use SnapATAC2's native doublet detector (`snap.pp.scrublet`).
 
     Deviation from the approved design: the plan names AMULET (fragment-level
     multi-allelic overlap). AMULET is not practical in this environment; SnapATAC2 2.8
     ships `pp.scrublet` which is an ATAC-adapted Scrublet on the tile matrix.
-    We apply a fixed user-configured score cutoff (not SnapATAC2's probability
-    threshold or any automatic picker). Raw scores + flags are preserved in
-    calls.parquet.
+    Flagging follows SnapATAC2 semantics: ``doublet_probability > threshold``
+    (default 0.5, same as ``pp.filter_doublets``). Raw scores, probabilities, and
+    flags are preserved in calls.parquet.
 
-    Returns (scores, flags). Adds a 'tile_matrix' to `atac` if not present.
+    Returns (scores, probabilities, flags). Adds a 'tile_matrix' to `atac` if not present.
     """
     import snapatac2 as snap
 
@@ -106,11 +110,14 @@ def _score_atac_doublets_snapatac(atac, *, score_threshold: float):
             return np.array([])
 
     scores = _to_arr("doublet_score")
-    if scores.size:
-        flags = scores > score_threshold
+    probs = _to_arr("doublet_probability")
+    if probs.size:
+        flags = probs > probability_threshold
+    elif scores.size:
+        flags = scores > probability_threshold
     else:
         flags = np.zeros(atac.n_obs, dtype=bool)
-    return scores, flags
+    return scores, probs, flags
 
 
 def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict[str, Any]:
@@ -181,23 +188,25 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     atac = None
     atac_bc: list = []
     atac_scores = np.array([], dtype=float)
+    atac_probs = np.array([], dtype=float)
     atac_flags = np.array([], dtype=bool)
     atac_method = "skipped_no_atac_input"
     if has_atac:
         import snapatac2 as snap
         atac_h5 = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
         atac = snap.read(str(atac_h5))
-        atac_method = "snapatac2.pp.scrublet+score_threshold"
-        atac_threshold = _resolve_atac_score_threshold(params_path, s3_plan_params)
-        _prov.set_param(params_path, "s3_doublets.atac_doublet_score_threshold",
+        atac_method = "snapatac2.pp.scrublet+probability_threshold"
+        atac_threshold = _resolve_atac_probability_threshold(params_path, s3_plan_params)
+        _prov.set_param(params_path, "s3_doublets.atac_doublet_probability_threshold",
                         atac_threshold, source="recommended", confidence="medium",
-                        rationale=("Fixed SnapATAC2 scrublet doublet-score cutoff; cells with "
-                                   "doublet_score above this value are flagged."),
-                        method={"name": "s3.atac_doublet_score_threshold",
+                        rationale=("SnapATAC2 scrublet doublet-probability cutoff; cells with "
+                                   "doublet_probability above this value are flagged "
+                                   "(SnapATAC2 default is 0.5)."),
+                        method={"name": "s3.atac_doublet_probability_threshold",
                                 "code_ref": "executor/stages/s3_doublets.py"})
         try:
-            atac_scores, atac_flags = _score_atac_doublets_snapatac(
-                atac, score_threshold=atac_threshold)
+            atac_scores, atac_probs, atac_flags = _score_atac_doublets_snapatac(
+                atac, probability_threshold=atac_threshold)
             atac_bc = list(atac.obs_names)
         except Exception as e:
             log_event(run_dir, {"stage": "s3_doublets", "event": "atac_snap_doublet_failed",
@@ -213,8 +222,10 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                 mad = np.median(np.abs(np.log1p(n_frag) - med)) or 1.0
                 z = (np.log1p(n_frag) - med) / (mad * 1.4826)
                 atac_scores, atac_flags = z, z > 3.0
+                atac_probs = np.array([])
             else:
                 atac_scores = np.array([])
+                atac_probs = np.array([])
                 atac_flags = np.array([], dtype=bool)
             atac_bc = list(atac.obs_names) if hasattr(atac, "obs_names") else []
             atac_method = "log_fragment_zscore_fallback"
@@ -237,6 +248,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         atac_df = pd.DataFrame({
             "barcode": atac_bc,
             "atac_doublet_score": atac_scores,
+            "atac_doublet_probability": atac_probs,
             "atac_is_doublet": atac_flags.astype(bool) if atac_flags.size else atac_flags,
             "removed": atac_flags.astype(bool) if atac_flags.size else atac_flags,
         })
@@ -248,8 +260,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
 
         # calls.parquet: concat both modalities; fill cross-modal columns with NaN.
         combined = pd.concat([
-            rna_df.assign(atac_doublet_score=float("nan"), atac_is_doublet=False,
-                          chosen_policy=chosen_policy),
+            rna_df.assign(atac_doublet_score=float("nan"),
+                          atac_doublet_probability=float("nan"),
+                          atac_is_doublet=False, chosen_policy=chosen_policy),
             atac_df.assign(scrublet_score=float("nan"), scrublet_is_doublet=False,
                            chosen_policy=chosen_policy),
         ], ignore_index=True)
@@ -287,6 +300,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         atac_df = pd.DataFrame({
             "barcode": atac_bc,
             "atac_doublet_score": atac_scores,
+            "atac_doublet_probability": atac_probs,
             "atac_is_doublet": atac_flags.astype(bool) if atac_flags.size else atac_flags,
         })
         merged = rna_df.merge(atac_df, on="barcode", how="outer")
@@ -370,9 +384,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                         source="derived", confidence="high",
                         rationale=("Plan named AMULET (fragment multi-allelic overlap). "
                                    "Current environment uses SnapATAC2's native scrublet on "
-                                   "the tile matrix with a fixed score threshold. Deviation "
-                                   "explicitly recorded; raw scores + flags preserved in "
-                                   "calls.parquet."),
+                                   "the tile matrix with a fixed doublet-probability threshold. "
+                                   "Deviation explicitly recorded; raw scores, probabilities, "
+                                   "and flags preserved in calls.parquet."),
                         method={"name": atac_method,
                                 "code_ref": "executor/stages/s3_doublets.py::_score_atac_doublets_snapatac"})
 

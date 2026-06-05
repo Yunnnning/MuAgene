@@ -47,6 +47,34 @@ def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any
     return default
 
 
+def _subset_tss_profile(
+    adata,
+    obs_indices: list[int],
+    genome_ref,
+    tmp_dir: Path,
+) -> np.ndarray | None:
+    """Re-run SnapATAC2 TSS enrichment on a cell subset; return normalized profile."""
+    import snapatac2 as snap
+
+    if not obs_indices:
+        return None
+    fd, tmp = tempfile.mkstemp(suffix=".h5ad", dir=str(tmp_dir))
+    Path(tmp).unlink(missing_ok=True)
+    os.close(fd)
+    sub = adata.subset(obs_indices=obs_indices, out=tmp, inplace=False)
+    if sub is None:
+        sub = snap.read(tmp)
+    try:
+        snap.metrics.tsse(sub, genome_ref)
+        return np.asarray(sub.uns["TSS_profile"], dtype=float)
+    finally:
+        try:
+            sub.close()
+        except Exception:
+            pass
+        Path(tmp).unlink(missing_ok=True)
+
+
 def _col_to_numpy(adata, key: str) -> np.ndarray:
     """SnapATAC2 obs is polars; convert one column to a numpy float array, or empty array."""
     try:
@@ -365,8 +393,19 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         keep_3m &= ns_values < nuc_signal_max
 
     keep_3m_idx = np.nonzero(keep_3m)[0].tolist()
+    fail_3m_idx = np.nonzero(~keep_3m)[0].tolist()
     n_pre = int(adata.n_obs)
     n_after_3m = int(len(keep_3m_idx))
+
+    # TSS profile figure: pass = cells meeting all 3-metric thresholds; fail = the rest
+    # of the pre-filter import set 
+    tss_prof_pass: np.ndarray | None = None
+    tss_prof_fail: np.ndarray | None = None
+    try:
+        tss_prof_pass = _subset_tss_profile(adata, keep_3m_idx, genome_ref, art)
+        tss_prof_fail = _subset_tss_profile(adata, fail_3m_idx, genome_ref, art)
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "tss_profile_failed", "error": str(e)})
 
     # Write 3-metric-filtered AnnData to the artifact dir (NFS has guaranteed space;
     # /tmp on shared compute nodes is small and fills up with large ATAC datasets).
@@ -553,8 +592,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_post_failed",
                              "error": str(e)})
 
-    # Figures: (1) fragment-size distribution before vs after QC (normalised),
-    #          (2) FRiP histogram with threshold line — in that order.
+    # Figures: (1) fragment-size distribution, (2) TSS enrichment profile,
+    #          (3) FRiP histogram with threshold line.
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
@@ -567,6 +606,15 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 stem="s2_atac_qc_fragment_size_distribution",
                 title="ATAC fragment size distribution (after QC)",
                 distr_after=fsd_after if (fsd_after is not None and fsd_after.size) else None,
+            )
+
+        if tss_prof_pass is not None and tss_prof_fail is not None:
+            _fig.plot_tss_enrichment_profile(
+                tss_prof_pass, tss_prof_fail,
+                out_dir=figs_dir,
+                stem="s2_atac_qc_tss_enrichment_profile",
+                n_pass=n_after_3m,
+                n_fail=n_pre - n_after_3m,
             )
 
         if frip_applied and frip_values is not None and frip_values.size:

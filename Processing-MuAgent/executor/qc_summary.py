@@ -127,6 +127,46 @@ def _fig_block(
     return f"\n![{alt}]({src})\n"
 
 
+def _fig_pair_block(
+    run_dir: Path,
+    left: tuple[str, str],
+    right: tuple[str, str],
+    *,
+    render: _FigRender = _DEFAULT_FIG_RENDER,
+) -> str:
+    """Embed two checkpoint QC figures side-by-side (HTML in markdown reports)."""
+    from .run_paths import RunPaths
+    if not render.embed_figures:
+        return ""
+    fig_dir = RunPaths(run_dir).deliv_qc_review
+    panels: list[str] = []
+    for stem, caption in (left, right):
+        png = fig_dir / f"{stem}.png"
+        if not png.exists():
+            continue
+        if render.md_parent is not None:
+            src = Path(os.path.relpath(png, render.md_parent)).as_posix()
+        else:
+            src = f"./{stem}.png"
+        alt = html_module.escape(caption)
+        panels.append(
+            '<figure class="qc-figure" style="flex:1 1 45%; min-width:260px; margin:0; '
+            'display:flex; flex-direction:column;">'
+            f'<img src="{src}" alt="{alt}" style="width:100%; height:300px; '
+            'object-fit:contain; object-position:center top; display:block;">'
+            f'<figcaption style="font-size:0.85rem; color:#555; margin-top:0.35rem;">'
+            f"{alt}</figcaption></figure>"
+        )
+    if len(panels) < 2:
+        return ""
+    return (
+        '\n<div class="qc-plot-pair" style="display:flex; flex-wrap:wrap; gap:1rem; '
+        'align-items:stretch; margin:1rem 0;">'
+        + "".join(panels)
+        + "</div>\n"
+    )
+
+
 def _inline_md(text: str) -> str:
     """Bold/italic on already-escaped HTML text (preserve snake_case names)."""
     s = html_module.escape(text)
@@ -720,7 +760,7 @@ def _atac_section(
             ]:
                 if src_col in obs.columns:
                     stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
-        except Exception as e:
+        except BaseException as e:
             warnings.append(f"_Could not read ATAC AnnData for summary stats: {e}_")
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else "_(no stats)_"
     warn_block = ("\n" + "\n".join(warnings) + "\n") if warnings else ""
@@ -752,15 +792,18 @@ def _atac_section(
 
     peak_note = f"\n_Peak source for FRiP: {peak_source}._\n" if peak_source else ""
 
-    fig_fsd = _fig_block(
-        run_dir, "s2_atac_qc_fragment_size_distribution",
-        caption="ATAC fragment size distribution after QC filtering.",
+    from .figures import FRIP_DISTRIBUTION_TITLE, TSS_PROFILE_CAPTION, TSS_PROFILE_TITLE
+    fig_fsd_frip = _fig_pair_block(
+        run_dir,
+        ("s2_atac_qc_fragment_size_distribution",
+         "ATAC fragment size distribution after QC filtering."),
+        ("s2_atac_qc_frip_histogram",
+         f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold."),
         render=render,
     )
-    from .figures import FRIP_DISTRIBUTION_TITLE
-    fig_frip = _fig_block(
-        run_dir, "s2_atac_qc_frip_histogram",
-        caption=f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold.",
+    fig_tss = _fig_block(
+        run_dir, "s2_atac_qc_tss_enrichment_profile",
+        caption=f"{TSS_PROFILE_TITLE}; {TSS_PROFILE_CAPTION}",
         render=render,
     )
     return (
@@ -771,8 +814,6 @@ def _atac_section(
         "\n"
         f"{import_note}"
         + count_lines
-        + fig_fsd
-        + fig_frip
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
@@ -780,6 +821,8 @@ def _atac_section(
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
         f"{warn_block}"
+        + fig_fsd_frip
+        + fig_tss
     )
 
 
@@ -825,44 +868,28 @@ def _qc_review_intro(run_name: str, run_dir: Path) -> str:
 
 
 def _qc_review_actions(branch: str) -> str:
-    cfg = "`deliverables/pre_run/config/run.yaml`"
     lines = [
         "## How to approve or revise",
         "",
-        "### Adjust RNA / ATAC quality-filter thresholds",
+        "### Review QC filtering thresholds",
         "",
-        "If violin plots or the cell-count waterfall look wrong, revise the RNA or ATAC "
-        "filter parameters (UMI/gene/MT bounds, fragment count, TSS enrichment, etc.) "
-        "and re-run from the affected stage, then re-open this checkpoint:",
+        "Look at the RNA and ATAC data distributions. Decide whether the current QC "
+        "filtering thresholds look appropriate for the data, or whether they should be "
+        "made stricter or more permissive.",
         "",
-        "```bash",
-        "# Example — tighten ATAC TSS enrichment floor:",
-        f"Processing-MuAgent revise s2_atac_qc s2_atac_qc.tss_enrichment_min=1.5 --config {cfg}",
-        f"Processing-MuAgent run --config {cfg} --target s2_atac_qc_execute",
-        "# Re-run S3 + post_qc_review if S2 changed:",
-        f"Processing-MuAgent run --config {cfg} --target post_qc_review_propose",
-        "```",
+        "If you want to adjust the thresholds, tell the agent which stage to revise and how:",
         "",
-        "### Adjust doublet score thresholds (S3)",
+        "- **S1 (RNA QC)** — UMI count, gene count, mitochondrial fraction, and ribosomal fraction bounds",
+        "- **S2 (ATAC QC)** — fragment count, TSS enrichment, nucleosome signal, and FRiP",
+        "- **S3 (doublets)** — RNA Scrublet and ATAC SnapATAC2 score cutoffs",
         "",
-        "If the doublet histograms look too strict or too lenient, revise the fixed "
-        "score cutoffs and re-run S3 + this checkpoint:",
+        "The agent can change the settings for the affected stage, re-run downstream steps "
+        "as needed, and regenerate this QC review.",
         "",
-        "```bash",
-        "# Example — lower RNA Scrublet cutoff (flags more cells):",
-        f"Processing-MuAgent revise s3_doublets s3_doublets.rna_doublet_score_threshold=0.2 --config {cfg}",
-        f"Processing-MuAgent run --config {cfg} --target s3_doublets_execute",
-        f"Processing-MuAgent run --config {cfg} --target post_qc_review_propose",
-        "```",
+        "### Approve and continue to downstream analysis",
         "",
-    ]
-    lines += [
-        "### Approve and continue to PCA (RNA) + neighbor graph",
-        "",
-        "```bash",
-        f"Processing-MuAgent approve post_qc_review --config {cfg}",
-        f"Processing-MuAgent run --config {cfg} --target s6_neighbors_execute",
-        "```",
+        "If the QC filters look acceptable, tell the agent to approve this checkpoint and "
+        "continue to downstream dimensionality reduction and clustering.",
         "",
     ]
     return "\n".join(lines)
@@ -970,8 +997,9 @@ def _doublet_section(
         rna_thr = 0.25
     atac_thr = None
     if params:
-        atac_thr = (_param(params, "s3_doublets.atac_doublet_score_threshold")
-                    or _param(params, "s3_doublets.atac_doublet_threshold"))
+        atac_thr = (_param(params, "s3_doublets.atac_doublet_probability_threshold")
+                    or _param(params, "s3_doublets.atac_doublet_threshold")
+                    or _param(params, "s3_doublets.atac_doublet_score_threshold"))
         if atac_thr is None:
             atac_thr = 0.5
     threshold_lines = ""
@@ -980,15 +1008,12 @@ def _doublet_section(
         if rna_thr is not None:
             thr_rows.append(["rna_doublet_score_threshold", rna_thr])
         if atac_thr is not None:
-            thr_rows.append(["atac_doublet_score_threshold", atac_thr])
+            thr_rows.append(["atac_doublet_probability_threshold", atac_thr])
         threshold_lines = (
             "\n"
-            "### Score thresholds\n"
+            "### Doublet thresholds\n"
             "\n"
             f"{_md_table(['parameter', 'value'], thr_rows)}\n"
-            "\n"
-            "- Cells are flagged when their doublet score is **strictly greater** than "
-            "the threshold (fixed cutoffs; no automatic threshold selection).\n"
         )
 
     summary_table = ""
@@ -1018,11 +1043,19 @@ def _doublet_section(
             f"- ATAC evaluated: **{atac_before}** (flagged **{n_atac_flag_total}**)\n"
         )
 
+    doublet_figs = _fig_pair_block(
+        run_dir,
+        ("post_qc_review_doublet_rna", "RNA doublet scores (Scrublet)."),
+        ("post_qc_review_doublet_atac", "ATAC doublet scores (SnapATAC2)."),
+        render=render,
+    )
+
     return (
         "## Doublets (S3)\n"
-        f"{policy_note}"
         f"{threshold_lines}"
+        f"{policy_note}"
         f"{summary_table}"
+        f"{doublet_figs}"
     )
 
 
@@ -1176,8 +1209,12 @@ def _qc_html_styles() -> str:
         ".qc-side-by-side .qc-panel-table { flex: 1 1 260px; min-width: 0; }\n"
         ".qc-side-by-side .qc-panel-plot { flex: 0 1 380px; max-width: 52%; "
         "min-width: 240px; }\n"
-        ".qc-plot-pair { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }\n"
-        ".qc-plot-pair .qc-figure { flex: 1 1 45%; min-width: 260px; margin: 0; }\n"
+        ".qc-plot-pair { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; "
+        "align-items: stretch; }\n"
+        ".qc-plot-pair .qc-figure { flex: 1 1 45%; min-width: 260px; margin: 0; "
+        "display: flex; flex-direction: column; }\n"
+        ".qc-plot-pair .qc-figure img { width: 100%; height: 300px; object-fit: contain; "
+        "object-position: center top; display: block; }\n"
         ".qc-plots-below { margin-top: 1rem; }\n"
         ".qc-figure { margin: 0; }\n"
         ".qc-figure img { width: 100%; height: auto; display: block; }\n"
@@ -1349,7 +1386,7 @@ def _html_atac_section(
             ]:
                 if src_col in obs.columns:
                     stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
-        except Exception:
+        except BaseException:
             pass
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else "_(no stats)_"
 
@@ -1368,25 +1405,32 @@ def _html_atac_section(
         f"- Cells retained:         **{n_post}**\n"
         f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
     )
+    from .figures import FRIP_DISTRIBUTION_TITLE, TSS_PROFILE_CAPTION, TSS_PROFILE_TITLE
     plot_fsd = _html_figure(
         fig_dir, "s2_atac_qc_fragment_size_distribution",
         "ATAC fragment size distribution after QC filtering.",
     )
-    from .figures import FRIP_DISTRIBUTION_TITLE
+    plot_tss = _html_figure(
+        fig_dir, "s2_atac_qc_tss_enrichment_profile",
+        f"{TSS_PROFILE_TITLE}; {TSS_PROFILE_CAPTION}",
+    )
     plot_frip = _html_figure(
         fig_dir, "s2_atac_qc_frip_histogram",
         f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold.",
     )
-    plots = plot_fsd + plot_frip
+    fsd_frip_pair = "".join(p for p in (plot_fsd, plot_frip) if p)
+    pair_row = f'<div class="qc-plot-pair">{fsd_frip_pair}</div>' if fsd_frip_pair else ""
+    tss_row = f'<div class="qc-plots-below">{plot_tss}</div>' if plot_tss else ""
+    peak_note = f"\n_Peak source for FRiP: {peak_source}._\n" if peak_source else ""
     return (
         '<section class="qc-section qc-atac">'
         "<h2>ATAC quality filtering</h2>"
         f"{_md_html(intro)}"
-        f'<div class="qc-plots-below">{plots}</div>'
         "<h3>Thresholds used</h3>"
-        f"{_md_html(thresholds)}"
+        f"{_md_html(thresholds + peak_note)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
+        f"{pair_row}{tss_row}"
         "</section>"
     )
 

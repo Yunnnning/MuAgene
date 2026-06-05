@@ -31,7 +31,7 @@ def _plot_score_hist(
     title: str,
     out_dir: Path,
     stem: str,
-    threshold: float | None = None,
+    xlabel: str = "doublet score",
 ) -> list[Path]:
     from .. import figures as _fig
     import matplotlib
@@ -52,41 +52,13 @@ def _plot_score_hist(
             label=f"singlet (n={n_sing})", edgecolor="none")
     ax.hist(scores[flags], bins=bins, color="#ef4444", alpha=0.75,
             label=f"doublet (n={n_doub})", edgecolor="none")
-    if threshold is not None:
-        ax.axvline(threshold, color="#dc2626", linestyle="--", linewidth=1.5,
-                   label=f"threshold = {threshold:g}")
-    ax.set_xlabel("doublet score")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel("cells")
     ax.set_title(title)
     ax.legend(fontsize=_fig.FONT_SIZE - 1)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     return _fig.save_figure(fig, out_dir, stem)
-
-
-def _doublet_score_thresholds(run_dir: Path) -> tuple[float | None, float | None]:
-    """Read fixed doublet score cutoffs from parameters.yaml (post-S3 provenance)."""
-    import yaml
-    params_path = RunPaths(run_dir).parameters_yaml
-    if not params_path.exists():
-        return None, None
-    params = yaml.safe_load(params_path.read_text()) or {}
-
-    def _val(key: str, legacy: str | None = None) -> float | None:
-        entry = params.get(key)
-        if isinstance(entry, dict) and entry.get("value") is not None:
-            return float(entry["value"])
-        if legacy:
-            leg = params.get(legacy)
-            if isinstance(leg, dict) and leg.get("value") is not None:
-                return float(leg["value"])
-        return None
-
-    rna_thr = _val("s3_doublets.rna_doublet_score_threshold") or 0.25
-    atac_thr = (_val("s3_doublets.atac_doublet_score_threshold",
-                     legacy="s3_doublets.atac_doublet_threshold")
-                or 0.5)
-    return rna_thr, atac_thr
 
 
 def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
@@ -96,7 +68,6 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
         return []
 
     calls = pd.read_parquet(calls_path)
-    rna_thr, atac_thr = _doublet_score_thresholds(run_dir)
     result: list[Path] = []
 
     if "scrublet_score" in calls.columns:
@@ -111,22 +82,44 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
                 title="RNA doublet scores (Scrublet)",
                 out_dir=figs_dir,
                 stem="post_qc_review_doublet_rna",
-                threshold=rna_thr,
             ))
 
-    if "atac_doublet_score" in calls.columns:
-        atac_scores = calls["atac_doublet_score"].dropna().to_numpy().astype(float)
+    atac_mask = None
+    if "atac_doublet_probability" in calls.columns:
+        atac_mask = calls["atac_doublet_probability"].notna()
+    elif "atac_doublet_score" in calls.columns:
+        atac_mask = calls["atac_doublet_score"].notna()
+    if atac_mask is not None and atac_mask.any():
         atac_flags = (
-            calls.loc[calls["atac_doublet_score"].notna(), "atac_is_doublet"]
+            calls.loc[atac_mask, "atac_is_doublet"]
             .fillna(False).to_numpy().astype(bool)
         )
-        if atac_scores.size > 0:
+        use_prob = (
+            "atac_doublet_probability" in calls.columns
+            and calls.loc[atac_mask, "atac_doublet_probability"].notna().any()
+        )
+        if use_prob:
+            atac_values = (
+                calls.loc[atac_mask, "atac_doublet_probability"]
+                .to_numpy().astype(float)
+            )
             result.extend(_plot_score_hist(
-                atac_scores, atac_flags,
+                atac_values, atac_flags,
+                title="ATAC doublet probabilities (SnapATAC2)",
+                out_dir=figs_dir,
+                stem="post_qc_review_doublet_atac",
+                xlabel="doublet probability",
+            ))
+        else:
+            atac_values = (
+                calls.loc[atac_mask, "atac_doublet_score"]
+                .to_numpy().astype(float)
+            )
+            result.extend(_plot_score_hist(
+                atac_values, atac_flags,
                 title="ATAC doublet scores (SnapATAC2)",
                 out_dir=figs_dir,
                 stem="post_qc_review_doublet_atac",
-                threshold=atac_thr,
             ))
 
     return result

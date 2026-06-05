@@ -16,16 +16,30 @@ import numpy as np
 
 FIGURE_DPI = 300
 FONT_SIZE = 12
-MEDIUM_BLUE = "mediumblue"
 QC_FILL_COLOR = "#f97316"
 QC_FILL_ALPHA = 0.50
 QC_EDGE_COLOR = "#c2410c"
 QC_EDGE_LINEWIDTH = 0.4
-ANNOTATION_LINEWIDTH = 1.5
-FSD_ANNOTATION_LINEWIDTH = 1.2
+QC_ANNOTATION_COLOR = "firebrick"
+ANNOTATION_LINEWIDTH = 1.2
+FSD_ANNOTATION_LINEWIDTH = 1.0
 ANNOTATION_FONTSIZE = FONT_SIZE - 2
 TITLE_SIZE = 14
+RNA_VIOLIN_FILL_COLOR = "dodgerblue"
+RNA_VIOLIN_FILL_ALPHA = 0.50
+RNA_VIOLIN_QUANTILE_COLOR = "royalblue"
+RNA_VIOLIN_QUANTILE_LINEWIDTH = 1.6
 FRIP_DISTRIBUTION_TITLE = "Fraction of Reads in Peaks (FRiP) distribution"
+FRIP_XMAX = 0.7
+QC_PLOT_PAIR_SIZE = (7.0, 4.5)
+TSS_PROFILE_TITLE = "Mean TSS enrichment scores"
+TSS_PROFILE_CAPTION = (
+    "left = cells passing n_fragments/TSS/nucleosome_signal thresholds, "
+    "right = cells failing at least one threshold."
+)
+TSS_PROFILE_WINDOW_BP = 1500
+TSS_PASS_COLOR = "coral"
+TSS_FAIL_COLOR = "lightseagreen"
 UMAP_SIZE = (6.5, 5.5)
 QC_VIOLIN_SIZE = (12, 4.5)
 
@@ -111,7 +125,13 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
             continue
         parts = ax.violinplot(v, showmeans=False, showmedians=True)
         for pc in parts["bodies"]:
-            pc.set_alpha(0.65)
+            pc.set_facecolor(RNA_VIOLIN_FILL_COLOR)
+            pc.set_edgecolor(RNA_VIOLIN_QUANTILE_COLOR)
+            pc.set_alpha(RNA_VIOLIN_FILL_ALPHA)
+        for key in ("cmedians", "cbars", "cmins", "cmaxes"):
+            if key in parts:
+                parts[key].set_color(RNA_VIOLIN_QUANTILE_COLOR)
+                parts[key].set_linewidth(RNA_VIOLIN_QUANTILE_LINEWIDTH)
         ax.set_title(name)
         ax.set_ylabel(name)
         ax.spines["top"].set_visible(False)
@@ -151,7 +171,7 @@ def plot_fragment_size_distribution(
 
     d = np.asarray(distr, dtype=float).ravel()
     if d.size == 0:
-        fig, ax = plt.subplots(figsize=(8.0, 4.5))
+        fig, ax = plt.subplots(figsize=QC_PLOT_PAIR_SIZE)
         ax.set_title(title + " (no data)")
         return save_figure(fig, out_dir, stem)
 
@@ -163,7 +183,7 @@ def plot_fragment_size_distribution(
         for vline in (147, 294, 441):
             if vline < x_right:
                 ax.axvline(
-                    vline, color=MEDIUM_BLUE, linestyle="--",
+                    vline, color=QC_ANNOTATION_COLOR, linestyle="--",
                     linewidth=FSD_ANNOTATION_LINEWIDTH, zorder=5,
                 )
         for x0, x1, label in [(1, 147, "nucleosome\nfree"),
@@ -174,7 +194,7 @@ def plot_fragment_size_distribution(
             if xc < x_right:
                 ax.text(
                     xc, y_top * 0.97, label, ha="center", va="top",
-                    fontsize=ANNOTATION_FONTSIZE, color=MEDIUM_BLUE,
+                    fontsize=ANNOTATION_FONTSIZE, color=QC_ANNOTATION_COLOR,
                 )
 
     if distr_after is not None and np.asarray(distr_after).size > 0:
@@ -182,7 +202,7 @@ def plot_fragment_size_distribution(
     else:
         x_plot, body_plot = x_b, body_b
 
-    fig, ax = plt.subplots(figsize=(8.0, 4.5))
+    fig, ax = plt.subplots(figsize=QC_PLOT_PAIR_SIZE)
     x = x_plot[:x_right]
     y = body_plot[:x_right]
     ax.fill_between(x, 0, y, alpha=QC_FILL_ALPHA, color=QC_FILL_COLOR, linewidth=0)
@@ -217,7 +237,7 @@ def plot_frip_histogram(
     frip = np.asarray(frip, dtype=float)
     frip = frip[np.isfinite(frip)]
 
-    fig, ax = plt.subplots(figsize=(7.0, 4.5))
+    fig, ax = plt.subplots(figsize=QC_PLOT_PAIR_SIZE)
     if frip.size == 0:
         ax.set_title(f"{FRIP_DISTRIBUTION_TITLE} (no data)")
         return save_figure(fig, out_dir, stem)
@@ -226,27 +246,104 @@ def plot_frip_histogram(
     n_pass = int((frip >= frip_min).sum())
     pct_pass = 100.0 * n_pass / n_total if n_total > 0 else 0.0
 
-    bins = np.linspace(0, 1, 51)
+    bins = np.linspace(0, FRIP_XMAX, 36)
     ax.hist(
         frip, bins=bins, color=QC_FILL_COLOR, alpha=QC_FILL_ALPHA,
         edgecolor=QC_EDGE_COLOR, linewidth=QC_EDGE_LINEWIDTH,
     )
     ax.axvline(
-        frip_min, color=MEDIUM_BLUE, linestyle="--",
+        frip_min, color=QC_ANNOTATION_COLOR, linestyle="--",
         linewidth=ANNOTATION_LINEWIDTH, zorder=5,
     )
     ax.text(
         0.98, 0.98,
         f"threshold = {frip_min:.2f}\n{n_pass}/{n_total} passed ({pct_pass:.1f}%)",
         transform=ax.transAxes,
-        ha="right", va="top", fontsize=ANNOTATION_FONTSIZE, color=MEDIUM_BLUE,
+        ha="right", va="top", fontsize=ANNOTATION_FONTSIZE, color=QC_ANNOTATION_COLOR,
     )
     ax.set_xlabel("FRiP (fraction of reads in peaks)")
     ax.set_ylabel("number of cells")
     ax.set_title(FRIP_DISTRIBUTION_TITLE)
-    ax.set_xlim(0, 1)
+    ax.set_xlim(0, FRIP_XMAX)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+    return save_figure(fig, out_dir, stem)
+
+
+def _normalize_tss_profile(raw_profile: np.ndarray) -> np.ndarray:
+    """Fold enrichment over flanking background (±2 kb, excluding central 200 bp)."""
+    prof = np.asarray(raw_profile, dtype=float).ravel()
+    if prof.size == 0:
+        return prof
+    center = prof.size // 2
+    flank = np.concatenate([prof[: center - 100], prof[center + 101 :]])
+    denom = float(flank.mean()) if flank.size and flank.mean() > 0 else 1.0
+    return prof / denom
+
+
+def plot_tss_enrichment_profile(
+    profile_pass: np.ndarray,
+    profile_fail: np.ndarray,
+    *,
+    out_dir: Path | str,
+    stem: str,
+    n_pass: int | None = None,
+    n_fail: int | None = None,
+) -> list[Path]:
+    """Side-by-side mean TSS enrichment profiles for pass vs fail 3-metric QC cells."""
+    _apply_style()
+    import matplotlib.pyplot as plt
+
+    pass_prof = _normalize_tss_profile(profile_pass)
+    fail_prof = _normalize_tss_profile(profile_fail)
+    n_bins = min(pass_prof.size, fail_prof.size)
+    if n_bins == 0:
+        fig, ax = plt.subplots(figsize=(8.0, 4.5))
+        ax.set_title(f"{TSS_PROFILE_TITLE} (no data)")
+        return save_figure(fig, out_dir, stem)
+
+    pass_prof = pass_prof[:n_bins]
+    fail_prof = fail_prof[:n_bins]
+    center = n_bins // 2
+    win = min(TSS_PROFILE_WINDOW_BP, center)
+    sl = slice(center - win, center + win + 1)
+    pass_prof = pass_prof[sl]
+    fail_prof = fail_prof[sl]
+    x = np.arange(-win, win + 1)
+
+    pass_label = (
+        f"pass QC ({n_pass:,} cells)"
+        if n_pass is not None else "pass QC"
+    )
+    fail_label = (
+        f"fail QC ({n_fail:,} cells)"
+        if n_fail is not None else "fail QC"
+    )
+    tss_line_alpha = 0.88
+    tss_line_width = 1.1
+    y_top = float(max(pass_prof.max(initial=0), fail_prof.max(initial=0), 1.0))
+
+    fig_w = QC_PLOT_PAIR_SIZE[0] * 2 + 0.5
+    fig, axes = plt.subplots(1, 2, figsize=(fig_w, QC_PLOT_PAIR_SIZE[1]), sharey=True)
+    panels = (
+        (axes[0], pass_prof, TSS_PASS_COLOR, pass_label),
+        (axes[1], fail_prof, TSS_FAIL_COLOR, fail_label),
+    )
+    for ax, prof, color, title in panels:
+        ax.plot(
+            x, prof, color=color, linewidth=tss_line_width,
+            alpha=tss_line_alpha, zorder=3,
+        )
+        ax.axvline(0, color="black", linewidth=1.0, linestyle="--", alpha=0.6, zorder=1)
+        ax.set_xlim(-win, win)
+        ax.set_ylim(0, y_top * 1.05)
+        ax.set_xlabel("distance from TSS (bp)")
+        ax.set_title(title)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+    axes[0].set_ylabel("mean TSS enrichment score")
+    fig.suptitle(TSS_PROFILE_TITLE, y=1.02)
+    fig.tight_layout()
     return save_figure(fig, out_dir, stem)
 
 

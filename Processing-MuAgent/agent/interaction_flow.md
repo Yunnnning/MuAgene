@@ -194,8 +194,44 @@ Approve, revise, or abort?"
      c. If the stage has a linked summary in `deliverables/checkpoint/resolution_review/` (e.g., `resolution_summary.md` for s7), read that too and surface both.
      d. Based on user decision:
         - Approve → `executor approve <stage> --config $CFG`.
-        - Revise → `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
+        - Revise → see **QC threshold revision** below if the current stage is `post_qc_review`; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
      e. Re-invoke the appropriate run command (see HPC section below). Continue until `manifest` completes.
+
+**QC threshold revision at `post_qc_review` (detailed procedure):**
+
+When the user asks to adjust an S1, S2, or S3 parameter at the QC review checkpoint, execute these steps in order — do not skip any:
+
+1. **Update parameters.** For each changed parameter run:
+   ```
+   executor revise <stage> <stage>.<param>=<value> --config $CFG --rationale "<user's reason>"
+   ```
+   This writes the new value to `parameters.yaml` and marks the stage `awaiting_approval`.
+
+2. **Delete stale artifacts** so Snakemake re-runs the affected stages:
+   - **S1 revised:** `internal/artifacts/s1_rna_qc/rna_qc.h5ad` — plus all S3 artifacts listed below.
+   - **S2 revised:** `internal/artifacts/s2_atac_qc/atac_qc.h5ad`, `atac_snap.h5ad`, `qc_summary.json`. Keep `atac_fragments_cbf_chrnorm.tsv.gz*` (expensive to regenerate) — plus all S3 artifacts listed below.
+   - **S3 revised:** `internal/artifacts/s3_doublets/rna_post_doublet.h5ad`, `atac_post_doublet.h5ad`, `calls.parquet`, `joint_barcodes.txt`, `overlap_summary.json`.
+   - Any revision at S1 or S2 also invalidates S3 — always delete S3 artifacts too.
+
+3. **Approve revised stages.** For each stage whose artifacts were deleted:
+   ```
+   executor approve <stage> --config $CFG
+   ```
+   Do **not** pass `--auto-approve` to `submit` (it refreshes timestamps on all sentinels and can trigger spurious re-runs of already-complete stages).
+
+4. **Submit.** Resubmit the pipeline (HPC mode):
+   ```
+   source deliverables/pre_run/config/hpc.env
+   executor submit --config $CFG --executor pbs|slurm
+   ```
+   Monitor with `executor hpc-status --watch --config $CFG`.
+
+5. **Regenerate QC reports.** The submit target is `s3_doublets_execute`; the head job exits after S3 without running the local propose rule. After S3 completes, run the propose rule explicitly on the login node:
+   ```
+   executor propose post_qc_review --config $CFG
+   ```
+
+6. **Surface the updated report.** Read and relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` verbatim. Ask the user to approve or revise again.
 
 2. When `manifest` finishes:
    - Read `deliverables/post_run/run_manifest.json` and extract `workflow_branch`, `outputs`.

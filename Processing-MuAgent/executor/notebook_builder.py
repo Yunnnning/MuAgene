@@ -170,6 +170,7 @@ _show_qc("s1_rna_qc_violin_post")
 
 # ATAC fragment-size distribution (sanity check for nucleosome periodicity)
 _show_qc("s2_atac_qc_fragment_size_distribution")
+_show_qc("s2_atac_qc_tss_enrichment_profile")
 """
 
 
