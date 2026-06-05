@@ -219,12 +219,16 @@ When the user asks to adjust an S1, S2, or S3 parameter at the QC review checkpo
    ```
    Do **not** pass `--auto-approve` to `submit` (it refreshes timestamps on all sentinels and can trigger spurious re-runs of already-complete stages).
 
-4. **Submit.** Resubmit the pipeline (HPC mode):
+4. **Pre-submit check.** An old head job still alive will recreate the sentinels you just deleted and confuse the new run. Cancel it before submitting:
+   ```
+   squeue -u $USER | grep pma_head   # scancel <JOBID> for each listed
+   ```
+   Confirm the queue is clear, then submit and start the monitor:
    ```
    source deliverables/pre_run/config/hpc.env
    executor submit --config $CFG --executor pbs|slurm
+   executor hpc-status --watch --config $CFG
    ```
-   Monitor with `executor hpc-status --watch --config $CFG`.
 
 5. **Regenerate QC reports.** The submit target is `s3_doublets_execute`; the head job exits after S3 without running the local propose rule. After S3 completes, run the propose rule explicitly on the login node:
    ```
@@ -298,7 +302,13 @@ After plan review approval, `source deliverables/pre_run/config/hpc.env`, then:
 
 The daemon survives SSH disconnects on most clusters. On sites with `KillUserProcesses=yes`, remind the user to run inside `tmux` or `screen`. The daemon writes its output to `internal/hpc_monitor/monitor_<timestamp>.log` (with a `monitor.log` symlink to the latest) and removes `monitor.pid` when it exits.
 
-Poll job health with `executor hpc-status --watch --config $CFG`. Findings and hang reports appear in `internal/hpc_monitor/latest_report.md`.
+**Monitoring rule — always use `hpc-status --watch`, never `tail -f`.**
+
+`executor hpc-status --watch --config $CFG` is the only correct monitoring tool. It is pipeline-aware (stage transitions, heartbeats, review-gate detection) and exits cleanly within one poll interval (≤90 s) after the head job finishes or a review gate blocks. Findings and hang reports appear in `internal/hpc_monitor/latest_report.md`.
+
+Never substitute `tail -f | grep` — that command never exits on its own and will leave a monitor running until its timeout even after the job has long finished.
+
+**If `hpc-status --watch` exits on its first poll** showing "a review gate is awaiting approval" and the pipeline has barely started, a stale `<stage>.awaiting_approval` sentinel from a previous run is blocking the monitor. Cause: an old head job is still alive and recreated the sentinel after you deleted it. Fix: (1) `squeue -u $USER | grep pma_head` → `scancel <JOBID>` for each; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) restart `hpc-status --watch`. Do **not** fall back to `tail -f | grep`.
 
 ### How Claude surfaces things during the HPC flow
 
@@ -345,3 +355,5 @@ These are written to `deliverables/pre_run/config/hpc.env` by `configure-executi
 - **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/specs/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.
 - **`hpc-status` shows "Supervisor: not running" alongside a RUNNING or PENDING scheduler state** — the supervision daemon has died but the cluster job is still active. Without the daemon, stalled jobs will not be auto-cancelled. Restart the daemon: `executor supervisor-restart --config $CFG`. This resumes the full watch loop (stall detection, kill-on-hang) against the already-running job without resubmitting. Tell the user what happened and what you did.
 - **Supervision daemon crashes on a site with KillUserProcesses=yes** — when the user's SSH session ends, systemd kills all their processes including the daemon. The cluster job keeps running, but protection is gone. For the current run, tell them to use `supervisor-restart` as soon as they reconnect. Going forward, suggest running `submit` inside a `tmux` or `screen` session on that cluster.
+- **`hpc-status --watch` exits on the first poll with "review gate awaiting approval"** — a stale `awaiting_approval` sentinel from a prior run (or an old head job still writing to it) is blocking the monitor before the new pipeline has made any progress. Fix: (1) `squeue -u $USER | grep pma_head` → `scancel <JOBID>` for each result; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) restart `hpc-status --watch`. Do **not** fall back to `tail -f | grep` — it never exits.
+- **Monitor is still running long after the job finished** — a `tail -f | grep` command was used instead of `hpc-status --watch`. Stop it with TaskStop, then restart with `executor hpc-status --watch --config $CFG`.
