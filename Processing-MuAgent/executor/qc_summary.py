@@ -36,7 +36,7 @@ class _FigRender:
     """Figure inclusion and relative paths for markdown/HTML output."""
 
     md_parent: Path | None = None
-    embed_figures: bool = True  # False for editable qc_review.md; True for HTML report
+    embed_figures: bool = True  # True for qc_review.md and HTML report; False for raw-text excerpts
 
 
 _DEFAULT_FIG_RENDER = _FigRender()
@@ -688,11 +688,15 @@ def _atac_section(
 
     summary = json.loads(summary_json.read_text())
     n_pre = int(summary.get("n_cells_pre", 0))       # post-import, pre-S2-filter
+    n_after_3m = summary.get("n_cells_after_3m_filter")  # after n_frag/TSS/NS, before FRiP
     n_post = int(summary.get("n_cells_post", 0))
     n_rm = n_pre - n_post
+    peak_source = summary.get("peak_source")
     atac_raw = counts.get("atac_raw_barcodes")
     snap_drop = (atac_raw - n_pre) if (atac_raw is not None) else None
 
+    frip_min_val = _param(params, "s2_atac_qc.frip_min")
+    frip_threshold_note = frip_min_val if peak_source else f"{frip_min_val} _(not applied — no peaks available)_"
     thresholds = _md_table(
         ["parameter", "value"],
         [
@@ -701,6 +705,7 @@ def _atac_section(
             ["tss_enrichment_min", _param(params, "s2_atac_qc.tss_enrichment_min")],
             ["tss_enrichment_max", _param(params, "s2_atac_qc.tss_enrichment_max")],
             ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max")],
+            ["frip_min",           frip_threshold_note],
         ],
     )
 
@@ -718,6 +723,7 @@ def _atac_section(
                 ("n_fragment", "fragment_count"),
                 ("tsse", "tss_enrichment"),
                 ("nucleosome_signal", "nucleosome_signal"),
+                ("frip", "frip"),
             ]:
                 if src_col in obs.columns:
                     stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
@@ -734,26 +740,49 @@ def _atac_section(
             f"quality metrics are computed.\n"
         )
 
-    fig = _fig_block(
+    # Two-stage waterfall when FRiP was computed
+    if n_after_3m is not None:
+        n_after_3m = int(n_after_3m)
+        n_rm_3m = n_pre - n_after_3m
+        n_rm_frip = n_after_3m - n_post
+        count_lines = (
+            f"- Cells before filtering:       **{n_pre}**\n"
+            f"- After n_frag/TSS/NS filter:   **{n_after_3m}** (removed {n_rm_3m}, {_pct(n_rm_3m, n_pre)})\n"
+            f"- After FRiP filter:            **{n_post}** (removed {n_rm_frip}, {_pct(n_rm_frip, n_after_3m)})\n"
+        )
+    else:
+        count_lines = (
+            f"- Cells before filtering: **{n_pre}**\n"
+            f"- Cells retained:         **{n_post}**\n"
+            f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+        )
+
+    peak_note = f"\n_Peak source for FRiP: {peak_source}._\n" if peak_source else ""
+
+    fig_fsd = _fig_block(
         run_dir, "s2_atac_qc_fragment_size_distribution",
-        caption="Fragment size distribution after filtering.",
+        caption="ATAC fragment size distribution before (blue) and after (orange) QC filtering.",
+        render=render,
+    )
+    fig_frip = _fig_block(
+        run_dir, "s2_atac_qc_frip_histogram",
+        caption="FRiP distribution; dashed line marks the filter threshold.",
         render=render,
     )
     return (
         "## ATAC quality filtering\n"
         "\n"
         "Removes low-quality cells using MAD-based bounds on fragment counts, plus "
-        "TSS enrichment and nucleosome-signal thresholds.\n"
+        "TSS enrichment, nucleosome-signal, and FRiP thresholds.\n"
         "\n"
         f"{import_note}"
-        f"- Cells before filtering: **{n_pre}**\n"
-        f"- Cells retained:         **{n_post}**\n"
-        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
-        + fig
+        + count_lines
+        + fig_fsd
+        + fig_frip
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
-        "\n"
+        f"{peak_note}\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
         f"{warn_block}"
@@ -1066,7 +1095,7 @@ def build_qc_review(run_dir: Path | str) -> str:
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
     branch = _workflow_branch(run_dir, params)
-    render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=False)
+    render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=True)
 
     sections = [
         _qc_review_intro(run_dir.name, run_dir),

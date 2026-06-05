@@ -4,6 +4,17 @@ Imports fragments into a SnapATAC2-backed AnnData and applies per-cell filters:
   - n_fragments (MAD bounds on log-scale, after an absolute floor)
   - TSS enrichment (min and max)
   - nucleosome signal (max)
+  - FRiP — Fraction of Reads in Peaks (min; only when a peak set is available)
+
+Peak acquisition for FRiP uses the same priority order as S5 feature export:
+  0. User-supplied BED (atac_peaks_path in run.yaml)
+  1. Cell Ranger ARC pre-called peaks (single_file_multiome) → peak intervals
+     extracted from the ARC h5 and written as peaks_arc.bed
+  2. MACS3 called on 3-metric-filtered cells → peaks_macs3.bed
+
+When no peak source is available (all tiers fail), FRiP filtering is skipped
+and S2 proceeds with the 3-metric-filtered cell set. S5 reuses the BED files
+written here rather than calling MACS3 independently.
 
 Note: tile-matrix construction is NOT part of S2. It happens later in S5 alongside
 spectral embedding. S2 only computes QC metrics and subsets cells.
@@ -11,6 +22,7 @@ spectral embedding. S2 only computes QC metrics and subsets cells.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -49,6 +61,113 @@ def _col_to_numpy(adata, key: str) -> np.ndarray:
     return np.asarray(arr, dtype=float)
 
 
+def _acquire_peaks_for_frip(
+    adata_3m,
+    run_dir: Path,
+    art: Path,
+    *,
+    genome_ref,
+) -> tuple[Path | None, str]:
+    """Try to obtain a peak BED file for FRiP computation.
+
+    Returns (peaks_bed_path, source_label) where source_label is one of
+    "user_peaks", "arc_h5", "macs3", or "" (empty = no peaks available).
+    peaks_bed_path is None when no source succeeded.
+    """
+    import snapatac2 as snap
+
+    # Priority 0: user-supplied peaks
+    try:
+        import yaml as _yaml
+        from ..run_paths import RunPaths as _RunPaths
+        cfg = _yaml.safe_load(_RunPaths(run_dir).run_yaml.read_text()) or {}
+        user_peaks = cfg.get("atac_peaks_path")
+        if user_peaks:
+            p = Path(user_peaks)
+            if not p.exists():
+                raise RuntimeError(f"atac_peaks_path={user_peaks} not found on disk.")
+            return p, "user_peaks"
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_user_peaks_skipped",
+                             "reason": str(e)})
+
+    # Priority 1: Cell Ranger ARC pre-called peak intervals
+    try:
+        import json as _json
+        s0_report = _json.loads(
+            (run_dir / "internal" / "artifacts" / "s0_ingest" / "validation_report.json").read_text()
+        )
+        if s0_report.get("single_file_multiome"):
+            import yaml as _yaml
+            from ..run_paths import RunPaths as _RunPaths
+            cfg = _yaml.safe_load(_RunPaths(run_dir).run_yaml.read_text()) or {}
+            rna_path = cfg.get("rna_path")
+            if rna_path:
+                arc_adata = _io.load_atac_from_10x_h5(rna_path)
+                arc_peaks_bed = art / "peaks_arc.bed"
+                # var_names are genomic intervals, typically "chr1:1000-2000"
+                with open(arc_peaks_bed, "w") as fh:
+                    for iv in arc_adata.var_names:
+                        iv = str(iv)
+                        # Handle both "chr1:1000-2000" and "chr1\t1000\t2000" formats
+                        if ":" in iv and "-" in iv:
+                            chrom, rest = iv.split(":", 1)
+                            start, end = rest.split("-", 1)
+                        elif "\t" in iv:
+                            parts = iv.split("\t")
+                            chrom, start, end = parts[0], parts[1], parts[2]
+                        else:
+                            raise RuntimeError(f"Unrecognised ARC peak interval format: {iv!r}")
+                        fh.write(f"{chrom}\t{start}\t{end}\n")
+                n_written = len(arc_adata.var_names)
+                if n_written == 0:
+                    arc_peaks_bed.unlink(missing_ok=True)
+                    raise RuntimeError("ARC h5 contained zero ATAC peaks.")
+                return arc_peaks_bed, "arc_h5"
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_arc_peaks_skipped",
+                             "reason": str(e)})
+
+    # Priority 2: MACS3 called on the 3-metric-filtered cells
+    try:
+        macs_tempdir = art / "macs3_tmp"
+        macs_tempdir.mkdir(parents=True, exist_ok=True)
+
+        # SnapATAC2 2.8: groupby=None → single polars DataFrame;
+        # groupby column → dict[str, DataFrame]. Handle both.
+        peaks_out = snap.tl.macs3(
+            adata_3m, groupby=None, inplace=False,
+            qvalue=0.05, shift=-100, extsize=200,
+            tempdir=macs_tempdir, n_jobs=1,
+        )
+        if peaks_out is None:
+            raise RuntimeError("snap.tl.macs3 returned no peaks.")
+
+        if isinstance(peaks_out, dict):
+            if not peaks_out:
+                raise RuntimeError("snap.tl.macs3 returned an empty peak-set dict.")
+            merged = snap.tl.merge_peaks(peaks_out, chrom_sizes=genome_ref)
+        else:
+            merged = peaks_out
+
+        # Normalise column name casing (MACS3 varies between runs)
+        cols_lower = [c.lower() for c in merged.columns]
+        def _pick(name: str) -> str:
+            return merged.columns[cols_lower.index(name)]
+        bed_df = merged.select([_pick("chrom"), _pick("start"), _pick("end")])
+        if bed_df.height == 0:
+            raise RuntimeError("MACS3 produced zero peaks.")
+
+        peaks_macs3_bed = art / "peaks_macs3.bed"
+        bed_df.write_csv(str(peaks_macs3_bed), separator="\t", include_header=False)
+        return peaks_macs3_bed, "macs3"
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_macs3_skipped",
+                             "reason": str(e)})
+
+    return None, ""
+
+
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     import snapatac2 as snap
     run_dir = Path(run_dir)
@@ -80,7 +199,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                  **stats})
         fragments_path = str(translated_path)
 
-    # Strict: require an explicit, SnapATAC2-supported genome. 
+    # Strict: require an explicit, SnapATAC2-supported genome.
     genome = _prov.get_value(params_path, "ingest.genome_assembly", None)
     if not genome:
         raise ValueError(
@@ -173,8 +292,11 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         ns_values = np.zeros(adata.n_obs, dtype=float)
 
     # Dataset-level fragment-size distribution (cheap; for a sanity figure).
+    # Captured here before adata is closed; used later in the figure block.
+    fsd_for_fig: np.ndarray | None = None
     try:
         snap.metrics.frag_size_distr(adata, max_recorded_size=1000)
+        fsd_for_fig = np.asarray(adata.uns["frag_size_distr"])
     except Exception as e:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_failed",
                             "error": str(e)})
@@ -185,6 +307,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     tss_min = float(_resolve_param(params_path, plan_params, "tss_enrichment_min", 1.5))
     tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", 50.0))
     nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 3.0))
+    frip_min = float(_resolve_param(params_path, plan_params, "frip_min", 0.15))
 
     if n_frag_values.size:
         keep_floor = n_frag_values >= n_frag_floor
@@ -219,6 +342,10 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                "values above this flag poor nucleosome positioning."),
                     method={"name": "io.nucleosome_signal_per_cell",
                             "code_ref": "executor/io.py::nucleosome_signal_per_cell"})
+    _prov.set_param(params_path, "s2_atac_qc.frip_min", float(frip_min),
+                    source="recommended", confidence="medium",
+                    rationale=("Minimum Fraction of Reads in Peaks per cell. "
+                               "Set to 0 to disable. Only applied when a peak set is available."))
 
     # Persist per-cell metrics on the AnnData so downstream stages and the
     # qc_summary can read them without re-scanning the fragments file.
@@ -228,47 +355,141 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "nuc_signal_obs_write_failed",
                             "error": str(e)})
 
-    keep = np.ones(adata.n_obs, dtype=bool)
+    # --- Step A: 3-metric filter (n_fragments, TSS enrichment, nucleosome signal) ---
+    keep_3m = np.ones(adata.n_obs, dtype=bool)
     if n_frag_values.size:
-        keep &= (n_frag_values >= f_lo) & (n_frag_values <= f_hi)
+        keep_3m &= (n_frag_values >= f_lo) & (n_frag_values <= f_hi)
     if tss_values.size:
-        keep &= (tss_values > tss_min) & (tss_values < tss_max)
+        keep_3m &= (tss_values > tss_min) & (tss_values < tss_max)
     if ns_values.size and np.isfinite(ns_values).any():
-        keep &= ns_values < nuc_signal_max
+        keep_3m &= ns_values < nuc_signal_max
 
-    keep_idx = np.nonzero(keep)[0].tolist()
+    keep_3m_idx = np.nonzero(keep_3m)[0].tolist()
     n_pre = int(adata.n_obs)
-    filtered_path = art / "atac_qc.h5ad"
-    fd, tmp_name = tempfile.mkstemp(suffix=".h5ad", dir="/tmp")
-    Path(tmp_name).unlink(missing_ok=True)
-    Path(tmp_name).parent.mkdir(parents=True, exist_ok=True)
-    # Close the fd from mkstemp; SnapATAC2 creates the HDF5 file itself.
-    import os
-    os.close(fd)
-    # SnapATAC2 2.8: inplace defaults to True (returns None); pass inplace=False to get
-    # a new on-disk AnnData written to `out`. Write on local /tmp first; copying
-    # the completed file back to NFS avoids HDF5/NFS locks and Snakemake utime stalls.
-    adata_f = adata.subset(obs_indices=keep_idx, out=tmp_name, inplace=False)
-    if adata_f is None:
-        import snapatac2 as snap
-        adata_f = snap.read(tmp_name)
-    n_post = int(adata_f.n_obs)
+    n_after_3m = int(len(keep_3m_idx))
+
+    # Write 3-metric-filtered AnnData to /tmp (NFS safety; same pattern as final subset).
+    fd_3m, tmp_3m = tempfile.mkstemp(suffix=".h5ad", dir="/tmp")
+    Path(tmp_3m).unlink(missing_ok=True)
+    os.close(fd_3m)
+    adata_3m = adata.subset(obs_indices=keep_3m_idx, out=tmp_3m, inplace=False)
+    if adata_3m is None:
+        adata_3m = snap.read(tmp_3m)
+
+    try:
+        adata.close()
+    except Exception:
+        pass
+
+    if n_after_3m == 0:
+        Path(tmp_3m).unlink(missing_ok=True)
+        raise ValueError(
+            f"S2 ATAC QC removed all cells after 3-metric filter (n_pre={n_pre}). "
+            f"Thresholds: n_fragments in [{f_lo:.1f}, {f_hi:.1f}], "
+            f"tss_enrichment in ({tss_min}, {tss_max}), "
+            f"nucleosome_signal < {nuc_signal_max}. "
+            "Revise one or more thresholds via `executor revise s2_atac_qc ...` "
+            "before continuing."
+        )
+
+    # --- Step B: Peak acquisition for FRiP ---
+    peaks_bed, peak_source = _acquire_peaks_for_frip(
+        adata_3m, run_dir, art, genome_ref=genome_ref,
+    )
+
+    _prov.set_param(params_path, "s2_atac_qc.peak_source",
+                    peak_source if peak_source else "none",
+                    source="derived", confidence="high",
+                    rationale=("Peak source used for FRiP computation: "
+                               "user_peaks | arc_h5 | macs3 | none (FRiP skipped)."))
+
+    # --- Step C + D: FRiP computation and filter ---
+    frip_values: np.ndarray | None = None
+    frip_applied = False
+
+    if peaks_bed is not None and frip_min > 0.0:
+        try:
+            frip_h5 = art / "_frip_tmp.h5ad"
+            if frip_h5.exists():
+                frip_h5.unlink()
+            pm_out = snap.pp.make_peak_matrix(
+                adata_3m, peak_file=str(peaks_bed), inplace=False, file=str(frip_h5),
+            )
+            peak_ad = pm_out if pm_out is not None else snap.read(str(frip_h5))
+
+            reads_in_peaks = np.asarray(peak_ad.X[:].sum(axis=1)).ravel()
+            n_frag_3m = _col_to_numpy(adata_3m, "n_fragment")
+            frip_values = np.where(n_frag_3m > 0, reads_in_peaks / n_frag_3m, 0.0)
+
+            try:
+                peak_ad.close()
+            except Exception:
+                pass
+            frip_h5.unlink(missing_ok=True)
+
+            # Persist FRiP in obs so the final AnnData carries it for QC reporting.
+            try:
+                adata_3m.obs["frip"] = frip_values
+            except Exception as e:
+                log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_obs_write_failed",
+                                    "error": str(e)})
+
+            frip_applied = True
+        except Exception as e:
+            log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_computation_failed",
+                                "error": str(e), "fallback": "frip_filter_skipped"})
+            frip_values = None
+            frip_applied = False
+    elif peaks_bed is None:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_skipped_no_peaks"})
+    # frip_min == 0 means user explicitly disabled FRiP filtering (no log needed)
+
+    # Build the final cell mask on top of the 3m-filtered set
+    if frip_applied and frip_values is not None:
+        frip_keep = frip_values >= frip_min
+        keep_frip_idx = np.nonzero(frip_keep)[0].tolist()
+    else:
+        keep_frip_idx = list(range(n_after_3m))
+
+    n_post = int(len(keep_frip_idx))
 
     if n_post == 0:
         try:
-            adata_f.close()
+            adata_3m.close()
         except Exception:
             pass
-        Path(tmp_name).unlink(missing_ok=True)
+        Path(tmp_3m).unlink(missing_ok=True)
+        frip_desc = (f", frip >= {frip_min}" if frip_applied else
+                     " (FRiP filter not applied — no peak source available)")
         raise ValueError(
             f"S2 ATAC QC removed all cells (n_pre={n_pre}, n_post=0). Thresholds used: "
             f"n_fragments in [{f_lo:.1f}, {f_hi:.1f}], tss_enrichment in ({tss_min}, {tss_max}), "
-            f"nucleosome_signal < {nuc_signal_max}. "
+            f"nucleosome_signal < {nuc_signal_max}{frip_desc}. "
             "Revise one or more thresholds via `executor revise s2_atac_qc ...` "
             "before continuing; downstream stages cannot run on an empty ATAC cell set."
         )
 
-    # Persist summary (+ per-cell ns range for the QC report)
+    # Subset to final cell set and write via /tmp (NFS safety)
+    fd_f, tmp_final = tempfile.mkstemp(suffix=".h5ad", dir="/tmp")
+    Path(tmp_final).unlink(missing_ok=True)
+    os.close(fd_f)
+
+    if len(keep_frip_idx) == n_after_3m:
+        # No FRiP filter applied — rename the 3m file instead of a redundant copy.
+        filtered_path_tmp = tmp_3m
+        adata_f = adata_3m
+    else:
+        adata_f = adata_3m.subset(obs_indices=keep_frip_idx, out=tmp_final, inplace=False)
+        if adata_f is None:
+            adata_f = snap.read(tmp_final)
+        try:
+            adata_3m.close()
+        except Exception:
+            pass
+        Path(tmp_3m).unlink(missing_ok=True)
+        filtered_path_tmp = tmp_final
+
+    # Persist summary (+ per-cell ns range and FRiP info for the QC report)
     ns_summary: dict[str, Any] = {}
     if ns_values.size:
         finite_ns = ns_values[np.isfinite(ns_values)]
@@ -278,59 +499,86 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 "p90":    float(np.quantile(finite_ns, 0.90)),
                 "max":    float(np.max(finite_ns)),
             }
+
+    frip_summary: dict[str, Any] | None = None
+    if frip_applied and frip_values is not None and frip_values.size:
+        frip_summary = {
+            "median": float(np.median(frip_values)),
+            "p10":    float(np.quantile(frip_values, 0.10)),
+            "min":    float(np.min(frip_values)),
+        }
+
     _io.write_text_safe(art / "qc_summary.json", json.dumps({
         "n_cells_pre": n_pre,
+        "n_cells_after_3m_filter": n_after_3m,
         "n_cells_post": n_post,
         "thresholds": {
             "n_fragments": [float(f_lo), float(f_hi)],
             "tss_min": float(tss_min),
             "tss_max": float(tss_max),
             "nucleosome_signal_max": float(nuc_signal_max),
+            "frip_min": float(frip_min) if frip_applied else None,
         },
         "nucleosome_signal_summary": ns_summary,
+        "frip_summary": frip_summary,
+        "peak_source": peak_source if peak_source else None,
     }, indent=2))
 
-    # Dataset-level fragment-size distribution figure — surfaces nucleosome
-    # periodicity (well-prepared ATAC libraries show clear ~150 / ~300 / ~450
-    # peaks). Cheap to render and very useful for human review.
+    # Figures: (1) fragment-size distribution before vs after QC (normalised),
+    #          (2) FRiP histogram with threshold line — in that order.
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
         figs_dir = RunPaths(run_dir).deliv_qc_review
         figs_dir.mkdir(parents=True, exist_ok=True)
-        # SnapATAC2's `adata.uns` is a polars-backed PyElemCollection, not a
-        # plain dict — `.get()` and `in` may not behave like dict semantics.
-        # Try-by-key and fall through silently on any access error.
-        fsd = None
-        try:
-            fsd = np.asarray(adata.uns["frag_size_distr"])
-        except Exception:
-            fsd = None
-        if fsd is not None and fsd.size:
-            _fig.plot_fragment_size_distribution(
-                fsd, out_dir=figs_dir,
-                stem="s2_atac_qc_fragment_size_distribution",
-                title="ATAC fragment size distribution")
-    except Exception as e:
-        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_plot_failed",
-                            "error": str(e)})
 
+        if fsd_for_fig is not None and fsd_for_fig.size:
+            _fig.plot_fragment_size_distribution(
+                fsd_for_fig, out_dir=figs_dir,
+                stem="s2_atac_qc_fragment_size_distribution",
+                title="ATAC fragment size distribution (before vs after QC)",
+                distr_after=fsd_after if (fsd_after is not None and fsd_after.size) else None,
+            )
+
+        if frip_applied and frip_values is not None and frip_values.size:
+            _fig.plot_frip_histogram(
+                frip_values, frip_min=frip_min,
+                out_dir=figs_dir,
+                stem="s2_atac_qc_frip_histogram",
+            )
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "figures_failed",
+                             "error": str(e)})
+
+    # Capture post-QC fragment size distribution for before/after comparison figure.
+    # Must happen before adata_f is closed.
+    fsd_after: np.ndarray | None = None
     try:
-        adata.close()
-    except Exception:
-        pass
+        snap.metrics.frag_size_distr(adata_f, max_recorded_size=1000)
+        fsd_after = np.asarray(adata_f.uns["frag_size_distr"])
+    except Exception as e:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_post_failed",
+                             "error": str(e)})
+
     try:
         adata_f.close()
     except Exception:
         pass
-    shutil.copy2(tmp_name, filtered_path)
-    _io.sync_path(filtered_path)
-    Path(tmp_name).unlink(missing_ok=True)
+
+    final_artifact = art / "atac_qc.h5ad"
+    shutil.copy2(filtered_path_tmp, final_artifact)
+    _io.sync_path(final_artifact)
+    Path(filtered_path_tmp).unlink(missing_ok=True)
 
     log_event(run_dir, {"stage": "s2_atac_qc", "event": "done",
-                         "n_cells_pre": n_pre, "n_cells_post": n_post,
+                         "n_cells_pre": n_pre,
+                         "n_cells_after_3m_filter": n_after_3m,
+                         "n_cells_post": n_post,
+                         "peak_source": peak_source if peak_source else None,
+                         "frip_applied": frip_applied,
                          "thresholds": {"n_fragments": [float(f_lo), float(f_hi)],
                                           "tss_min": float(tss_min),
                                           "tss_max": float(tss_max),
-                                          "nucleosome_signal_max": float(nuc_signal_max)}})
-    return {"n_cells_pre": n_pre, "n_cells_post": n_post}
+                                          "nucleosome_signal_max": float(nuc_signal_max),
+                                          "frip_min": float(frip_min) if frip_applied else None}})
+    return {"n_cells_pre": n_pre, "n_cells_after_3m_filter": n_after_3m, "n_cells_post": n_post}

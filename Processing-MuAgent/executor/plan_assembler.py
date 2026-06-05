@@ -169,6 +169,12 @@ def assemble_plan(
                 "nucleosome_signal_max": p(3.0, "recommended",
                                             "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
                                             "ratio). Cells at or above are removed.", "medium"),
+                "frip_min": p(0.15, "recommended",
+                               "Minimum Fraction of Reads in Peaks (FRiP) per cell. "
+                               "Cells below this value are removed. Set to 0 to disable. "
+                               "Only applied when a peak set is available "
+                               "(user-supplied via atac_peaks_path, Cell Ranger ARC, or MACS3).",
+                               "medium"),
             }
         },
         "s3_doublets": {

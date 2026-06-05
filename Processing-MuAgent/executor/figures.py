@@ -112,32 +112,64 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
     return save_figure(fig, out_dir, stem)
 
 
-def plot_fragment_size_distribution(distr: np.ndarray, *, out_dir: Path | str,
-                                     stem: str, title: str) -> list[Path]:
+def plot_fragment_size_distribution(
+    distr: np.ndarray,
+    *,
+    out_dir: Path | str,
+    stem: str,
+    title: str,
+    distr_after: np.ndarray | None = None,
+) -> list[Path]:
     """Plot a 1D fragment-size histogram (counts per fragment length).
 
     `distr` is a 1D vector where `distr[i]` is the number of fragments of length
     `i` (the SnapATAC2 `frag_size_distr` format; index 0 holds the over-max bucket).
     A well-prepared ATAC library shows distinct peaks at ~150, ~300, ~450 bp.
+
+    When `distr_after` is supplied, both distributions are normalised to fractions
+    (so cell-count differences don't bias the comparison) and overlaid in two colours.
     """
     _apply_style()
     import matplotlib.pyplot as plt
-    d = np.asarray(distr, dtype=float).ravel()
+
+    def _prep(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        d = np.asarray(d, dtype=float).ravel()
+        body = d[1:]  # drop over-max bucket at index 0
+        total = body.sum()
+        normed = body / total if total > 0 else body
+        x = np.arange(1, body.size + 1)
+        return x, normed
+
     fig, ax = plt.subplots(figsize=(8.0, 4.5))
+    d = np.asarray(distr, dtype=float).ravel()
     if d.size == 0:
         ax.set_title(title + " (no data)")
         return save_figure(fig, out_dir, stem)
-    # Drop the over-max bucket (index 0) — its size is dataset-dependent and
-    # would dominate the y-axis on libraries with many large fragments.
-    body = d[1:]
-    x = np.arange(1, body.size + 1)
-    ax.fill_between(x, 0, body, alpha=0.55, color="#1f77b4", linewidth=0)
-    ax.plot(x, body, color="#1f4f8b", linewidth=1.0)
-    x_right = min(1000, body.size)
+
+    x_b, body_b = _prep(d)
+    x_right = min(1000, body_b.size)
+
+    if distr_after is not None and np.asarray(distr_after).size > 0:
+        _, body_a = _prep(np.asarray(distr_after, dtype=float))
+        # Trim both to the same length for clean overlap
+        common = min(body_b.size, body_a.size, x_right)
+        x = np.arange(1, common + 1)
+        ax.fill_between(x, 0, body_b[:common], alpha=0.40, color="#1f77b4", linewidth=0)
+        ax.plot(x, body_b[:common], color="#1f4f8b", linewidth=1.0, label="before QC")
+        ax.fill_between(x, 0, body_a[:common], alpha=0.40, color="#ff7f0e", linewidth=0)
+        ax.plot(x, body_a[:common], color="#b85c00", linewidth=1.0, label="after QC")
+        ax.legend(fontsize=FONT_SIZE - 1, loc="upper right")
+        y_top = max(body_b[:common].max(), body_a[:common].max())
+        ylabel = "fraction of fragments"
+    else:
+        ax.fill_between(x_b[:x_right], 0, body_b[:x_right], alpha=0.55, color="#1f77b4", linewidth=0)
+        ax.plot(x_b[:x_right], body_b[:x_right], color="#1f4f8b", linewidth=1.0)
+        y_top = body_b[:x_right].max() if body_b[:x_right].size else 1.0
+        ylabel = "fraction of fragments"
+
     ax.set_xlim(left=0, right=x_right)
-    y_top = ax.get_ylim()[1]
     for vline in (147, 294, 441):
-        if vline < body.size:
+        if vline < x_right:
             ax.axvline(vline, color="firebrick", linestyle=":", linewidth=0.9, alpha=0.6)
     for x0, x1, label in [(1, 147, "nucleosome-free"),
                           (147, 294, "mono"),
@@ -148,8 +180,52 @@ def plot_fragment_size_distribution(distr: np.ndarray, *, out_dir: Path | str,
             ax.text(xc, y_top * 0.97, label, ha="center", va="top",
                     fontsize=FONT_SIZE - 3, color="firebrick")
     ax.set_xlabel("fragment length (bp)")
-    ax.set_ylabel("fragment count")
+    ax.set_ylabel(ylabel)
     ax.set_title(title)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    return save_figure(fig, out_dir, stem)
+
+
+def plot_frip_histogram(
+    frip: np.ndarray,
+    *,
+    out_dir: Path | str,
+    stem: str,
+    frip_min: float = 0.15,
+) -> list[Path]:
+    """Histogram of per-cell FRiP values with a vertical threshold line.
+
+    `frip` contains FRiP values for all cells that passed the 3-metric QC
+    (before the FRiP filter itself). The vertical line shows the chosen threshold.
+    """
+    _apply_style()
+    import matplotlib.pyplot as plt
+
+    frip = np.asarray(frip, dtype=float)
+    frip = frip[np.isfinite(frip)]
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.5))
+    if frip.size == 0:
+        ax.set_title("FRiP distribution (no data)")
+        return save_figure(fig, out_dir, stem)
+
+    n_total = frip.size
+    n_pass = int((frip >= frip_min).sum())
+    pct_pass = 100.0 * n_pass / n_total if n_total > 0 else 0.0
+
+    bins = np.linspace(0, 1, 51)
+    ax.hist(frip, bins=bins, color="#1f77b4", alpha=0.70, edgecolor="none")
+    ax.axvline(frip_min, color="firebrick", linestyle="--", linewidth=1.5,
+               label=f"threshold = {frip_min:.2f}")
+    ymax = ax.get_ylim()[1]
+    ax.text(frip_min + 0.01, ymax * 0.95,
+            f"threshold = {frip_min:.2f}\n{n_pass}/{n_total} pass ({pct_pass:.1f}%)",
+            ha="left", va="top", fontsize=FONT_SIZE - 2, color="firebrick")
+    ax.set_xlabel("FRiP (fraction of reads in peaks)")
+    ax.set_ylabel("number of cells")
+    ax.set_title("FRiP distribution")
+    ax.set_xlim(0, 1)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     return save_figure(fig, out_dir, stem)

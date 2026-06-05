@@ -13,13 +13,15 @@ S5 performs two independent operations:
       is also stored as `X_lsi` for backward compatibility.
 
   (2) FEATURE EXPORT: prefer a peak-by-cell matrix for downstream data
-      integration. The preferred path is the Cell Ranger ARC h5 (fast shortcut
-      when `single_file_multiome` was detected at S0). Otherwise peaks are
-      called from fragments via SnapATAC2's MACS3 integration with
-      `groupby=None` (all S5 cells as one peak-calling group). If BOTH peak
-      paths fail, S5 falls back to the verified tile matrix that fed the
-      spectral step. Only if that fallback also fails does S5 emit no feature
-      matrix and let S8 surface a latent-only ATAC AnnData.
+      integration. Priority order for the peak BED coordinates:
+        0. User-supplied peaks (atac_peaks_path in run.yaml)
+        1. Cell Ranger ARC pre-called peaks (single_file_multiome shortcut)
+        2. Peaks pre-called by S2 ATAC QC for FRiP computation
+           (s2_atac_qc/peaks_macs3.bed or peaks_arc.bed)
+      If all peak sources are absent or fail, S5 falls back to the verified
+      tile matrix that fed the spectral step. Only if that also fails does S5
+      emit no feature matrix and let S8 surface a latent-only ATAC AnnData.
+      S5 no longer calls MACS3 independently — peak calling is S2's responsibility.
 
   Outputs written to `s5_atac_spectral/`:
     feature_matrix.npz   — scipy.sparse.csr_matrix (cells × peaks or tiles).
@@ -127,9 +129,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     n_obs_expected = int(adata.n_obs)
     peak_X = None
     peak_names: list[str] | None = None
-    peak_source = ""   # "user_peaks" | "arc_h5" | "macs3_from_fragments" | "tile_matrix_fallback"
+    peak_source = ""   # "user_peaks" | "arc_h5" | "s2_peaks_macs3" | "s2_peaks_arc" | "tile_matrix_fallback"
     peak_source_h5: str | None = None
-    macs3_failures: list[str] = []
 
     # ---- Priority 0: user-supplied peaks BED ----------------------------
     # When the user provides `atac_peaks_path` in run.yaml, S5 trusts it and
@@ -233,107 +234,70 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "arc_peak_path_skipped", "reason": str(e)})
 
-    # ---- Priority 2: MACS3 peak calling from fragments ------------------
+    # ---- Priority 2: peaks pre-called by S2 ATAC QC --------------------
+    # S2 calls MACS3 (or uses user/ARC peaks) to compute FRiP and writes the
+    # peak BED to its artifacts directory. Reuse those coordinates here so
+    # S5 never needs to call MACS3 independently; the peak set is identical
+    # regardless of whether the cell set is pre- or post-doublet-removal.
     if peak_X is None:
-        try:
-            genome = _prov.get_value(params_path, "ingest.genome_assembly", None)
-            if not genome:
-                raise RuntimeError("ingest.genome_assembly not set; cannot call MACS3 peaks.")
-            genome_ref = getattr(snap.genome, genome, None)
-            if genome_ref is None:
-                raise RuntimeError(f"genome {genome!r} not supported by SnapATAC2.")
-
-            macs_tempdir = art / "macs3_tmp"
-            macs_tempdir.mkdir(parents=True, exist_ok=True)
-
-            # Call peaks on all cells as one group (no clustering required at S5).
-            # SnapATAC2 2.8: with groupby=None it returns a single polars DataFrame;
-            # with a groupby column it returns dict[str, DataFrame]. Handle both.
-            peaks_out = snap.tl.macs3(
-                adata, groupby=None, inplace=False,
-                qvalue=0.05, shift=-100, extsize=200,
-                tempdir=macs_tempdir, n_jobs=1,
-            )
-            if peaks_out is None:
-                raise RuntimeError("snap.tl.macs3 returned no peaks.")
-
-            if isinstance(peaks_out, dict):
-                if not peaks_out:
-                    raise RuntimeError("snap.tl.macs3 returned an empty peak-set dict.")
-                merged = snap.tl.merge_peaks(peaks_out, chrom_sizes=genome_ref)
-            else:
-                # Single-group result — already a polars DataFrame of peaks.
-                merged = peaks_out
-
-            # Write a BED file for make_peak_matrix. SnapATAC2's peak DataFrames
-            # use lowercase `chrom/start/end` (MACS3-style) in some paths and
-            # TitleCase in others — pick whichever the schema actually has.
-            cols = [c.lower() for c in merged.columns]
-            def _pick(name: str) -> str:
-                i = cols.index(name)
-                return merged.columns[i]
-            bed_df = merged.select([_pick("chrom"), _pick("start"), _pick("end")])
-            if bed_df.height == 0:
-                raise RuntimeError("MACS3 produced zero peaks; refusing export.")
-
-            peak_bed = art / "peaks_macs3.bed"
-            bed_df.write_csv(str(peak_bed), separator="\t", include_header=False)
-
-            # Build the peak × cell matrix directly from fragments.
-            peak_h5 = art / "peak_matrix_snap.h5ad"
-            if peak_h5.exists():
-                peak_h5.unlink()
-            pm_out = snap.pp.make_peak_matrix(
-                adata, peak_file=str(peak_bed), inplace=False, file=str(peak_h5),
-            )
-            peak_ad = pm_out if pm_out is not None else snap.read(str(peak_h5))
-
-            peak_obs_names = [str(v) for v in list(peak_ad.obs_names)]
-            peak_bc_set = set(peak_obs_names)
-            missing = [bc for bc in s5_barcodes if bc not in peak_bc_set]
-            if missing:
-                raise RuntimeError(
-                    f"MACS3 peak matrix missing {len(missing)} of {len(s5_barcodes)} "
-                    "S5 barcodes; refusing misaligned export."
-                )
-
-            if peak_obs_names != s5_barcodes:
-                bc_to_idx = {bc: i for i, bc in enumerate(peak_obs_names)}
-                order = [bc_to_idx[bc] for bc in s5_barcodes]
-            else:
-                order = list(range(len(peak_obs_names)))
-
-            X = peak_ad.X[:]
-            if not sp.issparse(X):
-                X = sp.csr_matrix(X)
-            X = X.tocsr()
-            if order != list(range(len(peak_obs_names))):
-                X = X[order, :]
-            aligned_barcodes = [peak_obs_names[i] for i in order]
-            if aligned_barcodes != s5_barcodes:
-                raise RuntimeError(
-                    "MACS3 peak matrix did not align to S5 barcodes after reorder."
-                )
-            if X.shape[0] != n_obs_expected or X.shape[1] <= 0:
-                raise RuntimeError(
-                    f"MACS3 peak matrix shape {X.shape} invalid for n_obs={n_obs_expected}."
-                )
-            names = [str(v) for v in list(peak_ad.var_names)]
-            if len(names) != X.shape[1]:
-                raise RuntimeError(
-                    f"MACS3 peak var_names length {len(names)} != ncols {X.shape[1]}."
-                )
-
-            peak_X, peak_names = X, names
-            peak_source = "macs3_from_fragments"
+        s2_art = run_dir / "internal" / "artifacts" / "s2_atac_qc"
+        for s2_candidate, src_label in [
+            (s2_art / "peaks_macs3.bed", "s2_peaks_macs3"),
+            (s2_art / "peaks_arc.bed",   "s2_peaks_arc"),
+        ]:
+            if not s2_candidate.exists():
+                continue
             try:
-                peak_ad.close()
-            except Exception:
-                pass
-        except Exception as e:
-            macs3_failures.append(str(e))
-            log_event(run_dir, {"stage": "s5_atac_spectral",
-                                 "event": "macs3_peak_path_failed", "reason": str(e)})
+                peak_h5 = art / "peak_matrix_s2peaks.h5ad"
+                if peak_h5.exists():
+                    peak_h5.unlink()
+                pm_out = snap.pp.make_peak_matrix(
+                    adata, peak_file=str(s2_candidate), inplace=False, file=str(peak_h5),
+                )
+                peak_ad = pm_out if pm_out is not None else snap.read(str(peak_h5))
+
+                peak_obs_names = [str(v) for v in list(peak_ad.obs_names)]
+                peak_bc_set = set(peak_obs_names)
+                missing = [bc for bc in s5_barcodes if bc not in peak_bc_set]
+                if missing:
+                    raise RuntimeError(
+                        f"S2 peak matrix missing {len(missing)} of {len(s5_barcodes)} "
+                        f"S5 barcodes (source={s2_candidate.name}); refusing misaligned export."
+                    )
+
+                if peak_obs_names != s5_barcodes:
+                    bc_to_idx = {bc: i for i, bc in enumerate(peak_obs_names)}
+                    order = [bc_to_idx[bc] for bc in s5_barcodes]
+                else:
+                    order = list(range(len(peak_obs_names)))
+
+                X = peak_ad.X[:]
+                if not sp.issparse(X):
+                    X = sp.csr_matrix(X)
+                X = X.tocsr()
+                if order != list(range(len(peak_obs_names))):
+                    X = X[order, :]
+                if X.shape[0] != n_obs_expected or X.shape[1] <= 0:
+                    raise RuntimeError(
+                        f"S2 peak matrix shape {X.shape} invalid for n_obs={n_obs_expected}."
+                    )
+                names = [str(v) for v in list(peak_ad.var_names)]
+                if len(names) != X.shape[1]:
+                    raise RuntimeError(
+                        f"S2 peak var_names length {len(names)} != ncols {X.shape[1]}."
+                    )
+
+                peak_X, peak_names = X, names
+                peak_source = src_label
+                try:
+                    peak_ad.close()
+                except Exception:
+                    pass
+                break
+            except Exception as e:
+                log_event(run_dir, {"stage": "s5_atac_spectral",
+                                     "event": "s2_peaks_reuse_skipped",
+                                     "candidate": s2_candidate.name, "reason": str(e)})
 
     # ---- Sanity: spectral must have computed X_spectral ----------------
     if ATAC_LATENT_KEY not in adata.obsm:
@@ -375,12 +339,11 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             feature_kind = "tile_matrix"
             log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "tile_matrix_fallback_engaged",
-                                 "note": "peak generation failed; exporting verified tile matrix",
-                                 "macs3_errors": macs3_failures})
+                                 "note": "no peak source available; exporting verified tile matrix"})
         except Exception as e:
             log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "tile_matrix_fallback_failed",
-                                 "error": str(e), "macs3_errors": macs3_failures})
+                                 "error": str(e)})
 
     if peak_X is not None and peak_names is not None:
         if feature_kind is None:
@@ -404,18 +367,20 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         else:
             export_reason = (
                 f"Exported tile_matrix fallback ({n_obs_expected}×{n_features}) — "
-                f"peak generation failed (macs3_errors={macs3_failures}). Downstream "
-                "consumers will see uns['atac_feature_kind']='tile_matrix'. "
+                "no peak set available (user peaks, ARC peaks, and S2 pre-called peaks "
+                "all absent or failed). Downstream consumers will see "
+                "uns['atac_feature_kind']='tile_matrix'. "
                 f"Clustering latent {ATAC_LATENT_KEY} (tile-derived) is preserved in "
                 ".obsm and is unchanged."
             )
     else:
-        # All three paths failed — empty sidecar → S8 emits latent_only.
+        # All paths failed — empty sidecar → S8 emits latent_only.
         _io.write_text_safe(art / "feature_kind.txt", "")
         export_reason = (
-            "Feature-level ATAC export failed on all paths (ARC, MACS3, tile fallback). "
-            f"macs3_errors={macs3_failures}. S8 will emit a latent_only AnnData with "
-            f"zero-column .X and preserved {ATAC_LATENT_KEY}."
+            "Feature-level ATAC export failed on all paths "
+            "(user peaks, ARC peaks, S2 pre-called peaks, tile fallback). "
+            f"S8 will emit a latent_only AnnData with zero-column .X and "
+            f"preserved {ATAC_LATENT_KEY}."
         )
         feature_kind = ""
 
@@ -431,10 +396,11 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     method={"name": "literal", "code_ref": "executor/stages/s5_atac_spectral.py"})
     _prov.set_param(params_path, "s5_atac_spectral.peak_source", peak_source,
                     source="derived", confidence="high",
-                    rationale=("arc_h5: Cell Ranger ARC pre-called peaks; "
-                                "macs3_from_fragments: MACS3 called globally on S5 cells; "
-                                "tile_matrix_fallback: both peak paths failed, fell back to "
-                                "the verified tile matrix."),
+                    rationale=("user_peaks: user-supplied BED via atac_peaks_path; "
+                                "arc_h5: Cell Ranger ARC pre-called peaks; "
+                                "s2_peaks_macs3: MACS3 peaks pre-called by S2 for FRiP; "
+                                "s2_peaks_arc: ARC-derived peaks written by S2 for FRiP; "
+                                "tile_matrix_fallback: all peak sources absent/failed."),
                     method={"name": "peak_source_selector",
                             "code_ref": "executor/stages/s5_atac_spectral.py"})
     if peak_source_h5 is not None:

@@ -57,19 +57,25 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 
 - **S1a Ambient RNA correction** — Default `method=auto` on RNA branches (SoupX if raw+filtered exist, else DecontX). Omitted on `atac_only`. Whether to run is confirmed by user at **plan review (#1)** depending on the study goal, inputs, and sample context (see [10x ambient RNA guide](https://www.10xgenomics.com/analysis-guides/introduction-to-ambient-rna-correction)).
 - **S1 RNA QC** — MAD-derived thresholds on `total_counts` / `n_genes` / `pct_counts_mt` plus a `pct_counts_ribo` ceiling, computed on decontaminated counts from S1a. Writes pre/post QC violin figures to `deliverables/checkpoint/qc_review/`.
-- **S2 ATAC QC** — TSS enrichment, per-cell nucleosome signal (Signac-style `mono / nucleosome_free`), and fragment-count MAD via SnapATAC2. Writes fragment-size distribution figures to `deliverables/checkpoint/qc_review/`.
+- **S2 ATAC QC** — Four per-cell filters applied in sequence:
+  1. **n_fragments** — MAD-based bounds on log-scale fragment count (with an absolute floor).
+  2. **TSS enrichment** — min/max bounds on SnapATAC2's TSS score.
+  3. **Nucleosome signal** — upper bound on Signac-style `mono / nucleosome_free` ratio.
+  4. **FRiP** — Fraction of Reads in Peaks (`frip_min`; default 0.15). S2 acquires a peak set using the same priority order as S5 feature export (see below), calls the peak × cell matrix via SnapATAC2, and filters cells with FRiP below threshold. The peak BED written here is reused by S5 so no redundant peak calling occurs. FRiP filtering is silently skipped when no peak source is available.
+
+  Writes fragment-size distribution figures to `deliverables/checkpoint/qc_review/`.
 - **S3 Doublets** — Per-modality doublet detection, then branch-specific reconciliation:
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **ATAC:** SnapATAC2 scrublet (thresholds configurable in the preprocessing plan).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
   - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_review.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_review.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, union doublet policy). Revise quality-filter thresholds and re-run affected stages before approving.
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_review.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Revise quality-filter thresholds and re-run affected stages before approving.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
-- **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order:
+- **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
   0. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
   1. **ARC peak matrix** — pre-called peaks from a combined Cell Ranger ARC `.h5` detected at S0 (`arc_h5` mode).
-  2. **MACS3 from fragments** — SnapATAC2 MACS3 integration (`macs3_from_fragments` mode).
-  3. **Tile-matrix fallback** — verified SnapATAC2 tile matrix (`tile_matrix_fallback` mode).
+  2. **S2 pre-called peaks** — BED file written by S2 ATAC QC (MACS3 or ARC-derived) reused here; no redundant peak calling (`s2_peaks_macs3` / `s2_peaks_arc` mode).
+  3. **Tile-matrix fallback** — verified SnapATAC2 tile matrix (`tile_matrix_fallback` mode), used only when no peak source is available.
 
   Spectral embedding in `obsm['X_spectral']` (with `X_lsi` as a backward-compat alias) is always computed from the tile matrix regardless of peak-export mode. When `drop_first=True`, the first component is removed before S6–S8.
 - **S6 PCA (RNA) + neighbor graph** (`s6_neighbors`) — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** KNN graph on the S5 spectral embedding (`X_spectral` via `snap.pp.knn`). Artifact: `internal/artifacts/s6_neighbors/rna_neighbors.h5ad`.
