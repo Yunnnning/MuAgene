@@ -50,6 +50,50 @@ def _pairing_review_reason(pairing: dict[str, Any]) -> str:
     return "Pairing assessed during ingest."
 
 
+def build_intro_context(run_dir: Path | str) -> dict[str, Any]:
+    """Return the flat data dict the agent needs to write the intro paragraph."""
+    from .run_paths import RunPaths
+    paths = RunPaths(Path(run_dir))
+    ctx = _load_json(paths.artifact("p1_context", "context_extraction.json"))
+    ingest = _load_json(paths.artifact("s0_ingest", "validation_report.json"))
+    plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+
+    def field(name: str) -> dict[str, Any]:
+        return ctx.get("fields", {}).get(name, {})
+
+    pairing = ingest.get("pairing", {})
+    overlap_raw = pairing.get("overlap")
+    study_goal = (
+        plan.get("stages", {})
+        .get("s3_doublets", {})
+        .get("parameters", {})
+        .get("study_goal", {})
+        .get("value", "")
+    )
+
+    return {
+        "organism":             field("organism").get("value", ""),
+        "tissue":               field("tissue").get("value", ""),
+        "assay_type":           field("assay_type").get("value", ""),
+        "sample_type":          field("sample_type").get("value", ""),
+        "genome_build":         field("genome_build").get("value", ""),
+        "workflow_branch":      plan.get("workflow_branch", ingest.get("workflow_branch", "")),
+        "study_goal":           study_goal,
+        "rna_n_cells":          ingest.get("rna_n_cells"),
+        "atac_n_barcodes":      ingest.get("atac_n_unique_barcodes"),
+        "rna_raw_n_barcodes":   ingest.get("rna_raw_n_barcodes"),
+        "has_raw_matrix":       bool(ingest.get("has_raw_matrix", False)),
+        "pairing_status":       pairing.get("status", ""),
+        "pairing_overlap":      float(overlap_raw) if overlap_raw is not None else None,
+        "pairing_method":       pairing.get("method", ""),
+        "pairing_confidence":   pairing.get("confidence", ""),
+        "single_file_multiome": bool(ingest.get("single_file_multiome", False)),
+        "rna_filtered_status":  ingest.get("rna_filtered_status", ""),
+        "atac_barcodes_source": ingest.get("atac_barcodes_source", ""),
+        "atac_fragments_file_n": ingest.get("atac_fragments_file_barcodes_n"),
+    }
+
+
 def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     """Produce an ordered list of review items: {label, value, reason, certainty}."""
     from .run_paths import RunPaths
@@ -395,7 +439,7 @@ def _render_concise_section(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def render_merged_markdown(run_dir: Path | str) -> str:
+def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str:
     """Full plan-review deliverable: concise summary + parameter appendix."""
     from .plan_assembler import render_plan_appendix
     from .run_paths import RunPaths
@@ -403,9 +447,10 @@ def render_merged_markdown(run_dir: Path | str) -> str:
     paths = RunPaths(run_dir)
     items = build_summary(run_dir)
     plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
-    parts = [
-        "# Preprocessing plan review",
-        "",
+    parts = ["# Preprocessing plan review", ""]
+    if intro:
+        parts += [intro.strip(), ""]
+    parts += [
         "## Summary",
         "",
         _render_concise_section(items),
@@ -425,12 +470,12 @@ def render_merged_markdown(run_dir: Path | str) -> str:
     return "\n".join(parts)
 
 
-def write_summary(run_dir: Path | str) -> Path:
+def write_summary(run_dir: Path | str, intro: str | None = None) -> Path:
     """Write merged plan-review markdown (summary + parameter appendix)."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     paths = RunPaths(run_dir)
-    merged = render_merged_markdown(run_dir)
+    merged = render_merged_markdown(run_dir, intro=intro)
     paths.plan_review_md.parent.mkdir(parents=True, exist_ok=True)
     paths.plan_review_md.write_text(merged)
     return paths.plan_review_md

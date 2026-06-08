@@ -149,8 +149,34 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 
 ### AGENT_ACTIONS
 
-1. Invoke `executor plan-review --config $CFG`.
-   - This re-renders (and writes) `deliverables/pre_run/summary/plan_review.md` — summary section (8 decision items) plus a full parameter appendix.
+1. Run `executor plan-review --intro-context --config $CFG`.
+   This prints a JSON object with sample metadata, cell counts, and barcode
+   matching data. Do not write anything yet.
+
+2. Write a 100–150-word introductory paragraph using the context data. Rules:
+   - Cover all of: organism, tissue, platform/assay type, the aim of the
+     analysis (QC → doublet removal → dimensionality reduction → clustering),
+     raw cell counts per modality, and the barcode matching result.
+   - Write as smooth, user-friendly prose. No bullet points, no jargon.
+   - Do not name pipeline stages, step codes, or internal file names
+     (e.g., no "S0_ingest", "P2", "preprocessing_plan.json").
+   - Use the data exactly as provided; do not round or omit numbers.
+   - **Dataset compatibility check (paired multiome candidate only):** This
+     check applies only when `workflow_branch = "paired"`. If the barcode
+     check found no direct or subset match between RNA and ATAC barcodes
+     (i.e., `pairing_confidence` is not "high", or `pairing_status` is not
+     "paired"), flag this in the intro paragraph. State that the two modalities
+     show no reliable barcode correspondence, which may indicate mismatched
+     input files were loaded (e.g., a Cell Ranger–filtered RNA matrix with an unfiltered ATAC 
+     fragment file containing non-cell barcodes, outputs from two unrelated samples, 
+     or require barcode translation), and ask the user to verify their inputs before approving the
+     plan. Do not apply this check for `rna_only`, `atac_only`, or `separate`
+     branches.
+
+3. Invoke `executor plan-review --intro "<paragraph>" --config $CFG`.
+   - This re-renders (and writes) `deliverables/pre_run/summary/plan_review.md`
+     with the intro paragraph prepended before the Summary section.
+   - Also writes per-stage job spec YAMLs to `internal/specs/`.
    - The same content also lives at that path if the user wants to open it directly.
 
 2. On user decision:

@@ -100,14 +100,6 @@ def _stats_row(name: str, vals: np.ndarray) -> list[Any]:
     ]
 
 
-_THRESHOLDS_NOTE = (
-    "_* Order-independent exclusive counts: each per-metric row counts cells "
-    "failing only that metric while passing all others; cells failing multiple "
-    "metrics are listed under multiple_metrics; total_removed is the overall "
-    "removal count._\n"
-)
-
-
 def _qc_filter_count_lines(n_pre: int, n_post: int, *, import_note: str = "") -> str:
     n_rm = n_pre - n_post
     return (
@@ -138,7 +130,7 @@ def _rm_count(rm: dict[str, Any], key: str) -> Any:
 
 def _rna_threshold_table(params: dict[str, Any], rm: dict[str, Any]) -> str:
     return _md_table(
-        ["parameter", "value", "cells removed*"],
+        ["parameter", "value", "cells removed"],
         [
             ["total_counts", _fmt_threshold_range(
                 _param(params, "s1_rna_qc.total_counts_min"),
@@ -172,7 +164,7 @@ def _atac_threshold_table(
         else f"{frip_min_val} _(not applied — no peaks available)_"
     )
     return _md_table(
-        ["parameter", "value", "cells removed*"],
+        ["parameter", "value", "cells removed"],
         [
             ["n_fragments", _fmt_threshold_range(
                 _param(params, "s2_atac_qc.n_fragments_min"),
@@ -812,7 +804,6 @@ def _rna_section(
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
-        f"{_THRESHOLDS_NOTE}"
         "\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
@@ -881,7 +872,6 @@ def _atac_section(
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
-        f"{_THRESHOLDS_NOTE}"
         f"{peak_note}\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
@@ -1381,7 +1371,6 @@ def _html_rna_section(
         f"{_md_html(intro)}"
         "<h3>Thresholds used</h3>"
         f"{_md_html(thresholds)}"
-        f"{_md_html(_THRESHOLDS_NOTE)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
         f'<div class="qc-plots-below">{plots}</div>'
@@ -1446,7 +1435,6 @@ def _html_atac_section(
         f"{_md_html(intro)}"
         "<h3>Thresholds used</h3>"
         f"{_md_html(thresholds + peak_note)}"
-        f"{_md_html(_THRESHOLDS_NOTE)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
         f"{pair_row}{tss_row}"

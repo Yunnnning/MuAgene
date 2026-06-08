@@ -467,16 +467,24 @@ def supervisor_restart(config_path: str, kill_existing: bool) -> None:
 
 @main.command(name="plan-review")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-def plan_review_cmd(config_path: str) -> None:
+@click.option("--intro", "intro_text", default=None,
+              help="Introductory paragraph to prepend before the Summary section.")
+@click.option("--intro-context", "intro_context_only", is_flag=True, default=False,
+              help="Print the intro context JSON and exit without writing plan_review.md.")
+def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only: bool) -> None:
     """Render and write the merged plan-review markdown (summary + appendix).
 
     Also writes per-stage job spec YAMLs to internal/specs/ so Execution-MuAgent
     can read science intent, resource hints, and progress_timeout_hint per stage.
     """
     run_dir = _resolve_run_dir(config_path)
-    text = _pr.render_merged_markdown(run_dir)
+    if intro_context_only:
+        import json as _json
+        click.echo(_json.dumps(_pr.build_intro_context(run_dir), indent=2))
+        return
+    text = _pr.render_merged_markdown(run_dir, intro=intro_text)
     click.echo(text)
-    out = _pr.write_summary(run_dir)
+    out = _pr.write_summary(run_dir, intro=intro_text)
     click.echo(f"\nWritten: {out}")
     # Write per-stage specs; read workflow_branch from plan if available.
     try:
