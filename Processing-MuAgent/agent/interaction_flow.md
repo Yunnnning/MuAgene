@@ -165,13 +165,23 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
      check applies only when `workflow_branch = "paired"`. If the barcode
      check found no direct or subset match between RNA and ATAC barcodes
      (i.e., `pairing_confidence` is not "high", or `pairing_status` is not
-     "paired"), flag this in the intro paragraph. State that the two modalities
-     show no reliable barcode correspondence, which may indicate mismatched
-     input files were loaded (e.g., a Cell Ranger–filtered RNA matrix with an unfiltered ATAC 
-     fragment file containing non-cell barcodes, outputs from two unrelated samples, 
-     or require barcode translation), and ask the user to verify their inputs before approving the
-     plan. Do not apply this check for `rna_only`, `atac_only`, or `separate`
-     branches.
+     "paired"), do not simply flag and ask — instead actively investigate
+     and diagnose:
+     a. Examine `pairing_ladder` to see which matching steps were attempted
+        and why each failed (no overlap, wrong prefix/suffix, ambiguous range).
+     b. Cross-check `rna_filtered_status` and `atac_barcodes_source` — a raw
+        (non-cell-barcode-filtered) ATAC fragment file will have far more barcodes
+        than the RNA cell set, explaining near-zero overlap; check
+        `rna_raw_n_barcodes` vs `rna_n_cells` to detect this pattern.
+     c. Read `deliverables/pre_run/config/run.yaml` to inspect the actual
+        file paths the user supplied and look for signs of mismatched sources
+        (e.g., a filtered matrix paired with unfiltered outputs, samples from a different experiment, or need barcode translations).
+     d. Based on (a)–(c), propose the most likely root cause and concrete
+        corrective steps (e.g., "re-run with the filtered RNA matrix at
+        `filtered_feature_bc_matrix/`, convert bardoes based on direct rules, or supply a `barcode_translation_path` if the two modalities were processed with different whitelists").
+     Include this diagnosis and suggestions in the intro paragraph rather
+     than a generic warning. Do not apply this check for `rna_only`,
+     `atac_only`, or `separate` branches.
 
 3. Invoke `executor plan-review --intro "<paragraph>" --config $CFG`.
    - This re-renders (and writes) `deliverables/pre_run/summary/plan_review.md`

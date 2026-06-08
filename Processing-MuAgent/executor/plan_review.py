@@ -91,6 +91,7 @@ def build_intro_context(run_dir: Path | str) -> dict[str, Any]:
         "rna_filtered_status":  ingest.get("rna_filtered_status", ""),
         "atac_barcodes_source": ingest.get("atac_barcodes_source", ""),
         "atac_fragments_file_n": ingest.get("atac_fragments_file_barcodes_n"),
+        "pairing_ladder":       pairing.get("ladder", []),
     }
 
 
