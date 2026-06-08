@@ -76,6 +76,25 @@ class StageProgressTests(unittest.TestCase):
             self.assertEqual(states["qc_review"], "awaiting_approval")
             self.assertIn("resolution_review", states)
 
+    def test_s1_s2_show_done_after_cleanup(self):
+        """qc_summary.json persists after post_qc_review cleanup; S1/S2 must stay done."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._init_run(tmp)
+            paths.approved_sentinel("plan_review").write_text("")
+            paths.approved_sentinel("post_qc_review").write_text("")
+            for stage, marker in (
+                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1_rna_qc", "qc_summary.json"),
+                ("s2_atac_qc", "qc_summary.json"),
+                ("s3_doublets", "calls.parquet"),
+            ):
+                p = paths.artifact(stage, marker)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("{}")
+            states = _states_by_label(paths)
+            self.assertEqual(states["S1"], "done")
+            self.assertEqual(states["S2"], "done")
+
     def test_resolution_review_awaiting_after_sweep(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
@@ -95,8 +114,8 @@ class StageProgressTests(unittest.TestCase):
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
                 ("s1a_ambient", "rna_decontaminated.h5ad"),
-                ("s1_rna_qc", "rna_qc.h5ad"),
-                ("s2_atac_qc", "atac_qc.h5ad"),
+                ("s1_rna_qc", "qc_summary.json"),
+                ("s2_atac_qc", "qc_summary.json"),
             ):
                 p = paths.artifact(stage, marker)
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -126,8 +145,8 @@ class StageProgressTests(unittest.TestCase):
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
                 ("s1a_ambient", "rna_decontaminated.h5ad"),
-                ("s1_rna_qc", "rna_qc.h5ad"),
-                ("s2_atac_qc", "atac_qc.h5ad"),
+                ("s1_rna_qc", "qc_summary.json"),
+                ("s2_atac_qc", "qc_summary.json"),
             ):
                 p = paths.artifact(stage, marker)
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -167,13 +186,15 @@ class StageProgressTests(unittest.TestCase):
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
                 ("s1a_ambient", "rna_decontaminated.h5ad"),
-                ("s1_rna_qc", "rna_qc.h5ad"),
+                ("s1_rna_qc", "qc_summary.json"),
             ):
                 p = paths.artifact(stage, marker)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("")
 
-            self.assertEqual(infer_resume_target(tmp), "s2_atac_qc_execute")
+            # _last_incomplete_execute returns the LAST incomplete stage so Snakemake
+            # can chain s2→s3 in one submission; s3 is also missing here.
+            self.assertEqual(infer_resume_target(tmp), "s3_doublets_execute")
 
     def test_infer_resume_after_qc_approval_at_s5(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -182,8 +203,8 @@ class StageProgressTests(unittest.TestCase):
             paths.approved_sentinel("post_qc_review").write_text("")
             for stage, marker in (
                 ("s1a_ambient", "rna_decontaminated.h5ad"),
-                ("s1_rna_qc", "rna_qc.h5ad"),
-                ("s2_atac_qc", "atac_qc.h5ad"),
+                ("s1_rna_qc", "qc_summary.json"),
+                ("s2_atac_qc", "qc_summary.json"),
                 ("s3_doublets", "calls.parquet"),
                 ("s4_rna_norm", "rna_norm.h5ad"),
             ):
@@ -191,7 +212,9 @@ class StageProgressTests(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("")
 
-            self.assertEqual(infer_resume_target(tmp), "s5_atac_spectral_execute")
+            # _last_incomplete_execute returns the LAST incomplete stage so Snakemake
+            # can chain s5→s6 in one submission; s6 is also missing here.
+            self.assertEqual(infer_resume_target(tmp), "s6_neighbors_execute")
 
     def test_cli_status_wrapper_matches_stage_progress(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -226,12 +249,12 @@ class StageProgressTests(unittest.TestCase):
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
                 ("s1a_ambient", "rna_decontaminated.h5ad"),
-                ("s1_rna_qc", "rna_qc.h5ad"),
-                ("s2_atac_qc", "atac_qc.h5ad"),
+                ("s1_rna_qc", "qc_summary.json"),
+                ("s2_atac_qc", "qc_summary.json"),
             ):
                 p = paths.artifact(stage, marker)
                 p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text("")
+                p.write_text("{}")
             _write_cluster_rule_log(paths, "s3_doublets_execute", "slurmstepd: CANCELLED\n")
             self._write_monitor_kill_report(paths, ["42"])
             (paths.snakemake_workdir / ".snakemake" / "slurm_logs" / "rule_s3_doublets_execute").mkdir(

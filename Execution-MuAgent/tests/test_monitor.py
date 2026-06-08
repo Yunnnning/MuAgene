@@ -294,14 +294,16 @@ class TerminalValidationTests(unittest.TestCase):
         }), encoding="utf-8")
 
     def test_corrupt_output_reported(self):
+        # S1 now declares qc_summary.json as its monitored output (not rna_qc.h5ad,
+        # which is deleted after post_qc_review approval).
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"
             run_dir.mkdir()
             art = run_dir / "internal" / "artifacts" / "s1_rna_qc"
             art.mkdir(parents=True)
-            bad = art / "rna_qc.h5ad"
-            bad.write_bytes(b"garbage")
-            self._write_stage_meta(run_dir, "s1_rna_qc", {"rna_h5ad": str(bad)})
+            bad = art / "qc_summary.json"
+            bad.write_bytes(b"not-valid-json{{{")
+            self._write_stage_meta(run_dir, "s1_rna_qc", {"qc_summary_json": str(bad)})
             findings = validate_terminal_outputs(_make_submission(run_dir))
             self.assertEqual([f.code for f in findings], ["output_missing"])
 

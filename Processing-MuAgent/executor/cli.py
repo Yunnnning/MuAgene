@@ -96,6 +96,27 @@ def propose(stage: str, config_path: str, executor: str) -> None:
                run_dir, executor=executor)
 
 
+def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
+    """Delete large QC-only h5ad objects after post_qc_review is approved.
+
+    Removes rna_qc.h5ad, atac_qc.h5ad, and the pre-filter atac_snap.h5ad.
+    Keeps qc_summary.json, qc_metrics parquets, CBF fragment caches, S1a output,
+    and all S3+ artifacts so threshold revision and downstream stages are unaffected.
+    """
+    rp = RunPaths(run_dir)
+    targets = [
+        rp.artifact("s1_rna_qc",  "rna_qc.h5ad"),
+        rp.artifact("s2_atac_qc", "atac_qc.h5ad"),
+        rp.artifact("s2_atac_qc", "atac_snap.h5ad"),
+    ]
+    deleted: list[str] = []
+    for p in targets:
+        if p.exists():
+            p.unlink()
+            deleted.append(str(p))
+    return deleted
+
+
 @main.command()
 @click.argument("stage")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
@@ -106,6 +127,12 @@ def approve(stage: str, config_path: str, note: str) -> None:
     run_dir = _resolve_run_dir(config_path)
     approval.approve(run_dir, stage, note=note)
     log_event(run_dir, {"stage": stage, "event": "approved", "note": note})
+    if stage == "post_qc_review":
+        deleted = _cleanup_qc_intermediates(run_dir)
+        if deleted:
+            log_event(run_dir, {"stage": "post_qc_review", "event": "qc_cleanup",
+                                 "deleted": deleted})
+            click.echo(f"Cleaned up {len(deleted)} intermediate QC object(s).")
     click.echo(f"Approved {_display_stage(stage)}")
 
 
@@ -612,6 +639,11 @@ def _seed_approvals(
             continue
         approval.approve(run_dir, stage, note=note)
         seeded.append(stage)
+        if stage == "post_qc_review":
+            deleted = _cleanup_qc_intermediates(run_dir)
+            if deleted:
+                log_event(run_dir, {"stage": "post_qc_review", "event": "qc_cleanup",
+                                     "deleted": deleted})
     if seeded:
         os.environ["PMA_AUTO_APPROVE"] = "1"
     return seeded

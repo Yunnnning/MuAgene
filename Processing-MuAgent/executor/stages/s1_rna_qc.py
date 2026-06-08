@@ -10,6 +10,7 @@ import numpy as np
 import scanpy as sc
 
 from ..methods import mad_thresholds as _mad
+from ..methods.qc_filter_stats import exclusive_removals
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
@@ -114,6 +115,18 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     a_f = a[keep].copy()
     sc.pp.filter_genes(a_f, min_cells=min_cells)
 
+    obs = a.obs
+    cells_removed_per_metric = exclusive_removals({
+        "total_counts": (
+            (obs["total_counts"] >= c_lo) & (obs["total_counts"] <= c_hi)
+        ).to_numpy(),
+        "n_genes": (
+            (obs["n_genes_by_counts"] >= g_lo) & (obs["n_genes_by_counts"] <= g_hi)
+        ).to_numpy(),
+        "pct_counts_mt": (obs["pct_counts_mt"] <= pct_mt_upper).to_numpy(),
+        "pct_counts_ribo": (obs["pct_counts_ribo"] <= pct_ribo_max).to_numpy(),
+    })
+
     # Save qc metrics pre/post
     _io.write_parquet_safe(a.obs, art / "qc_metrics_pre.parquet")
     _io.write_parquet_safe(a_f.obs, art / "qc_metrics_post.parquet")
@@ -142,6 +155,11 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         log_event(run_dir, {"stage": "s1_rna_qc", "event": "plot_failed", "error": str(e)})
 
     result = {"n_cells_pre": int(a.n_obs), "n_cells_post": int(a_f.n_obs)}
+    _io.write_text_safe(art / "qc_summary.json", json.dumps({
+        "n_cells_pre": result["n_cells_pre"],
+        "n_cells_post": result["n_cells_post"],
+        "cells_removed_per_metric": cells_removed_per_metric,
+    }, indent=2))
     _io.write_h5ad_safe(a_f, art / "rna_qc.h5ad")
     log_event(run_dir, {"stage": "s1_rna_qc", "event": "done",
                          "n_cells_pre": result["n_cells_pre"],

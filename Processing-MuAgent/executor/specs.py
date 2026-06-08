@@ -52,7 +52,7 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "rna_h5ad": "{run_dir}/internal/artifacts/s1a_ambient/rna_decontaminated.h5ad",
         },
         "outputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s1_rna_qc/rna_qc.h5ad",
+            "qc_summary_json": "{run_dir}/internal/artifacts/s1_rna_qc/qc_summary.json",
         },
     },
     "s2_atac_qc": {
@@ -60,7 +60,7 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "plan": "{run_dir}/internal/artifacts/p2_plan/preprocessing_plan.json",
         },
         "outputs": {
-            "atac_h5ad": "{run_dir}/internal/artifacts/s2_atac_qc/atac_qc.h5ad",
+            "qc_summary_json": "{run_dir}/internal/artifacts/s2_atac_qc/qc_summary.json",
         },
     },
     "s3_doublets": {

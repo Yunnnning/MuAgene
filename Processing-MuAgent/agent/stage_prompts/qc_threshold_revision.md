@@ -43,8 +43,8 @@ Use this when `execution.mode` is `pbs` or `slurm`.
 
 2. **Delete stale artifacts** so Snakemake re-runs the affected stages:
 
-   - **S1 revised:** delete `internal/artifacts/s1_rna_qc/rna_qc.h5ad`, plus all S3 artifacts below.
-   - **S2 revised:** delete `internal/artifacts/s2_atac_qc/atac_qc.h5ad`, `internal/artifacts/s2_atac_qc/atac_snap.h5ad`, and `internal/artifacts/s2_atac_qc/qc_summary.json`; keep `internal/artifacts/s2_atac_qc/atac_fragments_cbf_chrnorm.tsv.gz*`, plus delete all S3 artifacts below.
+   - **S1 revised:** delete `internal/artifacts/s1_rna_qc/rna_qc.h5ad` and `internal/artifacts/s1_rna_qc/qc_summary.json` (the JSON is the stage-done marker — deleting it causes stage_progress to show S1 as incomplete while it re-runs), plus all S3 artifacts below.
+   - **S2 revised:** delete `internal/artifacts/s2_atac_qc/atac_qc.h5ad`, `internal/artifacts/s2_atac_qc/atac_snap.h5ad`, and `internal/artifacts/s2_atac_qc/qc_summary.json`; keep `internal/artifacts/s2_atac_qc/atac_fragments_cbf_chrnorm.tsv.gz*`, plus delete all S3 artifacts below. **Note:** `atac_snap.h5ad` may already be absent if `post_qc_review` was previously approved — the approval cleanup deletes it. The deletion step is safe if the file is missing.
    - **S3 revised:** delete `internal/artifacts/s3_doublets/rna_post_doublet.h5ad`, `internal/artifacts/s3_doublets/atac_post_doublet.h5ad`, `internal/artifacts/s3_doublets/calls.parquet`, `internal/artifacts/s3_doublets/joint_barcodes.txt`, and `internal/artifacts/s3_doublets/overlap_summary.json`.
    - Any S1 or S2 revision invalidates S3. Always delete all five S3 artifacts when S1 or S2 changes.
 
@@ -137,3 +137,14 @@ On paired runs, union doublet removal policy is confirmed at `post_qc_review`. I
 | `s1_rna_qc` | `total_counts_min`, `total_counts_max`, `n_genes_min`, `n_genes_max`, `pct_counts_mt_max`, `pct_counts_ribo_max` |
 | `s2_atac_qc` | `n_fragments_min`, `n_fragments_max`, `tss_enrichment_min`, `tss_enrichment_max`, `nucleosome_signal_max`, `frip_min` |
 | `s3_doublets` | `rna_doublet_score_threshold`, `atac_doublet_score_threshold` |
+
+## Stage-done sentinels
+
+`internal/artifacts/s1_rna_qc/qc_summary.json` and `internal/artifacts/s2_atac_qc/qc_summary.json` are the stage-done markers used by `stage_progress.py` and by Execution-MuAgent for output verification. Both files are written by the respective stage and persist after the `post_qc_review` approval cleanup (which only removes the large h5ads). When revising S1 or S2, delete these JSON files alongside the h5ads so the pipeline correctly reflects that those stages need to re-run.
+
+## QC report cell-count columns
+
+After re-run, `qc_review_<run>.md` and `qc_summary_<run>.html` show:
+
+- **Before / retained / removed** — one summary block per modality at the top of the RNA and ATAC sections (no intermediate ATAC waterfall).
+- **cells removed\*** — order-independent exclusive counts from `cells_removed_per_metric` in each stage's `qc_summary.json`. Each per-metric row counts cells failing only that threshold while passing all others in the group. Cells failing multiple thresholds appear under `multiple_metrics`. `total_removed` is the overall removal count for that stage (for ATAC, includes FRiP failures among core-metric passers).

@@ -66,8 +66,8 @@ MONITOR_TASKS: dict[str, str] = {
 
 EXECUTE_MARKERS: dict[str, str] = {
     "s1a_ambient": "rna_decontaminated.h5ad",
-    "s1_rna_qc": "rna_qc.h5ad",
-    "s2_atac_qc": "atac_qc.h5ad",
+    "s1_rna_qc": "qc_summary.json",   # persists after post_qc_review cleanup
+    "s2_atac_qc": "qc_summary.json",  # persists after post_qc_review cleanup
     "s3_doublets": "calls.parquet",
     "s4_rna_norm": "rna_norm.h5ad",
     "s5_atac_spectral": "spectral_summary.json",

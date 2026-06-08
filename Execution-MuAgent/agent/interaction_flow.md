@@ -11,7 +11,7 @@ Processing-MuAgent calls this after it has written `site.config` and the per-sta
 ### Step 1 — Load and validate
 
 1. Load `site.config` → `SiteConfig` (scheduler, partition, account, QOS, container, env).
-2. Load `internal/specs/<stage>.yaml` → `StageSpec` (resources, inputs, outputs, progress_timeout_hint, science_description).
+2. Load `internal/stage_meta/<stage>.yaml` → `StageSpec` (resources, inputs, outputs, progress_timeout_hint, science_description).
 3. `validate_spec(spec, site_config)`:
    - Resources > 0.
    - Scheduler is supported.
@@ -44,7 +44,7 @@ Append to `internal/hpc_monitor/execution_manifest.jsonl`:
   "stage": "s3_doublets",
   "science_description": "Detect and remove doublets using Scrublet (RNA) and SnapATAC2 (ATAC)",
   "job_id": "987654",
-  "spec_path": ".../internal/specs/s3_doublets.yaml",
+  "spec_path": ".../internal/stage_meta/s3_doublets.yaml",
   "script_path": ".../internal/hpc_monitor/scripts/s3_doublets_20260602T140000Z.sh",
   "run_dir": "/path/to/run",
   "expected_outputs": { "rna_post": "...", "atac_post": "..." }

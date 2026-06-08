@@ -214,6 +214,20 @@ outputs:
 progress_timeout_hint: 60
 ```
 
+S1/S2 declare their `qc_summary.json` as the monitored output (not the large h5ad), because the
+h5ad is deleted by `executor approve post_qc_review` and would cause false `output_missing`
+findings in subsequent post-QC job runs:
+
+```yaml
+# s1_rna_qc.yaml
+outputs:
+  qc_summary_json: /path/to/run/internal/artifacts/s1_rna_qc/qc_summary.json
+
+# s2_atac_qc.yaml
+outputs:
+  qc_summary_json: /path/to/run/internal/artifacts/s2_atac_qc/qc_summary.json
+```
+
 ## site.config format
 
 `site.config` is the single platform source of truth. Written by `Processing-MuAgent configure-execution`:

@@ -23,7 +23,8 @@ rule s1_rna_qc_execute:
         plan_review_done  = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         rna_decontaminated = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
     output:
-        h5ad = str(INTERNAL / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad"),
+        h5ad       = str(INTERNAL / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad"),
+        qc_summary = str(INTERNAL / "artifacts" / "s1_rna_qc" / "qc_summary.json"),
     params:
         run_dir = str(RUN_DIR),
     threads: RESOURCES["s1_rna_qc"]["cpus"]

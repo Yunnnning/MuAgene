@@ -100,6 +100,134 @@ def _stats_row(name: str, vals: np.ndarray) -> list[Any]:
     ]
 
 
+_THRESHOLDS_NOTE = (
+    "_* Order-independent exclusive counts: each per-metric row counts cells "
+    "failing only that metric while passing all others; cells failing multiple "
+    "metrics are listed under multiple_metrics; total_removed is the overall "
+    "removal count._\n"
+)
+
+
+def _qc_filter_count_lines(n_pre: int, n_post: int, *, import_note: str = "") -> str:
+    n_rm = n_pre - n_post
+    return (
+        f"{import_note}"
+        f"- Cells before filtering: **{n_pre}**\n"
+        f"- Cells retained:         **{n_post}**\n"
+        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+    )
+
+
+def _fmt_threshold_range(lo: Any, hi: Any) -> str:
+    return f"{_fmt(lo)} – {_fmt(hi)}"
+
+
+def _load_cells_removed(summary_path: Path) -> dict[str, Any]:
+    if not summary_path.exists():
+        return {}
+    try:
+        return json.loads(summary_path.read_text()).get("cells_removed_per_metric", {})
+    except Exception:
+        return {}
+
+
+def _rm_count(rm: dict[str, Any], key: str) -> Any:
+    v = rm.get(key)
+    return v if v is not None else ""
+
+
+def _rna_threshold_table(params: dict[str, Any], rm: dict[str, Any]) -> str:
+    return _md_table(
+        ["parameter", "value", "cells removed*"],
+        [
+            ["total_counts", _fmt_threshold_range(
+                _param(params, "s1_rna_qc.total_counts_min"),
+                _param(params, "s1_rna_qc.total_counts_max"),
+            ), _rm_count(rm, "total_counts")],
+            ["n_genes", _fmt_threshold_range(
+                _param(params, "s1_rna_qc.n_genes_min"),
+                _param(params, "s1_rna_qc.n_genes_max"),
+            ), _rm_count(rm, "n_genes")],
+            ["pct_counts_mt_max", _param(params, "s1_rna_qc.pct_counts_mt_max"),
+             _rm_count(rm, "pct_counts_mt")],
+            ["pct_counts_ribo_max", _param(params, "s1_rna_qc.pct_counts_ribo_max"),
+             _rm_count(rm, "pct_counts_ribo")],
+            ["n_mt_genes_detected", _param(params, "s1_rna_qc.n_mt_genes_detected"), ""],
+            ["n_ribo_genes_detected", _param(params, "s1_rna_qc.n_ribo_genes_detected"), ""],
+            ["multiple_metrics", "—", _rm_count(rm, "multiple_metrics")],
+            ["total_removed", "—", _rm_count(rm, "total_removed")],
+        ],
+    )
+
+
+def _atac_threshold_table(
+    params: dict[str, Any],
+    rm: dict[str, Any],
+    *,
+    peak_source: str | None,
+) -> str:
+    frip_min_val = _param(params, "s2_atac_qc.frip_min")
+    frip_threshold_note = (
+        frip_min_val if peak_source
+        else f"{frip_min_val} _(not applied — no peaks available)_"
+    )
+    return _md_table(
+        ["parameter", "value", "cells removed*"],
+        [
+            ["n_fragments", _fmt_threshold_range(
+                _param(params, "s2_atac_qc.n_fragments_min"),
+                _param(params, "s2_atac_qc.n_fragments_max"),
+            ), _rm_count(rm, "n_fragments")],
+            ["tss_enrichment", _fmt_threshold_range(
+                _param(params, "s2_atac_qc.tss_enrichment_min"),
+                _param(params, "s2_atac_qc.tss_enrichment_max"),
+            ), _rm_count(rm, "tss_enrichment")],
+            ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max"),
+             _rm_count(rm, "nucleosome_signal")],
+            ["frip_min", frip_threshold_note, _rm_count(rm, "frip_min")],
+            ["multiple_metrics", "—", _rm_count(rm, "multiple_metrics")],
+            ["total_removed", "—", _rm_count(rm, "total_removed")],
+        ],
+    )
+
+
+def _atac_stat_rows(summary: dict[str, Any], atac_h5ad: Path) -> tuple[list[list[Any]], list[str]]:
+    stat_rows: list[list[Any]] = []
+    warnings: list[str] = []
+    retained = summary.get("retained_cell_stats", {})
+    for key in ("fragment_count", "tss_enrichment", "nucleosome_signal", "frip"):
+        r = retained.get(key)
+        if r:
+            stat_rows.append([
+                key,
+                f"{r['mean']:.2f}", f"{r['median']:.2f}",
+                f"{r['min']:.2f}", f"{r['max']:.2f}",
+            ])
+    if stat_rows:
+        return stat_rows, warnings
+    if not atac_h5ad.exists():
+        return stat_rows, warnings
+    try:
+        import snapatac2 as snap
+        adata = snap.read(str(atac_h5ad))
+        obs = adata.obs[:].to_pandas()
+        try:
+            adata.close()
+        except Exception:
+            pass
+        for src_col, label in [
+            ("n_fragment", "fragment_count"),
+            ("tsse", "tss_enrichment"),
+            ("nucleosome_signal", "nucleosome_signal"),
+            ("frip", "frip"),
+        ]:
+            if src_col in obs.columns:
+                stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
+    except BaseException as e:
+        warnings.append(f"_Could not read ATAC AnnData for summary stats: {e}_")
+    return stat_rows, warnings
+
+
 def _param(params: dict[str, Any], key: str) -> Any:
     entry = params.get(key)
     return entry.get("value") if isinstance(entry, dict) else None
@@ -657,21 +785,8 @@ def _rna_section(
     post_df = pd.read_parquet(post)
     n_pre = len(pre_df)
     n_post = len(post_df)
-    n_rm = n_pre - n_post
-
-    thresholds = _md_table(
-        ["parameter", "value"],
-        [
-            ["total_counts_min", _param(params, "s1_rna_qc.total_counts_min")],
-            ["total_counts_max", _param(params, "s1_rna_qc.total_counts_max")],
-            ["n_genes_min",      _param(params, "s1_rna_qc.n_genes_min")],
-            ["n_genes_max",      _param(params, "s1_rna_qc.n_genes_max")],
-            ["pct_counts_mt_max", _param(params, "s1_rna_qc.pct_counts_mt_max")],
-            ["pct_counts_ribo_max", _param(params, "s1_rna_qc.pct_counts_ribo_max")],
-            ["n_mt_genes_detected", _param(params, "s1_rna_qc.n_mt_genes_detected")],
-            ["n_ribo_genes_detected", _param(params, "s1_rna_qc.n_ribo_genes_detected")],
-        ],
-    )
+    rm = _load_cells_removed(s1 / "qc_summary.json")
+    thresholds = _rna_threshold_table(params, rm)
 
     stat_rows: list[list[Any]] = []
     for col in ("n_genes_by_counts", "total_counts", "pct_counts_mt", "pct_counts_ribo"):
@@ -692,13 +807,12 @@ def _rna_section(
         "counts and detected genes, plus ceilings on mitochondrial (MT) and ribosomal "
         "read fractions.\n"
         "\n"
-        f"- Cells before filtering: **{n_pre}**\n"
-        f"- Cells retained:         **{n_post}**\n"
-        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+        + _qc_filter_count_lines(n_pre, n_post)
         + figs
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
+        f"{_THRESHOLDS_NOTE}"
         "\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
@@ -720,48 +834,16 @@ def _atac_section(
         return "## ATAC QC\n\n_(artifacts not available)_\n"
 
     summary = json.loads(summary_json.read_text())
-    n_pre = int(summary.get("n_cells_pre", 0))       # post-import, pre-S2-filter
-    n_after_3m = summary.get("n_cells_after_3m_filter")  # after n_frag/TSS/NS, before FRiP
+    n_pre = int(summary.get("n_cells_pre", 0))
     n_post = int(summary.get("n_cells_post", 0))
-    n_rm = n_pre - n_post
     peak_source = summary.get("peak_source")
     atac_raw = counts.get("atac_raw_barcodes")
     snap_drop = (atac_raw - n_pre) if (atac_raw is not None) else None
 
-    frip_min_val = _param(params, "s2_atac_qc.frip_min")
-    frip_threshold_note = frip_min_val if peak_source else f"{frip_min_val} _(not applied — no peaks available)_"
-    thresholds = _md_table(
-        ["parameter", "value"],
-        [
-            ["n_fragments_min",    _param(params, "s2_atac_qc.n_fragments_min")],
-            ["n_fragments_max",    _param(params, "s2_atac_qc.n_fragments_max")],
-            ["tss_enrichment_min", _param(params, "s2_atac_qc.tss_enrichment_min")],
-            ["tss_enrichment_max", _param(params, "s2_atac_qc.tss_enrichment_max")],
-            ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max")],
-            ["frip_min",           frip_threshold_note],
-        ],
-    )
+    rm = summary.get("cells_removed_per_metric", {})
+    thresholds = _atac_threshold_table(params, rm, peak_source=peak_source)
 
-    # Summary stats — read the post-QC SnapATAC2 AnnData obs
-    stat_rows: list[list[Any]] = []
-    warnings: list[str] = []
-    if atac_h5ad.exists():
-        try:
-            import snapatac2 as snap
-            adata = snap.read(str(atac_h5ad))
-            obs = adata.obs[:].to_pandas()
-            try: adata.close()
-            except Exception: pass
-            for src_col, label in [
-                ("n_fragment", "fragment_count"),
-                ("tsse", "tss_enrichment"),
-                ("nucleosome_signal", "nucleosome_signal"),
-                ("frip", "frip"),
-            ]:
-                if src_col in obs.columns:
-                    stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
-        except BaseException as e:
-            warnings.append(f"_Could not read ATAC AnnData for summary stats: {e}_")
+    stat_rows, warnings = _atac_stat_rows(summary, atac_h5ad)
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else "_(no stats)_"
     warn_block = ("\n" + "\n".join(warnings) + "\n") if warnings else ""
 
@@ -771,23 +853,6 @@ def _atac_section(
             f"- **Fragment-count pre-filter (at import):** {snap_drop} barcodes removed "
             f"({atac_raw} → {n_pre}) — cells with too few fragments are dropped before "
             f"quality metrics are computed.\n"
-        )
-
-    # Two-stage waterfall when FRiP was computed
-    if n_after_3m is not None:
-        n_after_3m = int(n_after_3m)
-        n_rm_3m = n_pre - n_after_3m
-        n_rm_frip = n_after_3m - n_post
-        count_lines = (
-            f"- Cells before filtering:       **{n_pre}**\n"
-            f"- After n_frag/TSS/NS filter:   **{n_after_3m}** (removed {n_rm_3m}, {_pct(n_rm_3m, n_pre)})\n"
-            f"- After FRiP filter:            **{n_post}** (removed {n_rm_frip}, {_pct(n_rm_frip, n_after_3m)})\n"
-        )
-    else:
-        count_lines = (
-            f"- Cells before filtering: **{n_pre}**\n"
-            f"- Cells retained:         **{n_post}**\n"
-            f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
         )
 
     peak_note = f"\n_Peak source for FRiP: {peak_source}._\n" if peak_source else ""
@@ -812,11 +877,11 @@ def _atac_section(
         "Removes low-quality cells using MAD-based bounds on fragment counts, plus "
         "TSS enrichment, nucleosome-signal, and FRiP thresholds.\n"
         "\n"
-        f"{import_note}"
-        + count_lines
+        + _qc_filter_count_lines(n_pre, n_post, import_note=import_note)
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
+        f"{_THRESHOLDS_NOTE}"
         f"{peak_note}\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
@@ -1291,21 +1356,9 @@ def _html_rna_section(
     pre_df = pd.read_parquet(pre)
     post_df = pd.read_parquet(post)
     n_pre, n_post = len(pre_df), len(post_df)
-    n_rm = n_pre - n_post
 
-    thresholds = _md_table(
-        ["parameter", "value"],
-        [
-            ["total_counts_min", _param(params, "s1_rna_qc.total_counts_min")],
-            ["total_counts_max", _param(params, "s1_rna_qc.total_counts_max")],
-            ["n_genes_min", _param(params, "s1_rna_qc.n_genes_min")],
-            ["n_genes_max", _param(params, "s1_rna_qc.n_genes_max")],
-            ["pct_counts_mt_max", _param(params, "s1_rna_qc.pct_counts_mt_max")],
-            ["pct_counts_ribo_max", _param(params, "s1_rna_qc.pct_counts_ribo_max")],
-            ["n_mt_genes_detected", _param(params, "s1_rna_qc.n_mt_genes_detected")],
-            ["n_ribo_genes_detected", _param(params, "s1_rna_qc.n_ribo_genes_detected")],
-        ],
-    )
+    rm = _load_cells_removed(s1 / "qc_summary.json")
+    thresholds = _rna_threshold_table(params, rm)
     stat_rows: list[list[Any]] = []
     for col in ("n_genes_by_counts", "total_counts", "pct_counts_mt", "pct_counts_ribo"):
         if col in post_df.columns:
@@ -1320,9 +1373,7 @@ def _html_rna_section(
         "Removes outliers and low-quality cells using MAD-based bounds on total UMI "
         "counts and detected genes, plus ceilings on mitochondrial (MT) and ribosomal "
         "read fractions.\n\n"
-        f"- Cells before filtering: **{n_pre}**\n"
-        f"- Cells retained:         **{n_post}**\n"
-        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+        + _qc_filter_count_lines(n_pre, n_post)
     )
     return (
         '<section class="qc-section qc-rna">'
@@ -1330,6 +1381,7 @@ def _html_rna_section(
         f"{_md_html(intro)}"
         "<h3>Thresholds used</h3>"
         f"{_md_html(thresholds)}"
+        f"{_md_html(_THRESHOLDS_NOTE)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
         f'<div class="qc-plots-below">{plots}</div>'
@@ -1349,45 +1401,14 @@ def _html_atac_section(
     summary = json.loads(summary_json.read_text())
     n_pre = int(summary.get("n_cells_pre", 0))
     n_post = int(summary.get("n_cells_post", 0))
-    n_rm = n_pre - n_post
     atac_raw = counts.get("atac_raw_barcodes")
     snap_drop = (atac_raw - n_pre) if (atac_raw is not None) else None
-
     peak_source = summary.get("peak_source")
-    frip_min_val = _param(params, "s2_atac_qc.frip_min")
-    frip_threshold_note = frip_min_val if peak_source else f"{frip_min_val} _(not applied — no peaks available)_"
-    thresholds = _md_table(
-        ["parameter", "value"],
-        [
-            ["n_fragments_min", _param(params, "s2_atac_qc.n_fragments_min")],
-            ["n_fragments_max", _param(params, "s2_atac_qc.n_fragments_max")],
-            ["tss_enrichment_min", _param(params, "s2_atac_qc.tss_enrichment_min")],
-            ["tss_enrichment_max", _param(params, "s2_atac_qc.tss_enrichment_max")],
-            ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max")],
-            ["frip_min", frip_threshold_note],
-        ],
-    )
-    stat_rows: list[list[Any]] = []
-    atac_h5ad = s2 / "atac_qc.h5ad"
-    if atac_h5ad.exists():
-        try:
-            import snapatac2 as snap
-            adata = snap.read(str(atac_h5ad))
-            obs = adata.obs[:].to_pandas()
-            try:
-                adata.close()
-            except Exception:
-                pass
-            for src_col, label in [
-                ("n_fragment", "fragment_count"),
-                ("tsse", "tss_enrichment"),
-                ("nucleosome_signal", "nucleosome_signal"),
-                ("frip", "frip"),
-            ]:
-                if src_col in obs.columns:
-                    stat_rows.append(_stats_row(label, obs[src_col].to_numpy()))
-        except BaseException:
-            pass
+
+    rm = summary.get("cells_removed_per_metric", {})
+    thresholds = _atac_threshold_table(params, rm, peak_source=peak_source)
+
+    stat_rows, _ = _atac_stat_rows(summary, s2 / "atac_qc.h5ad")
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else "_(no stats)_"
 
     import_note = ""
@@ -1400,10 +1421,7 @@ def _html_atac_section(
     intro = (
         "Removes low-quality cells using MAD-based bounds on fragment counts, plus "
         "TSS enrichment, nucleosome-signal, and FRiP thresholds.\n\n"
-        f"{import_note}"
-        f"- Cells before filtering: **{n_pre}**\n"
-        f"- Cells retained:         **{n_post}**\n"
-        f"- Removed:                **{n_rm}** ({_pct(n_rm, n_pre)})\n"
+        + _qc_filter_count_lines(n_pre, n_post, import_note=import_note)
     )
     from .figures import FRIP_DISTRIBUTION_TITLE, TSS_PROFILE_CAPTION, TSS_PROFILE_TITLE
     plot_fsd = _html_figure(
@@ -1428,6 +1446,7 @@ def _html_atac_section(
         f"{_md_html(intro)}"
         "<h3>Thresholds used</h3>"
         f"{_md_html(thresholds + peak_note)}"
+        f"{_md_html(_THRESHOLDS_NOTE)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
         f"{pair_row}{tss_row}"

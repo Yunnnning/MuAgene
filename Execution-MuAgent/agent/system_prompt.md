@@ -10,7 +10,7 @@ Science intent and platform mechanics are separate concerns with separate owners
 
 **site.config** (`deliverables/pre_run/config/site.config`) — the platform description. Processing-MuAgent writes this from confirmed user input. You read it to know: which scheduler, which partition/queue, account/QOS, conda env or container, resources_scale.
 
-**Per-stage specs** (`internal/specs/<stage>.yaml`) — the science intent for each stage. Each spec declares:
+**Per-stage specs** (`internal/stage_meta/<stage>.yaml`) — the science intent for each stage. Each spec declares:
 - `stage` — the pipeline stage name
 - `science_description` — one line describing what this stage does biologically
 - `resources` — CPU count, memory (MB), walltime (minutes)

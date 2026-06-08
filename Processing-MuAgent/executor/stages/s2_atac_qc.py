@@ -31,6 +31,7 @@ from typing import Any
 import numpy as np
 
 from ..methods import mad_thresholds as _mad
+from ..methods.qc_filter_stats import append_frip_exclusive, exclusive_removals
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
@@ -393,17 +394,25 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         keep_3m &= ns_values < nuc_signal_max
 
     keep_3m_idx = np.nonzero(keep_3m)[0].tolist()
-    fail_3m_idx = np.nonzero(~keep_3m)[0].tolist()
     n_pre = int(adata.n_obs)
     n_after_3m = int(len(keep_3m_idx))
 
-    # TSS profile figure: pass = cells meeting all 3-metric thresholds; fail = the rest
-    # of the pre-filter import set 
+    # TSS profile figure: compare cells passing vs failing the TSS threshold only
+    # (not the combined 3-metric split) so the enrichment shape reflects TSS quality directly.
+    if tss_values.size:
+        keep_tss_prof = (tss_values > tss_min) & (tss_values < tss_max)
+    else:
+        keep_tss_prof = np.ones(adata.n_obs, dtype=bool)
+    keep_tss_idx = np.nonzero(keep_tss_prof)[0].tolist()
+    fail_tss_idx = np.nonzero(~keep_tss_prof)[0].tolist()
+    n_tss_pass = len(keep_tss_idx)
+    n_tss_fail = len(fail_tss_idx)
+
     tss_prof_pass: np.ndarray | None = None
     tss_prof_fail: np.ndarray | None = None
     try:
-        tss_prof_pass = _subset_tss_profile(adata, keep_3m_idx, genome_ref, art)
-        tss_prof_fail = _subset_tss_profile(adata, fail_3m_idx, genome_ref, art)
+        tss_prof_pass = _subset_tss_profile(adata, keep_tss_idx, genome_ref, art)
+        tss_prof_fail = _subset_tss_profile(adata, fail_tss_idx, genome_ref, art)
     except Exception as e:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "tss_profile_failed", "error": str(e)})
 
@@ -548,29 +557,59 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         Path(tmp_3m).unlink(missing_ok=True)
         filtered_path_tmp = tmp_final
 
-    # Persist summary (+ per-cell ns range and FRiP info for the QC report)
-    ns_summary: dict[str, Any] = {}
-    if ns_values.size:
-        finite_ns = ns_values[np.isfinite(ns_values)]
-        if finite_ns.size:
-            ns_summary = {
-                "median": float(np.median(finite_ns)),
-                "p90":    float(np.quantile(finite_ns, 0.90)),
-                "max":    float(np.max(finite_ns)),
-            }
+    pass_frag = (
+        (n_frag_values >= f_lo) & (n_frag_values <= f_hi) if n_frag_values.size
+        else np.ones(n_pre, dtype=bool)
+    )
+    pass_tss = (
+        (tss_values > tss_min) & (tss_values < tss_max) if tss_values.size
+        else np.ones(n_pre, dtype=bool)
+    )
+    pass_ns = (
+        ns_values < nuc_signal_max if ns_values.size and np.isfinite(ns_values).any()
+        else np.ones(n_pre, dtype=bool)
+    )
+    cells_removed_per_metric = exclusive_removals({
+        "n_fragments": pass_frag,
+        "tss_enrichment": pass_tss,
+        "nucleosome_signal": pass_ns,
+    })
+    frip_fail = (
+        int((frip_values < frip_min).sum())
+        if frip_applied and frip_values is not None else None
+    )
+    cells_removed_per_metric = append_frip_exclusive(
+        cells_removed_per_metric,
+        frip_fail=frip_fail,
+        n_pre=n_pre,
+        n_post=n_post,
+    )
 
-    frip_summary: dict[str, Any] | None = None
-    if frip_applied and frip_values is not None and frip_values.size:
-        frip_summary = {
-            "median": float(np.median(frip_values)),
-            "p10":    float(np.quantile(frip_values, 0.10)),
-            "min":    float(np.min(frip_values)),
-        }
+    # Retained-cell stats — extracted here so the QC report stats section works after
+    # atac_qc.h5ad is deleted on post_qc_review approval.
+    retained_cell_stats: dict[str, Any] = {}
+    try:
+        for col, key in [("n_fragment", "fragment_count"), ("tsse", "tss_enrichment"),
+                         ("nucleosome_signal", "nucleosome_signal"), ("frip", "frip")]:
+            arr = _col_to_numpy(adata_f, col)
+            if arr.size:
+                finite = arr[np.isfinite(arr)]
+                if finite.size:
+                    retained_cell_stats[key] = {
+                        "mean":   float(np.mean(finite)),
+                        "median": float(np.median(finite)),
+                        "min":    float(np.min(finite)),
+                        "max":    float(np.max(finite)),
+                    }
+    except Exception:
+        pass
 
     _io.write_text_safe(art / "qc_summary.json", json.dumps({
         "n_cells_pre": n_pre,
         "n_cells_after_3m_filter": n_after_3m,
         "n_cells_post": n_post,
+        "cells_removed_per_metric": cells_removed_per_metric,
+        "retained_cell_stats": retained_cell_stats,
         "thresholds": {
             "n_fragments": [float(f_lo), float(f_hi)],
             "tss_min": float(tss_min),
@@ -578,8 +617,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             "nucleosome_signal_max": float(nuc_signal_max),
             "frip_min": float(frip_min) if frip_applied else None,
         },
-        "nucleosome_signal_summary": ns_summary,
-        "frip_summary": frip_summary,
         "peak_source": peak_source if peak_source else None,
     }, indent=2))
 
@@ -613,8 +650,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 tss_prof_pass, tss_prof_fail,
                 out_dir=figs_dir,
                 stem="s2_atac_qc_tss_enrichment_profile",
-                n_pass=n_after_3m,
-                n_fail=n_pre - n_after_3m,
+                n_pass=n_tss_pass,
+                n_fail=n_tss_fail,
             )
 
         if frip_applied and frip_values is not None and frip_values.size:

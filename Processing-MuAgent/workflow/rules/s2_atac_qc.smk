@@ -6,7 +6,8 @@ def _s2_propose_inputs(wildcards):
     }
     # Order-only dependency on S1 in branches where S1 exists (serialize for reproducibility).
     if branch in ("paired", "separate"):
-        paths["rna_done"] = str(INTERNAL / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad")
+        # Use qc_summary.json (not rna_qc.h5ad) — it survives post_qc_review cleanup.
+        paths["rna_done"] = str(INTERNAL / "artifacts" / "s1_rna_qc" / "qc_summary.json")
     # For atac_only, S2 is the first modality stage after plan_review — demand
     # plan_review.md here so plan_review_propose is always pulled into the DAG.
     if branch == "atac_only":
@@ -35,7 +36,8 @@ rule s2_atac_qc_execute:
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
     output:
-        h5ad = str(INTERNAL / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"),
+        h5ad       = str(INTERNAL / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"),
+        qc_summary = str(INTERNAL / "artifacts" / "s2_atac_qc" / "qc_summary.json"),
     params:
         run_dir = str(RUN_DIR),
     threads: RESOURCES["s2_atac_qc"]["cpus"]

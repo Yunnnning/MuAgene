@@ -34,8 +34,8 @@ FRIP_XMAX = 0.7
 QC_PLOT_PAIR_SIZE = (7.0, 4.5)
 TSS_PROFILE_TITLE = "Mean TSS enrichment scores"
 TSS_PROFILE_CAPTION = (
-    "left = cells passing n_fragments/TSS/nucleosome_signal thresholds, "
-    "right = cells failing at least one threshold."
+    "left = cells passing the TSS enrichment threshold, "
+    "right = cells failing the TSS enrichment threshold."
 )
 TSS_PROFILE_WINDOW_BP = 1500
 TSS_PASS_COLOR = "coral"
@@ -290,7 +290,7 @@ def plot_tss_enrichment_profile(
     n_pass: int | None = None,
     n_fail: int | None = None,
 ) -> list[Path]:
-    """Side-by-side mean TSS enrichment profiles for pass vs fail 3-metric QC cells."""
+    """Side-by-side mean TSS enrichment profiles for cells passing vs failing the TSS enrichment threshold."""
     _apply_style()
     import matplotlib.pyplot as plt
 
@@ -312,12 +312,12 @@ def plot_tss_enrichment_profile(
     x = np.arange(-win, win + 1)
 
     pass_label = (
-        f"pass QC ({n_pass:,} cells)"
-        if n_pass is not None else "pass QC"
+        f"pass TSS threshold ({n_pass:,} cells)"
+        if n_pass is not None else "pass TSS threshold"
     )
     fail_label = (
-        f"fail QC ({n_fail:,} cells)"
-        if n_fail is not None else "fail QC"
+        f"fail TSS threshold ({n_fail:,} cells)"
+        if n_fail is not None else "fail TSS threshold"
     )
     tss_line_alpha = 0.88
     tss_line_width = 1.1
