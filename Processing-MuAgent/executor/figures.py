@@ -224,7 +224,7 @@ def plot_frip_histogram(
     *,
     out_dir: Path | str,
     stem: str,
-    frip_min: float = 0.2,
+    frip_min: float = 0.25,
 ) -> list[Path]:
     """Histogram of per-cell FRiP values with a vertical threshold line.
 

@@ -61,7 +61,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   1. **n_fragments** — MAD-based bounds on log-scale fragment count (with an absolute floor).
   2. **TSS enrichment** — min/max bounds on SnapATAC2's TSS score.
   3. **Nucleosome signal** — upper bound on Signac-style `mono / nucleosome_free` ratio.
-  4. **FRiP** — Fraction of Reads in Peaks (`frip_min`; default 0.2). S2 acquires a peak set using the same priority order as S5 feature export (see below), calls the peak × cell matrix via SnapATAC2, and filters cells with FRiP below threshold. The peak BED written here is reused by S5 so no redundant peak calling occurs. FRiP filtering is silently skipped when no peak source is available.
+  4. **FRiP** — Fraction of Reads in Peaks (`frip_min`; default 0.25). S2 acquires a peak set using the same priority order as S5 feature export (see below), calls the peak × cell matrix via SnapATAC2, and filters cells with FRiP below threshold. The peak BED written here is reused by S5 so no redundant peak calling occurs. FRiP filtering is silently skipped when no peak source is available.
 - **S3 Doublets** — Per-modality doublet detection, then branch-specific reconciliation:
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
