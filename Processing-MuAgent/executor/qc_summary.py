@@ -41,6 +41,8 @@ class _FigRender:
 
 _DEFAULT_FIG_RENDER = _FigRender()
 
+_HIGH_CONTAM_THRESHOLD = 0.15  # median rho above which contamination is flagged as elevated
+
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -234,8 +236,8 @@ def _fig_block(
     from .run_paths import RunPaths
     if not render.embed_figures:
         return ""
-    png = RunPaths(run_dir).deliv_qc_review / f"{stem}.png"
-    if not png.exists():
+    png = RunPaths(run_dir).resolve_qc_figure(stem)
+    if not png.is_file():
         return ""
     alt = caption or stem.replace("_", " ")
     if render.md_parent is not None:
@@ -256,11 +258,11 @@ def _fig_pair_block(
     from .run_paths import RunPaths
     if not render.embed_figures:
         return ""
-    fig_dir = RunPaths(run_dir).deliv_qc_review
+    rp = RunPaths(run_dir)
     panels: list[str] = []
     for stem, caption in (left, right):
-        png = fig_dir / f"{stem}.png"
-        if not png.exists():
+        png = rp.resolve_qc_figure(stem)
+        if not png.is_file():
             continue
         if render.md_parent is not None:
             src = Path(os.path.relpath(png, render.md_parent)).as_posix()
@@ -746,14 +748,47 @@ def _ambient_section(
         caption="Per-cell total counts before and after ambient correction.",
         render=render,
     )
+    fig_markers = _fig_block(
+        run_dir, "s1a_ambient_marker_genes",
+        caption=(
+            "Marker gene expression on a shared t-SNE (from pre-correction counts) — "
+            "top row: before; bottom row: after."
+        ),
+        render=render,
+    )
+
+    # Suggest marker gene check when correction ran but no figure was produced.
+    from .run_paths import RunPaths as _RunPaths
+    _marker_fig = _RunPaths(run_dir).resolve_qc_figure("s1a_ambient_marker_genes")
+    _marker_genes_set = bool(_param(params, "s1a_ambient.marker_genes"))
+    notice = ""
+    if not _marker_fig.is_file() and not _marker_genes_set:
+        if median_rho is not None and float(median_rho) > _HIGH_CONTAM_THRESHOLD:
+            _contam_note = (
+                f" The median contamination fraction is **{_fmt(median_rho)}**, "
+                "which is elevated — marker gene inspection is strongly recommended."
+            )
+        else:
+            _contam_note = ""
+        notice = (
+            "\n"
+            "**Marker gene expression check not performed.**"
+            f"{_contam_note} "
+            "To assess whether ambient correction improved marker specificity, "
+            "provide cell-type marker gene symbols at the QC review stage "
+            "(e.g. `CD3E`, `CD20`, `EPCAM`) to generate before/after t-SNE expression plots.\n"
+        )
+
     return (
         "## Ambient RNA correction\n"
         "\n"
         + rho_note
         + counts_note
         + fig
+        + fig_markers
         + "\n"
         f"{_md_table(['parameter', 'value'], rows)}\n"
+        + notice
     )
 
 
@@ -901,14 +936,14 @@ def _plan_dataset_assay_line(run_dir: Path) -> str:
     fields = ctx.get("fields", {})
     dtype = (fields.get("modality_type") or {}).get("value") or "unknown"
     assay = (fields.get("assay_type") or {}).get("value") or "unknown"
-    return f"**Dataset type:** {dtype} · **Assay:** {assay}"
+    return f"**Assay:** {assay}\n**Dataset type:** {dtype}"
 
 
 def _qc_review_intro(run_name: str, run_dir: Path) -> str:
     lines = [
         "# QC review checkpoint",
         "",
-        f"Review QC plots in `{run_name}/deliverables/checkpoint/qc_review`. "
+        f"Review QC plots in `{run_name}/deliverables/checkpoint/qc_review/figures/`. "
         f"For a rendered report with images, open **qc_summary_{run_name}.html** in this folder "
         "(generated alongside this file). Approve when satisfied, or revise thresholds "
         "and re-run affected stages before approving.",
@@ -943,6 +978,22 @@ def _qc_review_actions(branch: str) -> str:
         "",
         "If the QC filters look acceptable, tell the agent to approve this checkpoint and "
         "continue to downstream dimensionality reduction and clustering.",
+        "",
+        "### Check marker gene expression (optional)",
+        "",
+        "If marker genes were not provided at planning time, you can still verify whether "
+        "ambient RNA correction improved the specificity of known cell-type markers. "
+        "A marker gene that appears at low levels across cell types that should not express it "
+        "is a sign of ambient contamination; after correction its expression should be more "
+        "restricted to the expected populations.",
+        "",
+        "To request this check, provide 5–10 cell-type marker gene symbols and tell the agent:",
+        "",
+        '  "Check marker genes: Marker1, Marker2, Marker3, Marker4, Marker5"',
+        "",
+        "The agent will submit a separate job that computes before/after t-SNE expression "
+        "plots and updates this report with the new figure. "
+        "This is most valuable when the ambient contamination fraction is elevated.",
         "",
     ]
     return "\n".join(lines)
@@ -1080,7 +1131,7 @@ def _doublet_section(
         )
         footnote = (
             "- *Cell barcodes that were evaluated for doublets by both the RNA (Scrublet) "
-            "and ATAC (SnapATAC2) detectors. **Retained** = neither flagged by any detector.\n"
+            "and ATAC (SnapATAC2) detectors. Retained = **neither** flagged by any detector.\n"
         )
         summary_table = (
             "\n"
@@ -1275,9 +1326,10 @@ def _qc_html_styles() -> str:
     )
 
 
-def _html_figure(fig_dir: Path, stem: str, caption: str) -> str:
-    png = fig_dir / f"{stem}.png"
-    if not png.exists():
+def _html_figure(run_dir: Path, stem: str, caption: str) -> str:
+    from .run_paths import RunPaths
+    png = RunPaths(run_dir).resolve_qc_figure(stem)
+    if not png.is_file():
         return ""
     data = base64.standard_b64encode(png.read_bytes()).decode("ascii")
     alt = html_module.escape(caption)
@@ -1292,10 +1344,10 @@ def _md_html(md: str) -> str:
 
 
 def _html_flow_section(
-    run_dir: Path, counts: dict[str, Any], workflow_branch: str, fig_dir: Path,
+    run_dir: Path, counts: dict[str, Any], workflow_branch: str,
 ) -> str:
     table_md = _flow_section(run_dir, counts, workflow_branch, include_final_stage=False)
-    plot = _html_figure(fig_dir, "post_qc_review_cell_counts",
+    plot = _html_figure(run_dir, "post_qc_review_cell_counts",
                         "Cell counts across preprocessing (RNA and ATAC).")
     plots = f'<div class="qc-plots-below">{plot}</div>' if plot else ""
     return (
@@ -1305,7 +1357,7 @@ def _html_flow_section(
 
 
 def _html_ambient_section(
-    run_dir: Path, params: dict[str, Any], counts: dict[str, Any], fig_dir: Path,
+    run_dir: Path, params: dict[str, Any], counts: dict[str, Any],
 ) -> str:
     md = _ambient_section(run_dir, params, counts, render=_FigRender(embed_figures=False))
     if "## Ambient RNA correction\n" not in md or "| parameter | value |" not in md:
@@ -1315,11 +1367,21 @@ def _html_ambient_section(
     table_marker = "| parameter | value |"
     intro, _, rest = parts.partition(table_marker)
     table_lines = "| parameter | value |" + rest.split("\n\n", 1)[0]
+    # Notice text lives after the table block in the markdown; capture and render it.
+    after_table = rest.split("\n\n", 1)[1] if "\n\n" in rest else ""
     intro = intro.strip()
     plot = _html_figure(
-        fig_dir, "s1a_ambient_counts_before_after",
+        run_dir, "s1a_ambient_counts_before_after",
         "Per-cell total counts before and after ambient correction.",
     )
+    marker_plot = _html_figure(
+        run_dir, "s1a_ambient_marker_genes",
+        "Marker gene expression on t-SNE before/after ambient correction.",
+    )
+    marker_row = (
+        f'<div class="qc-plots-below">{marker_plot}</div>' if marker_plot else ""
+    )
+    notice_html = _md_html(after_table.strip()) if after_table.strip() else ""
     return (
         '<section class="qc-section qc-ambient">'
         "<h2>Ambient RNA correction</h2>"
@@ -1327,12 +1389,12 @@ def _html_ambient_section(
         '<div class="qc-side-by-side">'
         f'<div class="qc-panel-table">{_md_html(table_lines)}</div>'
         f'<div class="qc-panel-plot">{plot}</div>'
-        "</div></section>"
+        f"</div>{marker_row}{notice_html}</section>"
     )
 
 
 def _html_rna_section(
-    run_dir: Path, params: dict[str, Any], counts: dict[str, Any], fig_dir: Path,
+    run_dir: Path, params: dict[str, Any], counts: dict[str, Any],
 ) -> str:
     from .run_paths import RunPaths
     s1 = RunPaths(run_dir).stage_dir("s1_rna_qc")
@@ -1354,8 +1416,8 @@ def _html_rna_section(
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else ""
 
     plots = (
-        _html_figure(fig_dir, "s1_rna_qc_violin_pre", "RNA QC metrics before filtering.")
-        + _html_figure(fig_dir, "s1_rna_qc_violin_post", "RNA QC metrics after filtering.")
+        _html_figure(run_dir, "s1_rna_qc_violin_pre", "RNA QC metrics before filtering.")
+        + _html_figure(run_dir, "s1_rna_qc_violin_post", "RNA QC metrics after filtering.")
     )
     intro = (
         "Removes outliers and low-quality cells using MAD-based bounds on total UMI "
@@ -1377,7 +1439,7 @@ def _html_rna_section(
 
 
 def _html_atac_section(
-    run_dir: Path, params: dict[str, Any], counts: dict[str, Any], fig_dir: Path,
+    run_dir: Path, params: dict[str, Any], counts: dict[str, Any],
 ) -> str:
     from .run_paths import RunPaths
     s2 = RunPaths(run_dir).stage_dir("s2_atac_qc")
@@ -1412,15 +1474,15 @@ def _html_atac_section(
     )
     from .figures import FRIP_DISTRIBUTION_TITLE, TSS_PROFILE_CAPTION, TSS_PROFILE_TITLE
     plot_fsd = _html_figure(
-        fig_dir, "s2_atac_qc_fragment_size_distribution",
+        run_dir, "s2_atac_qc_fragment_size_distribution",
         "ATAC fragment size distribution after QC filtering.",
     )
     plot_tss = _html_figure(
-        fig_dir, "s2_atac_qc_tss_enrichment_profile",
+        run_dir, "s2_atac_qc_tss_enrichment_profile",
         f"{TSS_PROFILE_TITLE}; {TSS_PROFILE_CAPTION}",
     )
     plot_frip = _html_figure(
-        fig_dir, "s2_atac_qc_frip_histogram",
+        run_dir, "s2_atac_qc_frip_histogram",
         f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold.",
     )
     fsd_frip_pair = "".join(p for p in (plot_fsd, plot_frip) if p)
@@ -1444,17 +1506,16 @@ def _html_doublet_section(
     run_dir: Path,
     params: dict[str, Any],
     counts: dict[str, Any],
-    fig_dir: Path,
     workflow_branch: str,
 ) -> str:
     md = _doublet_section(run_dir, params, counts, render=_FigRender(embed_figures=False))
     policy_html = _md_html(md)
 
     rna_plot = _html_figure(
-        fig_dir, "post_qc_review_doublet_rna", "RNA doublet scores (Scrublet).",
+        run_dir, "post_qc_review_doublet_rna", "RNA doublet scores (Scrublet).",
     )
     atac_plot = _html_figure(
-        fig_dir, "post_qc_review_doublet_atac", "ATAC doublet scores (SnapATAC2).",
+        run_dir, "post_qc_review_doublet_atac", "ATAC doublet scores (SnapATAC2).",
     )
     if workflow_branch == "paired":
         plots = "".join(p for p in (rna_plot, atac_plot) if p)
@@ -1471,7 +1532,6 @@ def build_qc_review_html_body(run_dir: Path | str) -> str:
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
-    fig_dir = rp.deliv_qc_review
     params_path = rp.parameters_yaml
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
@@ -1484,11 +1544,11 @@ def build_qc_review_html_body(run_dir: Path | str) -> str:
     parts = [
         title,
         context_html,
-        _html_flow_section(run_dir, counts, branch, fig_dir),
-        _html_ambient_section(run_dir, params, counts, fig_dir),
-        _html_rna_section(run_dir, params, counts, fig_dir),
-        _html_atac_section(run_dir, params, counts, fig_dir),
-        _html_doublet_section(run_dir, params, counts, fig_dir, branch),
+        _html_flow_section(run_dir, counts, branch),
+        _html_ambient_section(run_dir, params, counts),
+        _html_rna_section(run_dir, params, counts),
+        _html_atac_section(run_dir, params, counts),
+        _html_doublet_section(run_dir, params, counts, branch),
     ]
     return "\n".join(p for p in parts if p)
 
@@ -1520,6 +1580,8 @@ def write_qc_review(run_dir: Path | str) -> Path:
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
     rp.deliv_qc_review.mkdir(parents=True, exist_ok=True)
+    rp.deliv_qc_review_figures.mkdir(parents=True, exist_ok=True)
+    rp.migrate_qc_figures_to_subdir()
     for legacy in (rp.deliv_qc_review / "qc_review.md", rp.deliv_qc_review / "qc_summary.html"):
         if legacy.exists():
             legacy.unlink()

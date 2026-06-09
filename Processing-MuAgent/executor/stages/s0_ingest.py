@@ -448,7 +448,8 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     }
     # Surface the optional input paths in the report so users see them
     # without having to grep parameters.yaml.
-    for k in ("barcode_translation_path", "atac_peaks_path", "cell_metadata_path"):
+    for k in ("barcode_translation_path", "atac_peaks_path", "cell_metadata_path",
+              "rna_path", "rna_raw_path"):
         if config.get(k):
             report[k] = str(config[k])
     if rna is not None:
@@ -486,10 +487,26 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         import anndata as _ad
         _io.write_h5ad_safe(_ad.AnnData(X=sp.csr_matrix((0, 0))), rna_out)
 
-    # --- Optional companion raw matrix (used by SoupX in S1a) ------------
-    rna_raw_out = artifacts / "rna_raw.h5ad"
-    if rna_raw_full is not None:
-        _io.write_h5ad_safe(rna_raw_full, rna_raw_out)
+    # --- Raw matrix input ref (symlink; used by SoupX in S1a) ------------
+    # Never copy the full raw matrix into the run dir — point at the user path.
+    raw_source_path: Path | None = None
+    raw_source_fmt: str | None = None
+    if rna_raw_path is not None:
+        raw_source_path = rna_raw_path
+        raw_source_fmt = _io.detect_rna_format(rna_raw_path)
+    elif rna_filtered_status == "raw" and rna_input_path is not None:
+        raw_source_path = rna_input_path
+        raw_source_fmt = rna_fmt
+    if raw_source_path is not None and raw_source_fmt is not None:
+        _io.write_input_ref(artifacts / "rna_raw", raw_source_path, fmt=raw_source_fmt)
+        _prov.set_param(params_path, "ingest.rna_raw_source_path", str(raw_source_path.resolve()),
+                        source="user", confidence="high",
+                        rationale="Symlinked at S0; raw matrix is read from the original input path.",
+                        method={"name": "io.write_input_ref",
+                                "code_ref": "executor/io.py::write_input_ref"})
+        legacy_raw = artifacts / "rna_raw.h5ad"
+        if legacy_raw.exists():
+            legacy_raw.unlink()
 
     # --- ATAC ingest metadata (only if ATAC present) ---------------------
     if atac_frag_path is not None:

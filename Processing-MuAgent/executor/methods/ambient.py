@@ -5,9 +5,8 @@ Two backends are supported and dispatched by S1a based on what S0 produced:
   - **DecontX** (celda, R) — uses the filtered counts matrix only. Picked when
     no companion raw matrix exists.
   - **SoupX** (R) — uses both the filtered cells and the raw droplets to
-    estimate the soup profile. Picked when S0 carries a `rna_raw.h5ad`
-    artifact (either user-supplied via `rna_raw_path`, or detected by S0
-    when the user passed a raw matrix as `rna_path`).
+    estimate the soup profile. Picked when S0 registers a raw-matrix input
+    ref (symlink to `rna_raw_path`, or to `rna_path` when that matrix is raw).
 
 Both are invoked via `Rscript`. The Python side serialises counts to Matrix
 Market (.mtx) for portability — neither AnnData round-tripping nor rpy2 is

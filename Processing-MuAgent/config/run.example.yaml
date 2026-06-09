@@ -12,9 +12,10 @@ run_dir: /Users/yunning/Desktop/MuAgene/example/output/run_example
 # barcode-rank knee for cell calling on raw inputs.
 #
 # `rna_raw_path` (optional) is a companion raw-droplets matrix used by S1a
-# SoupX to estimate the soup profile. When BOTH `rna_path` (filtered) and
-# `rna_raw_path` (raw) are supplied, the plan sets s1a_ambient.method=auto →
-# SoupX. When only a filtered matrix is supplied, auto → DecontX.
+# SoupX to estimate the soup profile. S0 symlinks this path into the run dir
+# (no copy). When BOTH `rna_path` (filtered) and `rna_raw_path` (raw) are
+# supplied, the plan sets s1a_ambient.method=auto → SoupX. When only a
+# filtered matrix is supplied, auto → DecontX.
 #
 # Study goal guides ambient correction strength at plan time (confirm at plan review):
 #   rare_populations     → auto recommended (high confidence in plan)

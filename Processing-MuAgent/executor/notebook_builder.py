@@ -145,8 +145,12 @@ if atac_cluster_col:
 
 _CELL_SHOW_HELPER = """\
 def _show_qc(stem: str) -> None:
-    p = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / f"{stem}.png"
-    if p.exists():
+    p = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / "figures" / f"{stem}.png"
+    if not p.is_file():
+        legacy = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / f"{stem}.png"
+        if legacy.is_file():
+            p = legacy
+    if p.is_file():
         display(Image(filename=str(p)))
     else:
         print(f"(missing: {p})")

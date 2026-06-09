@@ -1,6 +1,6 @@
 """Single source of truth for canonical run-directory paths.
 
-Top-level layout (direct-write; no symlinks):
+Top-level layout (direct-write; external inputs referenced via symlinks):
 
     <run_dir>/
       deliverables/                 user-facing; split by lifecycle phase
@@ -12,11 +12,12 @@ Top-level layout (direct-write; no symlinks):
             context_summary.md          ← P1 output
             plan_review.md              ← plan review gate (summary + parameter appendix)
         checkpoint/                 intermediate review artifacts (flat subfolders)
-          qc_review/                  QC review checkpoint (figures + run-scoped summaries)
+          qc_review/                  QC review checkpoint (summaries + figures/)
             qc_review_<run>.md
             qc_summary_<run>.html
-            s1_rna_qc_violin_{pre,post}.{png,pdf}
-            ...
+            figures/
+              s1_rna_qc_violin_{pre,post}.{png,pdf}
+              ...
           resolution_review/          S7 resolution checkpoint
             resolution_summary.md
             resolution_review.{ipynb,html}
@@ -40,8 +41,9 @@ Top-level layout (direct-write; no symlinks):
 
 Key invariants:
 - No file lives at the top of <run_dir>/; exactly two subdirectories exist there.
-- No symlinks or aliases — every logical artifact has a single canonical path.
-- QC figures + checkpoint summaries live under checkpoint/{qc_review,resolution_review}/.
+- External raw inputs (e.g. companion raw RNA matrix) are symlinked from S0, not copied.
+- Derived stage artifacts have a single canonical path under internal/artifacts/.
+- QC checkpoint summaries live in checkpoint/qc_review/; QC figures live in checkpoint/qc_review/figures/.
 - post_run/ contains UMAP figures, processed data, final notebook, and manifest only.
 - pre_run/ contains only files the user reviews before approving the plan.
 """
@@ -115,8 +117,13 @@ class RunPaths:
 
     @property
     def deliv_qc_review(self) -> Path:
-        """checkpoint/qc_review/ — QC figures + pre-dimred summary."""
+        """checkpoint/qc_review/ — QC review summaries (md/html)."""
         return self.deliv_checkpoint / "qc_review"
+
+    @property
+    def deliv_qc_review_figures(self) -> Path:
+        """checkpoint/qc_review/figures/ — QC checkpoint plot outputs."""
+        return self.deliv_qc_review / "figures"
 
     @property
     def deliv_resolution_review(self) -> Path:
@@ -258,7 +265,32 @@ class RunPaths:
         return self.checkpoints / f"{stage}.approved"
 
     def deliv_qc_figure(self, stem: str, *, ext: str = "png") -> Path:
-        return self.deliv_qc_review / f"{stem}.{ext}"
+        return self.deliv_qc_review_figures / f"{stem}.{ext}"
+
+    def resolve_qc_figure(self, stem: str, *, ext: str = "png") -> Path:
+        """Return QC figure path, falling back to legacy flat qc_review/ layout."""
+        canonical = self.deliv_qc_figure(stem, ext=ext)
+        if canonical.is_file():
+            return canonical
+        legacy = self.deliv_qc_review / f"{stem}.{ext}"
+        if legacy.is_file():
+            return legacy
+        return canonical
+
+    def migrate_qc_figures_to_subdir(self) -> list[Path]:
+        """Move loose png/pdf files from qc_review/ into figures/. Idempotent."""
+        self.deliv_qc_review_figures.mkdir(parents=True, exist_ok=True)
+        moved: list[Path] = []
+        for path in sorted(self.deliv_qc_review.iterdir()):
+            if not path.is_file() or path.suffix not in {".png", ".pdf"}:
+                continue
+            dest = self.deliv_qc_review_figures / path.name
+            if dest.exists():
+                path.unlink()
+            else:
+                path.rename(dest)
+            moved.append(dest)
+        return moved
 
     def deliv_umap_figure(self, stem: str, *, ext: str = "png") -> Path:
         return self.deliv_post_run / f"{stem}.{ext}"
@@ -271,7 +303,8 @@ class RunPaths:
             self.artifacts, self.proposals, self.checkpoints, self.snakemake_workdir,
             self.deliverables,
             self.deliv_pre_run, self.deliv_config, self.deliv_pre_summary,
-            self.deliv_checkpoint, self.deliv_qc_review, self.deliv_resolution_review,
+            self.deliv_checkpoint, self.deliv_qc_review, self.deliv_qc_review_figures,
+            self.deliv_resolution_review,
             self.deliv_post_run,
         ):
             p.mkdir(parents=True, exist_ok=True)

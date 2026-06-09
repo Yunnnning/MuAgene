@@ -31,7 +31,7 @@ P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 ### User checkpoints (3)
 
 1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `pre_run/summary/plan_review.md`.
-2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `checkpoint/qc_review/qc_review_<run>.md` and figures. If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
+2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `checkpoint/qc_review/qc_review_<run>.md` and figures in `checkpoint/qc_review/figures/`. If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
 3. **Clustering resolution review** (`s7_clustering`) — after S6 PCA (RNA) + neighbor graph (`s6_neighbors`), before S8. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding).
 
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
@@ -75,7 +75,8 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 Files at user checkpoints and at the hard stop:
 
 - `deliverables/checkpoint/qc_review/qc_review_<run>.md` (QC review checkpoint #2)
-- `deliverables/checkpoint/qc_review/` (QC figures)
+- `deliverables/checkpoint/qc_review/qc_summary_<run>.html` (rendered QC report)
+- `deliverables/checkpoint/qc_review/figures/` (QC checkpoint plots)
 - `deliverables/checkpoint/resolution_review/resolution_summary.md` (resolution review #3)
 - `deliverables/checkpoint/resolution_review/resolution_review.{html,ipynb}`
 - `deliverables/post_run/qc_summary.md` (final QC summary, written at manifest)

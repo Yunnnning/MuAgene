@@ -790,6 +790,76 @@ def write_h5ad_safe(adata: ad.AnnData, path: Path | str) -> None:
     _write_via_tmp(lambda p: adata.write_h5ad(p), path, ".h5ad")
 
 
+# ---------------------------------------------------------------------------
+# External input references (symlink + JSON sidecar; no data copy)
+# ---------------------------------------------------------------------------
+
+def write_input_ref(
+    ref_base: Path | str,
+    source: Path | str,
+    *,
+    fmt: str,
+    role: str = "rna_raw",
+) -> None:
+    """Register an external input under the run dir without copying data.
+
+    Writes:
+      - ``<ref_base>`` — symlink to the absolute ``source`` path (read-only)
+      - ``<ref_base>.json`` — sidecar with path, format, and role
+
+    The source file is never modified.
+    """
+    ref_base = Path(ref_base)
+    source = Path(source).resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"Input ref source does not exist: {source}")
+
+    ref_base.parent.mkdir(parents=True, exist_ok=True)
+    sidecar = Path(str(ref_base) + ".json")
+
+    if ref_base.exists() or ref_base.is_symlink():
+        ref_base.unlink()
+    ref_base.symlink_to(source)
+
+    sidecar.write_text(json.dumps({
+        "path": str(source),
+        "format": fmt,
+        "role": role,
+    }, indent=2))
+
+
+def resolve_input_ref(ref_base: Path | str) -> tuple[Path, str]:
+    """Resolve an input ref symlink/sidecar to ``(absolute_path, format)``."""
+    ref_base = Path(ref_base)
+    sidecar = Path(str(ref_base) + ".json")
+
+    if sidecar.exists():
+        meta = json.loads(sidecar.read_text())
+        path = Path(meta["path"]).resolve()
+        fmt = str(meta["format"])
+        if not path.exists():
+            raise FileNotFoundError(f"Input ref source missing: {path}")
+        return path, fmt
+
+    if ref_base.is_symlink():
+        path = ref_base.resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Input ref symlink target missing: {path}")
+        return path, detect_rna_format(path)
+
+    raise FileNotFoundError(f"No input ref at {ref_base} (expected symlink or .json sidecar)")
+
+
+def has_input_ref(artifacts_dir: Path | str, name: str) -> bool:
+    """Return True when ``name`` is registered as an external input ref or legacy copy."""
+    art = Path(artifacts_dir)
+    return (
+        (art / name).exists()
+        or (art / f"{name}.json").exists()
+        or (art / f"{name}.h5ad").exists()  # pre-refactor runs
+    )
+
+
 def write_mudata_safe(mdata: Any, path: Path | str) -> None:
     """Write MuData h5mu via /tmp to avoid HDF5/NFS file-locking deadlocks."""
     _write_via_tmp(lambda p: mdata.write(str(p)), path, ".h5mu")

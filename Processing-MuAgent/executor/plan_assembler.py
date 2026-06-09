@@ -134,6 +134,13 @@ def assemble_plan(
                 "max_contamination": p(0.5, "default",
                                         "Cap per-cell rho/contamination at this fraction; "
                                         "prevents pathological over-correction on noisy cells.", "medium"),
+                "marker_genes": p(
+                    None, "pending_user_confirmation",
+                    "Optional (recommended): 5–10 marker gene symbols to visualise on t-SNE "
+                    "embeddings before and after Ambient RNA Correction. Set at plan review. "
+                    "Genes absent from the matrix are silently dropped. null = skip.",
+                    "low",
+                ),
             }
         },
         "s1_rna_qc": {

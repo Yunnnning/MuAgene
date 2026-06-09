@@ -47,6 +47,7 @@ Use this when `execution.mode` is `pbs` or `slurm`.
    - **S2 revised:** delete `internal/artifacts/s2_atac_qc/atac_qc.h5ad`, `internal/artifacts/s2_atac_qc/atac_snap.h5ad`, and `internal/artifacts/s2_atac_qc/qc_summary.json`; keep `internal/artifacts/s2_atac_qc/atac_fragments_cbf_chrnorm.tsv.gz*`, plus delete all S3 artifacts below. **Note:** `atac_snap.h5ad` may already be absent if `post_qc_review` was previously approved — the approval cleanup deletes it. The deletion step is safe if the file is missing.
    - **S3 revised:** delete `internal/artifacts/s3_doublets/rna_post_doublet.h5ad`, `internal/artifacts/s3_doublets/atac_post_doublet.h5ad`, `internal/artifacts/s3_doublets/calls.parquet`, `internal/artifacts/s3_doublets/joint_barcodes.txt`, and `internal/artifacts/s3_doublets/overlap_summary.json`.
    - Any S1 or S2 revision invalidates S3. Always delete all five S3 artifacts when S1 or S2 changes.
+   - **S1a ambient re-run:** delete `internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` and `internal/artifacts/s1a_ambient/cell_totals.parquet` alongside other S1a outputs so marker-gene t-SNE and normalization totals are recomputed from updated counts (same barcodes with changed correction would otherwise reuse stale artifacts).
 
 3. **Approve stages that must re-run.**
 
@@ -89,7 +90,7 @@ Use this when `execution.mode` is `pbs` or `slurm`.
    executor propose post_qc_review --config $CFG
    ```
 
-   This rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and checkpoint figures.
+   This rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and checkpoint figures under `figures/`.
 
 6. **Surface the updated report.**
 
@@ -121,6 +122,37 @@ Use this when `execution.mode` is `local`.
    ```
 
 6. Read `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` and relay it **verbatim**. Ask whether to approve QC or revise again.
+
+---
+
+## Marker gene expression check (post-QC entry)
+
+This section applies when the user did not provide marker genes at plan review, or wants to check a different gene set. If genes were provided at plan review, S1a generated the figure automatically and it is already embedded in the QC report — no action needed here unless the user wants to change the gene set.
+
+If `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"**, surface it to the user.
+
+**Hard rule — never pick genes yourself:**
+
+> Always ask for the user to provide the gene symbols explicitly before taking any action.
+> You must not autonomously select, suggest, look up, or test any marker gene names unless user approves.
+
+If the user wants to proceed:
+1. Ask them to list the genes they want to check. For example: "Which genes would you like to visualise? Please provide the symbols (e.g. `Cd3e Cd20 Epcam`)."
+2. Once they supply the list, run:
+   ```bash
+   executor marker-gene-check --config $CFG <gene1> <gene2> ...
+   ```
+   **Login node vs cluster:** check whether `internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` exists and the cell set is unchanged.
+   - **Cache present:** run on the **login node** — t-SNE is skipped and the pipeline opens `rna_decontaminated.h5ad` in backed (disk) mode, loading only the requested marker columns plus cached per-cell totals (`cell_totals.parquet`). This avoids loading the full counts matrix into RAM.
+   - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM/PBS job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
+   Do **not** submit a cluster job when the cache already exists unless the login node still OOMs (rare after backed mode; try a modest ~16G cluster job before 48G).
+3. Regenerate the QC report with the figure embedded:
+   ```bash
+   executor propose post_qc_review --config $CFG
+   ```
+4. Relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
+
+If the user declines the marker check or has no relevant markers, proceed to QC approval as normal.
 
 ---
 

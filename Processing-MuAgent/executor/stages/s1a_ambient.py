@@ -3,7 +3,7 @@
 Whether correction runs is dataset- and plan-driven:
 
   - `method='none'` or nuclei sample type in the plan → pass-through.
-  - `method='auto'` + `rna_raw.h5ad` exists → SoupX (raw drops for soup profile).
+  - `method='auto'` + raw input ref exists → SoupX (raw drops for soup profile).
   - `method='auto'` without raw matrix → DecontX (filtered counts only).
   - `method='decontx'` / `'soupx'` → forced backend (SoupX requires raw matrix).
 
@@ -13,6 +13,7 @@ fails — install or recreate the `grn` env rather than silently skipping.
 """
 from __future__ import annotations
 
+import gc
 import shutil
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,56 @@ def _passthrough(src: Path, dst: Path) -> None:
     shutil.copy(src, dst)
 
 
+def _compute_tsne_from_layer(
+    adata: ad.AnnData,
+    layer: str,
+    *,
+    random_state: int = 42,
+) -> np.ndarray:
+    """t-SNE on one counts layer; used once and reused for before/after panels."""
+    import scanpy as sc
+
+    counts = adata.layers[layer]
+    a = ad.AnnData(
+        X=counts.copy() if hasattr(counts, "copy") else counts,
+        obs=adata.obs,
+        var=adata.var,
+    )
+    sc.pp.normalize_total(a, target_sum=1e4)
+    sc.pp.log1p(a)
+    sc.pp.highly_variable_genes(a, n_top_genes=min(2000, a.n_vars))
+    a = a[:, a.var.highly_variable].copy()
+    # skip scale() — densifies sparse matrix; log1p-normalised PCA is sufficient for t-SNE
+    sc.pp.pca(a, n_comps=min(30, a.n_vars - 1))
+    sc.tl.tsne(a, use_rep="X_pca", random_state=random_state, n_jobs=1)
+    return np.asarray(a.obsm["X_tsne"])
+
+
+def _log1p_expr_from_layer(
+    adata: ad.AnnData,
+    genes: list[str],
+    layer: str,
+    *,
+    totals: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    """Log-normalized marker expression without copying the full matrix."""
+    layer_mtx = adata.layers[layer]
+    if totals is None:
+        totals = np.asarray(layer_mtx.sum(axis=1)).ravel().astype(float)
+    else:
+        totals = np.asarray(totals, dtype=float).ravel()
+    totals[totals == 0] = 1.0
+    scale = 1e4 / totals
+    present = [g for g in genes if g in adata.var_names]
+    out: dict[str, np.ndarray] = {}
+    for g in present:
+        idx = adata.var_names.get_loc(g)
+        x = layer_mtx[:, idx]
+        raw = x.toarray().ravel() if hasattr(x, "toarray") else np.asarray(x).ravel()
+        out[g] = np.log1p(raw.astype(float) * scale)
+    return out
+
+
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     run_dir = Path(run_dir)
     art = run_dir / "internal" / "artifacts" / "s1a_ambient"
@@ -37,7 +88,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     params_path = run_dir / "internal" / "parameters.yaml"
 
     src = run_dir / "internal" / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"
-    raw_src = run_dir / "internal" / "artifacts" / "s0_ingest" / "rna_raw.h5ad"
+    s0_art = run_dir / "internal" / "artifacts" / "s0_ingest"
     dst = art / "rna_decontaminated.h5ad"
 
     p = plan["stages"].get("s1a_ambient", {}).get("parameters", {})
@@ -48,7 +99,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     if method_choice == "none":
         chosen = "none"
     elif method_choice == "auto":
-        chosen = "soupx" if raw_src.exists() else "decontx"
+        chosen = "soupx" if _io.has_input_ref(s0_art, "rna_raw") else "decontx"
     elif method_choice in ("decontx", "soupx"):
         chosen = method_choice
     else:
@@ -82,14 +133,20 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     if chosen == "soupx":
-        if not raw_src.exists():
+        if not _io.has_input_ref(s0_art, "rna_raw"):
             raise ValueError(
-                "SoupX requested but no rna_raw.h5ad exists — supply rna_raw_path "
+                "SoupX requested but no raw RNA input ref exists — supply rna_raw_path "
                 "in run.yaml or set method=decontx/auto."
             )
-        raw_a = ad.read_h5ad(raw_src)
+        legacy_raw = s0_art / "rna_raw.h5ad"
+        if legacy_raw.exists():
+            raw_a = ad.read_h5ad(legacy_raw)
+        else:
+            raw_path, raw_fmt = _io.resolve_input_ref(s0_art / "rna_raw")
+            raw_a = _io.load_rna(raw_path, fmt=raw_fmt)
         result = _amb.run_soupx(a, raw_a, work_dir=work_dir,
                                  max_contamination=max_contam)
+        del raw_a
     else:
         result = _amb.run_decontx(a, work_dir=work_dir,
                                    max_contamination=max_contam)
@@ -135,27 +192,250 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     method={"name": f"ambient.run_{result.method.lower()}",
                             "code_ref": "executor/methods/ambient.py"})
 
+    method_label = result.method
+    pre_counts = np.asarray(a_corr.layers["counts_raw"].sum(axis=1)).ravel()
+    post_counts = np.asarray(a_corr.layers["counts"].sum(axis=1)).ravel()
+    _write_cell_totals(art, a_corr.obs_names, pre_counts, post_counts)
+    del a, result
+    gc.collect()
+
     # --- Figures ---------------------------------------------------------
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_qc_review
+        figs_dir = RunPaths(run_dir).deliv_qc_review_figures
         figs_dir.mkdir(parents=True, exist_ok=True)
         # Before/after counts comparison (per-cell totals).
-        pre_counts = np.asarray(a.layers.get("counts", a.X).sum(axis=1)).ravel()
-        post_counts = np.asarray(result.corrected_counts.sum(axis=1)).ravel()
         _fig.plot_counts_before_after(pre_counts, post_counts, out_dir=figs_dir,
                                        stem="s1a_ambient_counts_before_after",
-                                       title=f"Total counts pre vs post {result.method}")
+                                       title=f"Total counts pre vs post {method_label}")
+        marker_genes = p.get("marker_genes", {}).get("value") or []
+        if marker_genes and isinstance(marker_genes, list):
+            # One embedding from pre-correction counts; reuse coords for both rows.
+            coords = _load_or_compute_tsne(a_corr, art, run_dir=run_dir)
+            expr_pre = _log1p_expr_from_layer(a_corr, marker_genes, "counts_raw")
+            expr_post = _log1p_expr_from_layer(a_corr, marker_genes, "counts")
+            if expr_pre and expr_post:
+                plot_genes = [g for g in marker_genes if g in expr_pre and g in expr_post]
+                _fig.plot_marker_genes_tsne(
+                    coords, coords, expr_pre, expr_post,
+                    out_dir=figs_dir, stem="s1a_ambient_marker_genes",
+                    genes=plot_genes,
+                )
     except Exception as e:
         log_event(run_dir, {"stage": "s1a_ambient", "event": "plot_failed", "error": str(e)})
 
     log_event(run_dir, {"stage": "s1a_ambient", "event": "done",
-                        "method": result.method,
+                        "method": method_label,
                         "median_contamination": contam_summary["median_contamination"],
                         "n_cells": int(a_corr.n_obs)})
-    return {"method": result.method, "n_cells": int(a_corr.n_obs),
+    return {"method": method_label, "n_cells": int(a_corr.n_obs),
             "median_contamination": contam_summary["median_contamination"]}
+
+
+_TSNE_CACHE_FILE = "tsne_coords_cache.parquet"
+_CELL_TOTALS_FILE = "cell_totals.parquet"
+
+
+def _write_cell_totals(
+    art_dir: Path,
+    obs_names: list[str] | "pd.Index",
+    totals_raw: np.ndarray,
+    totals_corrected: np.ndarray,
+) -> None:
+    import pandas as pd
+
+    pd.DataFrame({
+        "obs_name": list(obs_names),
+        "total_raw": np.asarray(totals_raw, dtype="float32"),
+        "total_corrected": np.asarray(totals_corrected, dtype="float32"),
+    }).to_parquet(art_dir / _CELL_TOTALS_FILE, index=False)
+
+
+def _load_cell_totals(
+    art_dir: Path,
+    obs_names: list[str] | "pd.Index",
+) -> tuple[np.ndarray, np.ndarray] | None:
+    import pandas as pd
+
+    path = art_dir / _CELL_TOTALS_FILE
+    if not path.exists():
+        return None
+    try:
+        cached = pd.read_parquet(path)
+        if list(cached["obs_name"]) != list(obs_names):
+            return None
+        return (
+            cached["total_raw"].to_numpy(dtype=float),
+            cached["total_corrected"].to_numpy(dtype=float),
+        )
+    except Exception:
+        return None
+
+
+def _ensure_cell_totals(
+    art_dir: Path,
+    adata: ad.AnnData,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-cell layer totals, computing and caching if needed."""
+    loaded = _load_cell_totals(art_dir, adata.obs_names)
+    if loaded is not None:
+        return loaded
+    raw = np.asarray(adata.layers["counts_raw"].sum(axis=1)).ravel().astype(float)
+    corr = np.asarray(adata.layers["counts"].sum(axis=1)).ravel().astype(float)
+    _write_cell_totals(art_dir, adata.obs_names, raw, corr)
+    return raw, corr
+
+
+def _tsne_cache_matches(art_dir: Path, h5ad_path: Path) -> bool:
+    cache = art_dir / _TSNE_CACHE_FILE
+    if not cache.exists():
+        return False
+    try:
+        import pandas as pd
+
+        cached = pd.read_parquet(cache)
+        obs = ad.read_h5ad(h5ad_path, backed="r").obs_names
+        return list(cached["obs_name"]) == list(obs)
+    except Exception:
+        return False
+
+
+def _load_cached_tsne(art_dir: Path) -> np.ndarray:
+    import pandas as pd
+
+    cached = pd.read_parquet(art_dir / _TSNE_CACHE_FILE)
+    return cached[["tsne_x", "tsne_y"]].to_numpy()
+
+
+def _load_or_compute_tsne(
+    adata: "ad.AnnData",
+    art_dir: Path,
+    *,
+    random_state: int = 42,
+    run_dir: Path | str | None = None,
+    force: bool = False,
+) -> "np.ndarray":
+    """Return t-SNE coords from cache if obs_names match, otherwise recompute and cache."""
+    import pandas as pd
+
+    cache = art_dir / _TSNE_CACHE_FILE
+    if not force and cache.exists():
+        try:
+            cached = pd.read_parquet(cache)
+            if list(cached["obs_name"]) == list(adata.obs_names):
+                if run_dir is not None:
+                    log_event(run_dir, {
+                        "stage": "s1a_ambient", "event": "tsne_cache_hit",
+                        "cache": str(cache),
+                    })
+                return cached[["tsne_x", "tsne_y"]].to_numpy()
+        except Exception:
+            pass  # stale or corrupt cache — recompute
+
+    reason = "force" if force else "miss"
+    if run_dir is not None:
+        log_event(run_dir, {
+            "stage": "s1a_ambient", "event": "tsne_cache_miss",
+            "reason": reason, "cache": str(cache),
+        })
+
+    work = adata.to_memory() if getattr(adata, "isbacked", False) else adata
+    coords = _compute_tsne_from_layer(work, "counts_raw", random_state=random_state)
+    pd.DataFrame({
+        "obs_name": adata.obs_names,
+        "tsne_x": coords[:, 0].astype("float32"),
+        "tsne_y": coords[:, 1].astype("float32"),
+    }).to_parquet(cache, index=False)
+    return coords
+
+
+def run_marker_gene_check(
+    run_dir: Path | str,
+    marker_genes: list[str],
+    *,
+    force_tsne: bool = False,
+) -> dict[str, Any]:
+    """Post-hoc marker gene check triggered at QC review time.
+
+    Loads the post-correction AnnData (which carries both the raw and corrected
+    count layers), computes t-SNE on the pre-correction counts (or loads the cached
+    embedding if obs_names match), generates the before/after expression figure,
+    and updates parameters.yaml. Run ``propose post_qc_review`` afterwards to
+    refresh the QC review reports.
+    """
+    run_dir = Path(run_dir)
+    art = run_dir / "internal" / "artifacts" / "s1a_ambient"
+    params_path = run_dir / "internal" / "parameters.yaml"
+    dst = art / "rna_decontaminated.h5ad"
+
+    if not dst.exists():
+        raise FileNotFoundError(
+            f"Post-correction RNA data not found: {dst}. "
+            "S1a ambient correction must have completed before running the marker gene check."
+        )
+
+    cache_hit = not force_tsne and _tsne_cache_matches(art, dst)
+    if cache_hit:
+        a_corr = ad.read_h5ad(dst, backed="r")
+        if run_dir is not None:
+            log_event(run_dir, {
+                "stage": "s1a_ambient", "event": "tsne_cache_hit",
+                "cache": str(art / _TSNE_CACHE_FILE),
+                "backed": True,
+            })
+        coords = _load_cached_tsne(art)
+    else:
+        a_corr = ad.read_h5ad(dst)
+        coords = _load_or_compute_tsne(
+            a_corr, art, run_dir=run_dir, force=force_tsne,
+        )
+
+    if "counts_raw" not in a_corr.layers or "counts" not in a_corr.layers:
+        raise ValueError(
+            "rna_decontaminated.h5ad is missing expected layers ('counts_raw', 'counts'). "
+            "The file may have been produced by an older pipeline version."
+        )
+
+    totals_raw, totals_corr = _ensure_cell_totals(art, a_corr)
+    expr_pre = _log1p_expr_from_layer(
+        a_corr, marker_genes, "counts_raw", totals=totals_raw,
+    )
+    expr_post = _log1p_expr_from_layer(
+        a_corr, marker_genes, "counts", totals=totals_corr,
+    )
+    if getattr(a_corr, "isbacked", False) and a_corr.file is not None:
+        a_corr.file.close()
+    del a_corr
+    gc.collect()
+
+    found = [g for g in marker_genes if g in expr_pre and g in expr_post]
+    missing = [g for g in marker_genes if g not in found]
+
+    if found:
+        from .. import figures as _fig
+        from ..run_paths import RunPaths
+        figs_dir = RunPaths(run_dir).deliv_qc_review_figures
+        figs_dir.mkdir(parents=True, exist_ok=True)
+        _fig.plot_marker_genes_tsne(
+            coords, coords, expr_pre, expr_post,
+            out_dir=figs_dir, stem="s1a_ambient_marker_genes",
+            genes=found,
+        )
+
+    _prov.set_param(
+        params_path, "s1a_ambient.marker_genes", marker_genes,
+        source="user", confidence="high",
+        rationale="Marker genes requested at QC review stage.",
+    )
+
+    log_event(run_dir, {
+        "stage": "s1a_ambient", "event": "marker_gene_check_done",
+        "marker_genes": marker_genes, "found": found, "missing": missing,
+    })
+    return {"found": found, "missing": missing}
+
+
 
 
 def _n_cells(p: Path) -> int:

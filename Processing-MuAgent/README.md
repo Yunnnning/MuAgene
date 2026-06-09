@@ -24,7 +24,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 | # | CLI name | Internal stage | When | What you decide |
 |---|----------|----------------|------|-----------------|
 | **1** | **Plan review** | `plan_review` | After S0 + P2, before S1 | Approve the preprocessing plan (`pre_run/summary/plan_review.md`) |
-| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures + `checkpoint/qc_review/qc_review.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
+| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `checkpoint/qc_review/figures/` + `checkpoint/qc_review/qc_review_<run>.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
 | **3** | **Resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
 
 ## Workflow stages
@@ -56,7 +56,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 ### Preprocessing
 
 - **S1a Ambient RNA correction** — Default `method=auto` on RNA branches (SoupX if raw+filtered exist, else DecontX). Omitted on `atac_only`. Whether to run is confirmed by user at **plan review (#1)** depending on the study goal, inputs, and sample context (see [10x ambient RNA guide](https://www.10xgenomics.com/analysis-guides/introduction-to-ambient-rna-correction)).
-- **S1 RNA QC** — MAD-derived thresholds on `total_counts` / `n_genes` / `pct_counts_mt` plus a `pct_counts_ribo` ceiling, computed on decontaminated counts from S1a. Writes pre/post QC violin figures to `deliverables/checkpoint/qc_review/`. 
+- **S1 RNA QC** — MAD-derived thresholds on `total_counts` / `n_genes` / `pct_counts_mt` plus a `pct_counts_ribo` ceiling, computed on decontaminated counts from S1a. Writes pre/post QC violin figures to `deliverables/checkpoint/qc_review/figures/`.
 - **S2 ATAC QC** — Four per-cell filters:
   1. **n_fragments** — MAD-based bounds on log-scale fragment count (with an absolute floor).
   2. **TSS enrichment** — min/max bounds on SnapATAC2's TSS score.
@@ -66,8 +66,8 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
-  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_review.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_review.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large intermediate QC objects `rna_qc.h5ad`, `atac_qc.h5ad`, and `atac_snap.h5ad` are automatically deleted to free storage; `qc_summary.json` files and QC metrics parquets are preserved for report generation and threshold revision.
+  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_review_<run>.md`).
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large intermediate QC objects `rna_qc.h5ad`, `atac_qc.h5ad`, and `atac_snap.h5ad` are automatically deleted to free storage; `qc_summary.json` files and QC metrics parquets are preserved for report generation and threshold revision.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
   0. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
@@ -287,7 +287,8 @@ Per-run state lives under `run_dir` from your config — never inside the source
         context_summary.md        ← P1 output
         plan_review.md            ← plan review gate (summary + parameter appendix)
     checkpoint/
-      qc_review/                  ← QC review checkpoint (#2): figures + qc_review.md
+      qc_review/                  ← QC review checkpoint (#2): qc_review_<run>.md + qc_summary_<run>.html
+        figures/                  ← QC checkpoint plots (S1a, S1, S2, post_qc_review)
       resolution_review/          ← resolution_summary.md + resolution_review.{html,ipynb}
     post_run/                     ← flat final deliverables
       s8_umap_*.{png,pdf}         ← UMAP figures only

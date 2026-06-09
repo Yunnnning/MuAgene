@@ -214,7 +214,29 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             ),
         })
 
-    # 5. Key QC strategy
+    # 5. Marker gene expression check — explicit user confirmation required
+    marker_genes_param = param("s1a_ambient", "marker_genes")
+    mg_value = marker_genes_param.get("value")
+    mg_display = (
+        ", ".join(mg_value) if isinstance(mg_value, list) and mg_value else "not set"
+    )
+    items.append({
+        "label": "Marker gene expression check",
+        "value": mg_display,
+        "reason": (
+            "Would you like to visualise how 5–10 marker genes distribute across "
+            "cell clusters before and after Ambient RNA Correction? "
+            "If a marker gene appears at low levels ubiquitously across cells that "
+            "shouldn't express it, this is a sign of ambient RNA contamination. "
+            "After correction, expression should be clearer and more restricted to "
+            "the expected populations. "
+            "If yes, provide gene symbols (e.g. CD3E, CD20, EPCAM). "
+            "If no, leave as not set — the check is skipped."
+        ),
+        "certainty": "needs confirmation",
+    })
+
+    # 6. Key QC strategy
     sample_type = field("sample_type").get("value", "unknown")
     pct_mt_ceil = param("s1_rna_qc", "pct_mt_ceiling")
     pct_ribo_max = param("s1_rna_qc", "pct_ribo_max")

@@ -191,13 +191,19 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
    - The same content also lives at that path if the user wants to open it directly.
 
 2. On user decision:
-   - **Approve** → `executor approve plan_review --config $CFG --note "approved after review"`.
+   - **Approve** → Before running `executor approve plan_review`, check whether the plan includes ambient RNA correction (`s1a_ambient_method` is not `none`). If it does, ask:
+     "The plan includes ambient RNA correction. To evaluate marker gene expression before and after correction, please provide a list of 5 to 10 genes. You can also skip this or check marker gene expression at QC reviewing phase instead."
+     - If the user provides genes: `executor revise s1a_ambient s1a_ambient.marker_genes="[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"`. Never automatically suggest or supply gene names (see the hard rule in [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md)).
+     - If the user skips or no ambient correction is planned: proceed directly.
+     Then: `executor approve plan_review --config $CFG --note "approved after review"`.
    - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. Stage is re-set to awaiting_approval; ask if more revisions are needed before re-approving.
    - **Abort** → stop. Tell the user the run dir is intact; they can resume later by re-invoking you on the same config.
 
 ### WHAT_TO_SURFACE_BACK
 
 The **Summary** section of `plan_review.md`, verbatim (the appendix is reference detail — surface decision points and any `?` flags from the summary). Do not paraphrase values.
+
+If marker genes were stored at this step, confirm the stored gene list in one line (e.g. "Marker genes `Cd3e Cd20 Epcam` stored — the check will run automatically during ambient correction.").
 
 ---
 
@@ -209,7 +215,7 @@ The **Summary** section of `plan_review.md`, verbatim (the appendix is reference
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
-- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures and `checkpoint/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/`. They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `checkpoint/qc_review/figures/` and `checkpoint/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/` for the reports and `figures/` for plots. They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
 - **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
@@ -234,7 +240,7 @@ Approve, revise, or abort?"
         - Revise → if the current stage is `post_qc_review`, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
      e. Re-invoke the appropriate run command (see HPC section below). Continue until `manifest` completes.
 
-**QC threshold revision at `post_qc_review`:** see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, and what to surface back.
+**QC threshold revision and post-QC marker gene check:** see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, what to surface back, and the procedure for running a marker gene check at QC review when no genes were provided at planning time.
 
 2. When `manifest` finishes:
    - Read `deliverables/post_run/run_manifest.json` and extract `workflow_branch`, `outputs`.

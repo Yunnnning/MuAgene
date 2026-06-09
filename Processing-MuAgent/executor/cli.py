@@ -558,6 +558,49 @@ def _unlock_snakemake(run_dir: Path, config_path: Path) -> None:
         raise click.ClickException(f"snakemake --unlock exited with {result.returncode}")
 
 
+@main.command(name="marker-gene-check")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+@click.option(
+    "--force-tsne",
+    is_flag=True,
+    default=False,
+    help="Recompute t-SNE even when a valid cache exists.",
+)
+@click.argument("genes", nargs=-1, required=True)
+def marker_gene_check_cmd(
+    config_path: str,
+    force_tsne: bool,
+    genes: tuple[str, ...],
+) -> None:
+    """Generate before/after marker gene expression plots.
+
+    GENES is one or more gene symbols, e.g. CD3E CD20 EPCAM.
+
+    Loads the ambient-corrected AnnData, uses a cached t-SNE embedding when the
+    cell set is unchanged (or recomputes and caches it otherwise), and produces a
+    side-by-side before/after expression figure.  Run
+    `Processing-MuAgent propose post_qc_review` afterwards to embed the figure
+    in the QC report.
+    """
+    from .stages import s1a_ambient as _s1a
+    run_dir = _resolve_run_dir(config_path)
+
+    if not genes:
+        raise click.UsageError("Provide at least one gene symbol.")
+
+    gene_list = list(genes)
+    click.echo(f"Checking marker genes: {', '.join(gene_list)}")
+    result = _s1a.run_marker_gene_check(run_dir, gene_list, force_tsne=force_tsne)
+    if result["found"]:
+        click.echo(f"Plotted: {', '.join(result['found'])}")
+    if result["missing"]:
+        click.echo(f"Not found in data: {', '.join(result['missing'])}")
+    click.echo(
+        "Figure written. Run `executor propose post_qc_review --config $CFG` "
+        "to refresh QC reports."
+    )
+
+
 @main.command(name="unlock")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 def unlock_cmd(config_path: str) -> None:

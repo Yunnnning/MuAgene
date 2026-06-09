@@ -4,6 +4,7 @@ Runs after S3 doublet filtering and before S4/S5 and S6 PCA (RNA) + neighbor gra
 Generates QC figures and writes the QC review summary at
   deliverables/checkpoint/qc_review/qc_review_<run>.md
   deliverables/checkpoint/qc_review/qc_summary_<run>.html
+  deliverables/checkpoint/qc_review/figures/
 
 This is the single user-facing QC checkpoint: inspect S1/S2 QC figures, S3
 doublet histograms, and the cell-count waterfall; adjust S1/S2 thresholds or
@@ -184,7 +185,7 @@ def propose(run_dir: Path | str) -> dict[str, Any]:
     """Generate QC figures and summary markdown; return proposal content dict."""
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
-    figs_dir = rp.deliv_qc_review
+    figs_dir = rp.deliv_qc_review_figures
     figs_dir.mkdir(parents=True, exist_ok=True)
 
     figures_generated: list[str] = []

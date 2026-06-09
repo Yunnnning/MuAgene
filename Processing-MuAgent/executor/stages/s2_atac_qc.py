@@ -634,7 +634,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_qc_review
+        figs_dir = RunPaths(run_dir).deliv_qc_review_figures
         figs_dir.mkdir(parents=True, exist_ok=True)
 
         if fsd_for_fig is not None and fsd_for_fig.size:

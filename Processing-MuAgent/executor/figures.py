@@ -61,13 +61,20 @@ def _apply_style():
     })
 
 
-def save_figure(fig, out_dir: Path | str, stem: str, *, also_pdf: bool = True) -> list[Path]:
-    """Save `fig` as <stem>.png (300 dpi) and optionally <stem>.pdf. Returns list of paths."""
+def save_figure(
+    fig,
+    out_dir: Path | str,
+    stem: str,
+    *,
+    also_pdf: bool = True,
+    dpi: int | None = None,
+) -> list[Path]:
+    """Save `fig` as <stem>.png and optionally <stem>.pdf. Returns list of paths."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     png_path = out_dir / f"{stem}.png"
-    fig.savefig(png_path, dpi=FIGURE_DPI, bbox_inches="tight")
+    fig.savefig(png_path, dpi=dpi or FIGURE_DPI, bbox_inches="tight")
     paths.append(png_path)
     if also_pdf:
         pdf_path = out_dir / f"{stem}.pdf"
@@ -345,6 +352,122 @@ def plot_tss_enrichment_profile(
     fig.suptitle(TSS_PROFILE_TITLE, y=1.02)
     fig.tight_layout()
     return save_figure(fig, out_dir, stem)
+
+
+MARKER_TSNE_MAIN_TITLE = "Marker Gene Expression Before and After Ambient RNA Correction"
+MARKER_TSNE_GENE_TITLE_SIZE = 14
+MARKER_TSNE_LABEL_SIZE = 13
+MARKER_TSNE_MAIN_TITLE_SIZE = 17
+MARKER_TSNE_MAX_PER_ROW = 4
+MARKER_TSNE_BEFORE_AFTER_HSPACE = 0.26
+MARKER_TSNE_BAND_HSPACE = 0.38
+MARKER_TSNE_COLUMN_WSPACE = 0.50
+MARKER_TSNE_DPI = 150
+
+
+def _marker_gene_bands(genes: list[str]) -> list[list[str]]:
+    """Chunk genes into bands of at most MARKER_TSNE_MAX_PER_ROW, stacked vertically."""
+    return [
+        genes[i: i + MARKER_TSNE_MAX_PER_ROW]
+        for i in range(0, len(genes), MARKER_TSNE_MAX_PER_ROW)
+    ]
+
+
+def _draw_marker_tsne_cell(
+    ax,
+    coords: np.ndarray,
+    vals: np.ndarray,
+    *,
+    gene: str,
+    row_label: str | None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    sc = ax.scatter(
+        coords[:, 0], coords[:, 1], c=vals, cmap="Purples",
+        s=6, alpha=0.8, linewidths=0, rasterized=True,
+    )
+    plt.colorbar(sc, ax=ax, pad=0.04, fraction=0.040)
+    ax.set_title(gene, fontsize=MARKER_TSNE_GENE_TITLE_SIZE, fontweight="bold")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    if row_label is not None:
+        ax.set_ylabel(
+            row_label,
+            fontsize=MARKER_TSNE_LABEL_SIZE,
+            fontweight="bold",
+        )
+
+
+def plot_marker_genes_tsne(
+    tsne_before: np.ndarray,
+    tsne_after: np.ndarray,
+    expr_before: "dict[str, np.ndarray]",
+    expr_after: "dict[str, np.ndarray]",
+    *,
+    out_dir: "Path | str",
+    stem: str,
+    genes: list[str] | None = None,
+) -> "list[Path]":
+    """Before/after marker expression on t-SNE; stacks bands of up to 4 genes."""
+    _apply_style()
+    import matplotlib.gridspec as gridspec
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    sns.set_theme(style="ticks")
+
+    if genes is None:
+        plot_genes = [g for g in expr_before if g in expr_after]
+    else:
+        plot_genes = [g for g in genes if g in expr_before and g in expr_after]
+    if not plot_genes:
+        return []
+
+    bands = _marker_gene_bands(plot_genes)
+    n_bands = len(bands)
+    fig_w = 4.5 * MARKER_TSNE_MAX_PER_ROW
+    fig_h = 4.2 * n_bands + 1.0
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    outer = gridspec.GridSpec(n_bands, 1, figure=fig, hspace=MARKER_TSNE_BAND_HSPACE)
+
+    tsne_before = np.asarray(tsne_before)
+    tsne_after = np.asarray(tsne_after)
+    row_specs = (
+        (tsne_before, expr_before, "Before"),
+        (tsne_after, expr_after, "After"),
+    )
+
+    for band_idx, band_genes in enumerate(bands):
+        inner = gridspec.GridSpecFromSubplotSpec(
+            2, MARKER_TSNE_MAX_PER_ROW,
+            subplot_spec=outer[band_idx],
+            hspace=MARKER_TSNE_BEFORE_AFTER_HSPACE,
+            wspace=MARKER_TSNE_COLUMN_WSPACE,
+        )
+        for col, gene in enumerate(band_genes):
+            for row, (coords, expr_map, row_label) in enumerate(row_specs):
+                ax = fig.add_subplot(inner[row, col])
+                vals = np.asarray(expr_map[gene], dtype=float)
+                _draw_marker_tsne_cell(
+                    ax, coords, vals,
+                    gene=gene,
+                    row_label=row_label if col == 0 else None,
+                )
+
+    fig.suptitle(
+        MARKER_TSNE_MAIN_TITLE,
+        fontsize=MARKER_TSNE_MAIN_TITLE_SIZE,
+        fontweight="bold",
+        y=0.995,
+    )
+    fig.subplots_adjust(top=0.945)
+    # PNG only at moderate DPI — large multi-panel figures OOM on login nodes when
+    # saving 300 dpi PNG + vector PDF together (22+ subplots for 11 genes).
+    return save_figure(
+        fig, out_dir, stem, also_pdf=False, dpi=MARKER_TSNE_DPI,
+    )
 
 
 def plot_counts_before_after(pre: np.ndarray, post: np.ndarray, *,

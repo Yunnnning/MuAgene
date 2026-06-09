@@ -37,7 +37,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 > Three user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan before heavy compute.
-> 2. **QC review** — inspect QC figures and `checkpoint/qc_review/qc_review_<run>.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the union doublet removal policy.
+> 2. **QC review** — inspect QC figures in `checkpoint/qc_review/figures/` and `checkpoint/qc_review/qc_review_<run>.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the union doublet removal policy.
 > 3. **Resolution review** — choose Leiden resolution from sweep metrics. On **separate**, this sets final cluster labels; on **paired**, diagnostic labels for UMAP only.
 >
 > Ready to send me the paths?
@@ -51,7 +51,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 > Three user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan.
-> 2. **QC review** — inspect QC figures and `checkpoint/qc_review/qc_review_<run>.md`; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
+> 2. **QC review** — inspect QC figures in `checkpoint/qc_review/figures/` and `checkpoint/qc_review/qc_review_<run>.md`; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
 > 3. **Resolution review** — choose resolution for final cluster labels in the processed output.
 >
 > Ready to send me the paths?
