@@ -193,7 +193,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 2. On user decision:
    - **Approve** → Before running `executor approve plan_review`, check whether the plan includes ambient RNA correction (`s1a_ambient_method` is not `none`). If it does, ask:
      "The plan includes ambient RNA correction. To evaluate marker gene expression before and after correction, please provide a list of 5 to 10 genes. You can also skip this or check marker gene expression at QC reviewing phase instead."
-     - If the user provides genes: `executor revise s1a_ambient s1a_ambient.marker_genes="[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"`. Never automatically suggest or supply gene names (see the hard rule in [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md)).
+     - If the user provides genes: `executor revise s1a_ambient s1a_ambient.marker_genes="[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"`. Genes are stored in `parameters.yaml` and plotted automatically during S1a ambient correction (same resolution path as other revised parameters). Never automatically suggest or supply gene names (see the hard rule in [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md)).
      - If the user skips or no ambient correction is planned: proceed directly.
      Then: `executor approve plan_review --config $CFG --note "approved after review"`.
    - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. Stage is re-set to awaiting_approval; ask if more revisions are needed before re-approving.
@@ -240,7 +240,7 @@ Approve, revise, or abort?"
         - Revise → if the current stage is `post_qc_review`, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
      e. Re-invoke the appropriate run command (see HPC section below). Continue until `manifest` completes.
 
-**QC threshold revision and post-QC marker gene check:** see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, what to surface back, and the procedure for running a marker gene check at QC review when no genes were provided at planning time.
+**QC threshold revision and post-QC marker gene check:** see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, what to surface back, and the procedure for running a marker gene check at QC review when no genes were provided at planning time. At QC review, `marker-gene-check` plots and refreshes reports in one command; use `--plot-only` to skip report refresh.
 
 2. When `manifest` finishes:
    - Read `deliverables/post_run/run_manifest.json` and extract `workflow_branch`, `outputs`.

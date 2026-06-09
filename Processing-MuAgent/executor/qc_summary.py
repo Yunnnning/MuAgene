@@ -742,6 +742,12 @@ def _ambient_section(
         ["pre-correction total counts (sum)", pre_total],
         ["post-correction total counts (sum)", post_total],
     ]
+    _marker_genes = _param(params, "s1a_ambient.marker_genes")
+    _marker_missing = _param(params, "s1a_ambient.marker_genes_missing") or []
+    if _marker_genes:
+        rows.append(["marker genes checked", ", ".join(_marker_genes)])
+    if _marker_missing:
+        rows.append(["marker genes not found", ", ".join(_marker_missing)])
 
     fig = _fig_block(
         run_dir, "s1a_ambient_counts_before_after",
@@ -760,23 +766,41 @@ def _ambient_section(
     # Suggest marker gene check when correction ran but no figure was produced.
     from .run_paths import RunPaths as _RunPaths
     _marker_fig = _RunPaths(run_dir).resolve_qc_figure("s1a_ambient_marker_genes")
-    _marker_genes_set = bool(_param(params, "s1a_ambient.marker_genes"))
     notice = ""
-    if not _marker_fig.is_file() and not _marker_genes_set:
-        if median_rho is not None and float(median_rho) > _HIGH_CONTAM_THRESHOLD:
-            _contam_note = (
-                f" The median contamination fraction is **{_fmt(median_rho)}**, "
-                "which is elevated — marker gene inspection is strongly recommended."
+    if not _marker_fig.is_file():
+        if not _marker_genes:
+            if median_rho is not None and float(median_rho) > _HIGH_CONTAM_THRESHOLD:
+                _contam_note = (
+                    f" The median contamination fraction is **{_fmt(median_rho)}**, "
+                    "which is elevated — marker gene inspection is strongly recommended."
+                )
+            else:
+                _contam_note = ""
+            notice = (
+                "\n"
+                "**Marker gene expression check not performed.**"
+                f"{_contam_note} "
+                "To assess whether ambient correction improved marker specificity, "
+                "provide cell-type marker gene symbols at the QC review stage "
+                "(e.g. `CD3E`, `CD20`, `EPCAM`) to generate before/after t-SNE expression plots.\n"
+            )
+        elif _marker_missing and len(_marker_missing) == len(_marker_genes):
+            notice = (
+                "\n"
+                "**Marker gene expression check failed:** none of the requested gene symbols "
+                f"({', '.join(_marker_genes)}) were found in the expression matrix.\n"
             )
         else:
-            _contam_note = ""
+            notice = (
+                "\n"
+                "**Marker gene expression figure missing** despite a prior marker check. "
+                "Re-run `marker-gene-check` or regenerate the figure.\n"
+            )
+    elif _marker_missing:
         notice = (
             "\n"
-            "**Marker gene expression check not performed.**"
-            f"{_contam_note} "
-            "To assess whether ambient correction improved marker specificity, "
-            "provide cell-type marker gene symbols at the QC review stage "
-            "(e.g. `CD3E`, `CD20`, `EPCAM`) to generate before/after t-SNE expression plots.\n"
+            f"**Note:** the following requested marker genes were not found in the matrix: "
+            f"{', '.join(_marker_missing)}.\n"
         )
 
     return (

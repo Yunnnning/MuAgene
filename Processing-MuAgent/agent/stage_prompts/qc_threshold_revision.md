@@ -142,15 +142,12 @@ If the user wants to proceed:
    ```bash
    executor marker-gene-check --config $CFG <gene1> <gene2> ...
    ```
+   This **plots the figure and refreshes QC reports in one command** (no separate `propose post_qc_review` step). Use `--plot-only` when iterating on layout without updating the markdown/HTML reports.
    **Login node vs cluster:** check whether `internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` exists and the cell set is unchanged.
    - **Cache present:** run on the **login node** — t-SNE is skipped and the pipeline opens `rna_decontaminated.h5ad` in backed (disk) mode, loading only the requested marker columns plus cached per-cell totals (`cell_totals.parquet`). This avoids loading the full counts matrix into RAM.
    - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM/PBS job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
    Do **not** submit a cluster job when the cache already exists unless the login node still OOMs (rare after backed mode; try a modest ~16G cluster job before 48G).
-3. Regenerate the QC report with the figure embedded:
-   ```bash
-   executor propose post_qc_review --config $CFG
-   ```
-4. Relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
+3. Relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
 
 If the user declines the marker check or has no relevant markers, proceed to QC approval as normal.
 

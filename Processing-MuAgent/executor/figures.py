@@ -74,6 +74,10 @@ def save_figure(
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     png_path = out_dir / f"{stem}.png"
+    if not also_pdf:
+        pdf_stale = out_dir / f"{stem}.pdf"
+        if pdf_stale.exists():
+            pdf_stale.unlink()
     fig.savefig(png_path, dpi=dpi or FIGURE_DPI, bbox_inches="tight")
     paths.append(png_path)
     if also_pdf:

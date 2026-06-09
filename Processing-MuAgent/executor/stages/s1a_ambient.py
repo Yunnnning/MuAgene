@@ -14,6 +14,7 @@ fails — install or recreate the `grn` env rather than silently skipping.
 from __future__ import annotations
 
 import gc
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,32 @@ from ..methods import ambient as _amb
 
 def _passthrough(src: Path, dst: Path) -> None:
     shutil.copy(src, dst)
+
+
+def resolve_marker_genes(params_path: Path, plan_params: dict) -> list[str]:
+    """Return marker gene list; parameters.yaml wins over frozen plan (like S2/S3)."""
+    v = _prov.get_value(params_path, "s1a_ambient.marker_genes", None)
+    if v:
+        return list(v) if isinstance(v, list) else []
+    entry = plan_params.get("marker_genes", {})
+    mg = entry.get("value") if isinstance(entry, dict) else None
+    return list(mg) if isinstance(mg, list) and mg else []
+
+
+def _match_genes_to_var(adata: ad.AnnData, genes: list[str]) -> tuple[list[str], list[str]]:
+    """Map requested symbols to var_names (case-insensitive); preserve request order."""
+    lower_map = {str(v).lower(): str(v) for v in adata.var_names}
+    found: list[str] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+    for g in genes:
+        canon = lower_map.get(str(g).lower())
+        if canon is None:
+            missing.append(g)
+        elif canon not in seen:
+            found.append(canon)
+            seen.add(canon)
+    return found, missing
 
 
 def _compute_tsne_from_layer(
@@ -50,7 +77,6 @@ def _compute_tsne_from_layer(
     sc.pp.log1p(a)
     sc.pp.highly_variable_genes(a, n_top_genes=min(2000, a.n_vars))
     a = a[:, a.var.highly_variable].copy()
-    # skip scale() — densifies sparse matrix; log1p-normalised PCA is sufficient for t-SNE
     sc.pp.pca(a, n_comps=min(30, a.n_vars - 1))
     sc.tl.tsne(a, use_rep="X_pca", random_state=random_state, n_jobs=1)
     return np.asarray(a.obsm["X_tsne"])
@@ -71,9 +97,9 @@ def _log1p_expr_from_layer(
         totals = np.asarray(totals, dtype=float).ravel()
     totals[totals == 0] = 1.0
     scale = 1e4 / totals
-    present = [g for g in genes if g in adata.var_names]
+    found, _ = _match_genes_to_var(adata, genes)
     out: dict[str, np.ndarray] = {}
-    for g in present:
+    for g in found:
         idx = adata.var_names.get_loc(g)
         x = layer_mtx[:, idx]
         raw = x.toarray().ravel() if hasattr(x, "toarray") else np.asarray(x).ravel()
@@ -95,7 +121,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     method_choice = p.get("method", {}).get("value", "auto")
     max_contam = float(p.get("max_contamination", {}).get("value", 1.0))
 
-    # --- Resolve method ---------------------------------------------------
     if method_choice == "none":
         chosen = "none"
     elif method_choice == "auto":
@@ -108,7 +133,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             f"'soupx' — got {method_choice!r}."
         )
 
-    # --- Pass-through path -----------------------------------------------
     if chosen == "none":
         _passthrough(src, dst)
         _prov.set_param(params_path, "s1a_ambient.method", "none",
@@ -118,7 +142,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                             "reason": "method=none"})
         return {"method": "none", "n_cells": _n_cells(dst)}
 
-    # --- DecontX / SoupX -------------------------------------------------
     a = ad.read_h5ad(src)
     if a.n_obs == 0 or a.n_vars == 0:
         _passthrough(src, dst)
@@ -152,9 +175,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                    max_contamination=max_contam)
 
     a_corr = _amb.apply_correction(a, result)
+    _wipe_marker_caches(art)
     _io.write_h5ad_safe(a_corr, dst)
 
-    # --- Persist diagnostics + provenance --------------------------------
     contam = np.asarray(result.contamination, dtype=float)
     contam_summary = {
         "method": result.method,
@@ -164,8 +187,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         "n_high_contamination": int((contam > 0.20).sum()),
         "max_contamination_cap": max_contam,
     }
-    import json as _json
-    _io.write_text_safe(art / "summary.json", _json.dumps(
+    _io.write_text_safe(art / "summary.json", json.dumps(
         {**contam_summary, **result.summary}, indent=2, default=str))
     import pandas as pd
     _io.write_parquet_safe(pd.DataFrame({"barcode": result.barcodes,
@@ -199,29 +221,23 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     del a, result
     gc.collect()
 
-    # --- Figures ---------------------------------------------------------
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
         figs_dir = RunPaths(run_dir).deliv_qc_review_figures
         figs_dir.mkdir(parents=True, exist_ok=True)
-        # Before/after counts comparison (per-cell totals).
         _fig.plot_counts_before_after(pre_counts, post_counts, out_dir=figs_dir,
                                        stem="s1a_ambient_counts_before_after",
                                        title=f"Total counts pre vs post {method_label}")
-        marker_genes = p.get("marker_genes", {}).get("value") or []
-        if marker_genes and isinstance(marker_genes, list):
-            # One embedding from pre-correction counts; reuse coords for both rows.
-            coords = _load_or_compute_tsne(a_corr, art, run_dir=run_dir)
-            expr_pre = _log1p_expr_from_layer(a_corr, marker_genes, "counts_raw")
-            expr_post = _log1p_expr_from_layer(a_corr, marker_genes, "counts")
-            if expr_pre and expr_post:
-                plot_genes = [g for g in marker_genes if g in expr_pre and g in expr_post]
-                _fig.plot_marker_genes_tsne(
-                    coords, coords, expr_pre, expr_post,
-                    out_dir=figs_dir, stem="s1a_ambient_marker_genes",
-                    genes=plot_genes,
-                )
+        marker_genes = resolve_marker_genes(params_path, p)
+        if marker_genes:
+            _plot_marker_genes(
+                run_dir, marker_genes,
+                force_tsne=False,
+                write_params=False,
+                refresh_qc=False,
+                adata_in_memory=a_corr,
+            )
     except Exception as e:
         log_event(run_dir, {"stage": "s1a_ambient", "event": "plot_failed", "error": str(e)})
 
@@ -235,6 +251,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
 
 _TSNE_CACHE_FILE = "tsne_coords_cache.parquet"
 _CELL_TOTALS_FILE = "cell_totals.parquet"
+_MARKER_CHECK_FILE = "marker_gene_check.json"
+
+
+def _wipe_marker_caches(art_dir: Path) -> None:
+    for name in (_TSNE_CACHE_FILE, _CELL_TOTALS_FILE, _MARKER_CHECK_FILE):
+        (art_dir / name).unlink(missing_ok=True)
 
 
 def _write_cell_totals(
@@ -277,7 +299,6 @@ def _ensure_cell_totals(
     art_dir: Path,
     adata: ad.AnnData,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return per-cell layer totals, computing and caching if needed."""
     loaded = _load_cell_totals(art_dir, adata.obs_names)
     if loaded is not None:
         return loaded
@@ -295,8 +316,12 @@ def _tsne_cache_matches(art_dir: Path, h5ad_path: Path) -> bool:
         import pandas as pd
 
         cached = pd.read_parquet(cache)
-        obs = ad.read_h5ad(h5ad_path, backed="r").obs_names
-        return list(cached["obs_name"]) == list(obs)
+        a = ad.read_h5ad(h5ad_path, backed="r")
+        try:
+            return list(cached["obs_name"]) == list(a.obs_names)
+        finally:
+            if a.file is not None:
+                a.file.close()
     except Exception:
         return False
 
@@ -309,14 +334,13 @@ def _load_cached_tsne(art_dir: Path) -> np.ndarray:
 
 
 def _load_or_compute_tsne(
-    adata: "ad.AnnData",
+    adata: ad.AnnData,
     art_dir: Path,
     *,
     random_state: int = 42,
     run_dir: Path | str | None = None,
     force: bool = False,
-) -> "np.ndarray":
-    """Return t-SNE coords from cache if obs_names match, otherwise recompute and cache."""
+) -> np.ndarray:
     import pandas as pd
 
     cache = art_dir / _TSNE_CACHE_FILE
@@ -331,7 +355,7 @@ def _load_or_compute_tsne(
                     })
                 return cached[["tsne_x", "tsne_y"]].to_numpy()
         except Exception:
-            pass  # stale or corrupt cache — recompute
+            pass
 
     reason = "force" if force else "miss"
     if run_dir is not None:
@@ -350,46 +374,53 @@ def _load_or_compute_tsne(
     return coords
 
 
-def run_marker_gene_check(
+def _write_marker_check_artifact(art: Path, found: list[str], missing: list[str]) -> None:
+    _io.write_text_safe(
+        art / _MARKER_CHECK_FILE,
+        json.dumps({"found": found, "missing": missing}, indent=2),
+    )
+
+
+def _plot_marker_genes(
     run_dir: Path | str,
     marker_genes: list[str],
     *,
     force_tsne: bool = False,
+    write_params: bool = True,
+    refresh_qc: bool = False,
+    adata_in_memory: ad.AnnData | None = None,
 ) -> dict[str, Any]:
-    """Post-hoc marker gene check triggered at QC review time.
-
-    Loads the post-correction AnnData (which carries both the raw and corrected
-    count layers), computes t-SNE on the pre-correction counts (or loads the cached
-    embedding if obs_names match), generates the before/after expression figure,
-    and updates parameters.yaml. Run ``propose post_qc_review`` afterwards to
-    refresh the QC review reports.
-    """
+    """Load data, extract expression, plot marker t-SNE figure; optionally refresh QC."""
     run_dir = Path(run_dir)
     art = run_dir / "internal" / "artifacts" / "s1a_ambient"
     params_path = run_dir / "internal" / "parameters.yaml"
     dst = art / "rna_decontaminated.h5ad"
 
-    if not dst.exists():
+    if adata_in_memory is None and not dst.exists():
         raise FileNotFoundError(
             f"Post-correction RNA data not found: {dst}. "
             "S1a ambient correction must have completed before running the marker gene check."
         )
 
-    cache_hit = not force_tsne and _tsne_cache_matches(art, dst)
-    if cache_hit:
-        a_corr = ad.read_h5ad(dst, backed="r")
-        if run_dir is not None:
+    owns_adata = adata_in_memory is None
+    if adata_in_memory is not None:
+        a_corr = adata_in_memory
+        coords = _load_or_compute_tsne(a_corr, art, run_dir=run_dir, force=force_tsne)
+    else:
+        cache_hit = not force_tsne and _tsne_cache_matches(art, dst)
+        if cache_hit:
+            a_corr = ad.read_h5ad(dst, backed="r")
             log_event(run_dir, {
                 "stage": "s1a_ambient", "event": "tsne_cache_hit",
                 "cache": str(art / _TSNE_CACHE_FILE),
                 "backed": True,
             })
-        coords = _load_cached_tsne(art)
-    else:
-        a_corr = ad.read_h5ad(dst)
-        coords = _load_or_compute_tsne(
-            a_corr, art, run_dir=run_dir, force=force_tsne,
-        )
+            coords = _load_cached_tsne(art)
+        else:
+            a_corr = ad.read_h5ad(dst)
+            coords = _load_or_compute_tsne(
+                a_corr, art, run_dir=run_dir, force=force_tsne,
+            )
 
     if "counts_raw" not in a_corr.layers or "counts" not in a_corr.layers:
         raise ValueError(
@@ -397,6 +428,7 @@ def run_marker_gene_check(
             "The file may have been produced by an older pipeline version."
         )
 
+    found, missing = _match_genes_to_var(a_corr, marker_genes)
     totals_raw, totals_corr = _ensure_cell_totals(art, a_corr)
     expr_pre = _log1p_expr_from_layer(
         a_corr, marker_genes, "counts_raw", totals=totals_raw,
@@ -404,13 +436,12 @@ def run_marker_gene_check(
     expr_post = _log1p_expr_from_layer(
         a_corr, marker_genes, "counts", totals=totals_corr,
     )
-    if getattr(a_corr, "isbacked", False) and a_corr.file is not None:
-        a_corr.file.close()
-    del a_corr
-    gc.collect()
 
-    found = [g for g in marker_genes if g in expr_pre and g in expr_post]
-    missing = [g for g in marker_genes if g not in found]
+    if owns_adata and getattr(a_corr, "isbacked", False) and a_corr.file is not None:
+        a_corr.file.close()
+    if owns_adata:
+        del a_corr
+        gc.collect()
 
     if found:
         from .. import figures as _fig
@@ -423,23 +454,65 @@ def run_marker_gene_check(
             genes=found,
         )
 
+    _write_marker_check_artifact(art, found, missing)
+
+    if write_params:
+        _prov.set_param(
+            params_path, "s1a_ambient.marker_genes", marker_genes,
+            source="user", confidence="high",
+            rationale="Marker genes requested at QC review stage.",
+        )
+    elif not _prov.get_value(params_path, "s1a_ambient.marker_genes", None):
+        _prov.set_param(
+            params_path, "s1a_ambient.marker_genes", marker_genes,
+            source="inferred", confidence="high",
+            rationale="Marker genes from preprocessing plan; plotted during S1a.",
+            method={"name": "s1a.resolve_marker_genes",
+                    "code_ref": "executor/stages/s1a_ambient.py"},
+        )
     _prov.set_param(
-        params_path, "s1a_ambient.marker_genes", marker_genes,
-        source="user", confidence="high",
-        rationale="Marker genes requested at QC review stage.",
+        params_path, "s1a_ambient.marker_genes_missing", missing,
+        source="derived", confidence="high",
+        rationale="Requested symbols absent from the expression matrix.",
+        method={"name": "s1a.match_genes_to_var",
+                "code_ref": "executor/stages/s1a_ambient.py"},
     )
 
     log_event(run_dir, {
         "stage": "s1a_ambient", "event": "marker_gene_check_done",
         "marker_genes": marker_genes, "found": found, "missing": missing,
     })
+
+    if refresh_qc:
+        from . import post_qc_review as _pqr
+        _pqr.propose(run_dir)
+
     return {"found": found, "missing": missing}
 
 
+def run_marker_gene_check(
+    run_dir: Path | str,
+    marker_genes: list[str],
+    *,
+    force_tsne: bool = False,
+    refresh_qc: bool = True,
+) -> dict[str, Any]:
+    """Post-hoc marker gene check at QC review: plot and optionally refresh QC reports."""
+    return _plot_marker_genes(
+        run_dir, marker_genes,
+        force_tsne=force_tsne,
+        write_params=True,
+        refresh_qc=refresh_qc,
+    )
 
 
 def _n_cells(p: Path) -> int:
     try:
-        return int(ad.read_h5ad(p, backed="r").n_obs)
+        a = ad.read_h5ad(p, backed="r")
+        try:
+            return int(a.n_obs)
+        finally:
+            if a.file is not None:
+                a.file.close()
     except Exception:
         return 0

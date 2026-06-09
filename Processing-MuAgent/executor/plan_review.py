@@ -215,11 +215,11 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         })
 
     # 5. Marker gene expression check — explicit user confirmation required
-    marker_genes_param = param("s1a_ambient", "marker_genes")
-    mg_value = marker_genes_param.get("value")
-    mg_display = (
-        ", ".join(mg_value) if isinstance(mg_value, list) and mg_value else "not set"
-    )
+    from .stages.s1a_ambient import resolve_marker_genes
+
+    plan_s1a_params = plan.get("stages", {}).get("s1a_ambient", {}).get("parameters", {})
+    mg_list = resolve_marker_genes(paths.parameters_yaml, plan_s1a_params)
+    mg_display = ", ".join(mg_list) if mg_list else "not set"
     items.append({
         "label": "Marker gene expression check",
         "value": mg_display,

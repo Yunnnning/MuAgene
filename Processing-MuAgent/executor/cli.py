@@ -566,21 +566,25 @@ def _unlock_snakemake(run_dir: Path, config_path: Path) -> None:
     default=False,
     help="Recompute t-SNE even when a valid cache exists.",
 )
+@click.option(
+    "--plot-only",
+    is_flag=True,
+    default=False,
+    help="Write the figure only; do not refresh QC review reports.",
+)
 @click.argument("genes", nargs=-1, required=True)
 def marker_gene_check_cmd(
     config_path: str,
     force_tsne: bool,
+    plot_only: bool,
     genes: tuple[str, ...],
 ) -> None:
     """Generate before/after marker gene expression plots.
 
-    GENES is one or more gene symbols, e.g. CD3E CD20 EPCAM.
+    GENES is one or more gene symbols, e.g. CD3E CD20 EPCAM (matched case-insensitively).
 
-    Loads the ambient-corrected AnnData, uses a cached t-SNE embedding when the
-    cell set is unchanged (or recomputes and caches it otherwise), and produces a
-    side-by-side before/after expression figure.  Run
-    `Processing-MuAgent propose post_qc_review` afterwards to embed the figure
-    in the QC report.
+    Uses a cached t-SNE embedding when the cell set is unchanged. By default, QC review
+    reports are refreshed automatically after plotting. Pass ``--plot-only`` to skip that.
     """
     from .stages import s1a_ambient as _s1a
     run_dir = _resolve_run_dir(config_path)
@@ -590,15 +594,20 @@ def marker_gene_check_cmd(
 
     gene_list = list(genes)
     click.echo(f"Checking marker genes: {', '.join(gene_list)}")
-    result = _s1a.run_marker_gene_check(run_dir, gene_list, force_tsne=force_tsne)
+    result = _s1a.run_marker_gene_check(
+        run_dir, gene_list, force_tsne=force_tsne, refresh_qc=not plot_only,
+    )
     if result["found"]:
         click.echo(f"Plotted: {', '.join(result['found'])}")
+    else:
+        click.echo("No marker genes found in matrix; figure not written.")
     if result["missing"]:
         click.echo(f"Not found in data: {', '.join(result['missing'])}")
-    click.echo(
-        "Figure written. Run `executor propose post_qc_review --config $CFG` "
-        "to refresh QC reports."
-    )
+    if result["found"]:
+        if plot_only:
+            click.echo("Figure written (--plot-only: QC reports unchanged).")
+        else:
+            click.echo("QC reports refreshed.")
 
 
 @main.command(name="unlock")
