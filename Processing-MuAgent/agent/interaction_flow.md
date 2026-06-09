@@ -104,10 +104,11 @@ Once the user answers, in order:
 4. **Configure execution mode** (if not already stated in Step 1/2 conversation):
    - If the user said **local** (or gave no preference and you're not on a cluster login node): `executor configure-execution --config $CFG --mode local`.
    - If the user said **HPC** (or you're on a login node with `qsub`/`sbatch` and the dataset is large):
-     a. Run `executor hpc-info` and surface the detected scheduler, available queues/partitions, suggested project/account, and any `PMA_*` vars already in the environment.
-     b. Ask the user to confirm or override: queue/partition, project/account (if required on their site), optional `PMA_RESOURCES_SCALE`.
-     c. Write settings: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ...` (or `--slurm-partition` / `--slurm-account`). This records `execution.mode` in `parameters.yaml` and writes `deliverables/pre_run/config/hpc.env`.
-   - Do not guess queue/partition/project/account — use `hpc-info` suggestions and ask the user to confirm.
+     a. Run `executor hpc-info` (parse silently) and measure file sizes with `ls -la` on the input paths the user already provided.
+     b. Apply the file-size → scale heuristic from `inputs_intake.md` Section 4 to derive a recommended `PMA_RESOURCES_SCALE`. Select `suggested_partition` / `suggested_account` from `hpc-info` as the candidate values.
+     c. Present ONE concrete recommendation (partition + account + scale) with a brief rationale and invite confirmation or override. Do not enumerate the full partition list.
+     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ...` (or `--slurm-partition` / `--slurm-account`). This records `execution.mode` in `parameters.yaml` and writes `deliverables/pre_run/config/hpc.env`.
+   - Do not invent partition/account names — use `hpc-info` results. If `hpc-info` returns empty lists or a file is unreachable, see fallback rules in `inputs_intake.md` Section 4.
 
 5. Invoke `executor declare-branch <paired|separate|rna_only|atac_only> --config $CFG`.
    - S0 will confirm this assertion against its own pairing detection; if they mismatch, S0 raises with a clear diff — relay it verbatim.
@@ -177,7 +178,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
         file paths the user supplied and look for signs of mismatched sources
         (e.g., a filtered matrix paired with unfiltered outputs, samples from a different experiment, or need barcode translations).
      d. Based on (a)–(c), propose the most likely root cause and concrete
-        corrective steps (e.g., "re-run with the filtered RNA matrix at
+        corrective steps (e.g., "re-run with the filtered matrix at
         `filtered_feature_bc_matrix/`, convert bardoes based on direct rules, or supply a `barcode_translation_path` if the two modalities were processed with different whitelists").
      Include this diagnosis and suggestions in the intro paragraph rather
      than a generic warning. Do not apply this check for `rna_only`,
@@ -191,7 +192,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 
 2. On user decision:
    - **Approve** → `executor approve plan_review --config $CFG --note "approved after review"`.
-   - **Revise a parameter** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. Stage is re-set to awaiting_approval; ask if more revisions are needed before re-approving.
+   - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. Stage is re-set to awaiting_approval; ask if more revisions are needed before re-approving.
    - **Abort** → stop. Tell the user the run dir is intact; they can resume later by re-invoking you on the same config.
 
 ### WHAT_TO_SURFACE_BACK
@@ -265,18 +266,22 @@ on the login node after S0 finishes.
 If the user has not said whether to run locally or on HPC, ask alongside the
 biological-context question. When they choose HPC:
 
-1. Run `executor hpc-info` on the login node.
-2. Surface detected scheduler, available queues/partitions, suggested project or
-   account (from env vars or recent jobs), and any `PMA_*` vars already set.
-3. Ask the user to confirm or override queue/partition, project/account, and
-   optional `PMA_RESOURCES_SCALE`.
-4. Run `executor configure-execution --config $CFG --mode pbs|slurm ...` to write:
+1. Run `executor hpc-info` on the login node. Parse silently.
+2. Measure file sizes with `ls -la` on the input paths the user already supplied.
+3. Apply the file-size → scale heuristic (see `inputs_intake.md` Section 4) to derive
+   `PMA_RESOURCES_SCALE`. Use `suggested_partition` / `suggested_account` from
+   `hpc-info` as the candidate partition and account.
+4. Present ONE concrete recommendation to the user:
+   partition + account + scale, with a one-line rationale (file size → estimated cells → scale).
+   Invite confirmation or override. Do not enumerate the full partition list unless the user asks.
+5. Run `executor configure-execution --config $CFG --mode pbs|slurm ...` to write:
    - `deliverables/pre_run/config/hpc.env` — shell snippet sourced by runner scripts
    - `deliverables/pre_run/config/site.config` — YAML platform description consumed by Execution-MuAgent
    - Records `execution.mode` in `parameters.yaml`.
 
-Do not invent queue or account names — probe with `hpc-info`, suggest, and wait
-for confirmation.
+Do not invent partition/account names — use `hpc-info` results only. If `hpc-info` returns
+empty lists, ask the user directly. If a file is unreachable, note it and ask for scale manually.
+See `inputs_intake.md` Section 4 for the full heuristic table and edge-case fallback rules.
 
 ### HPC run phases (after plan review)
 

@@ -123,23 +123,59 @@ executor configure-execution --config $CFG --mode local
 
 **HPC (PBS or SLURM):**
 
-1. Run `executor hpc-info` and paste the JSON back to the user in a readable summary:
-   - `detected_scheduler` (`pbs` | `slurm`)
-   - available `pbs.queues` or `slurm.partitions`
-   - `pbs.suggested_project` / `slurm.suggested_account` (if any)
-   - `current_env` — any `PMA_*` vars already exported
-2. Ask the user to confirm or override:
-   - PBS: queue (+ project code if their site requires `-P`)
-   - SLURM: partition (+ account if required)
-   - optional `PMA_RESOURCES_SCALE`
-3. Write settings once confirmed:
+1. Run `executor hpc-info`. Parse the JSON silently — do not dump the raw JSON to the user.
+
+2. Measure input file sizes. For every path the user already provided this turn, run:
+   ```bash
+   ls -la <path>
+   ```
+   If the path is a directory (MEX format), measure `matrix.mtx.gz` inside it:
+   ```bash
+   ls -la <rna_dir>/matrix.mtx.gz
+   ```
+   If a path is unreachable (permission error, NFS timeout, file not found), note it and apply the fallback rules below.
+
+3. Apply the scale heuristic silently:
+
+   **RNA inputs** (`.h5`, `matrix.mtx.gz`, `.h5ad`):
+   | File size        | Estimated cells | Recommended `PMA_RESOURCES_SCALE` |
+   |------------------|-----------------|-----------------------------------|
+   | < 100 MB         | ~1–10 k         | 1                                 |
+   | 100 MB – 500 MB  | ~10–50 k        | 2                                 |
+   | > 500 MB         | ~50 k+          | 4                                 |
+
+   **ATAC inputs** (`fragments.tsv.gz`):
+   | File size       | Relative size | Recommended `PMA_RESOURCES_SCALE` |
+   |-----------------|---------------|-----------------------------------|
+   | < 300 MB        | small         | 1                                 |
+   | 300 MB – 1 GB   | medium        | 2                                 |
+   | > 1 GB          | large         | 4                                 |
+
+   When both modalities are present, take the **maximum** of the two recommended scales.
+
+   **Fallback rules:**
+   - File unreachable → note it in the recommendation, ask the user to confirm or supply scale manually.
+   - `hpc-info` returns empty `pbs.queues` / `slurm.partitions` → note "no partitions detected", ask the user to supply the value directly.
+   - `hpc-info` returns no `suggested_account` / `suggested_project` → omit from recommendation; ask if the site requires one.
+
+4. Present ONE concrete recommendation to the user. Example format:
+   > Based on your RNA input (~180 MB, ~10–50 k cells), I recommend:
+   > - **Partition:** gpu (detected from your cluster)
+   > - **Account:** project_abc (detected from environment)
+   > - **Scale:** `PMA_RESOURCES_SCALE=2`
+   >
+   > Does this look right, or would you like to change any of these?
+
+   Adapt the wording to what was actually detected. Do not enumerate the full partition or account list unless the user asks — just state the chosen values with a one-line rationale.
+
+5. Write settings once the user confirms (or overrides):
    ```
    executor configure-execution --config $CFG --mode pbs \
        --pbs-queue <queue> --pbs-project <project>
    ```
    (or `--mode slurm --slurm-partition ... --slurm-account ...`)
 
-Do **not** guess queue/partition/project/account — use `hpc-info` suggestions and wait for user confirmation. If `hpc-info` returns empty lists, ask the user for the values directly.
+Do **not** invent partition/account names — use `hpc-info` results only. If `hpc-info` returns empty lists, ask the user for the values directly.
 
 ### 5. Declare the branch
 

@@ -103,6 +103,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     ctx = _load_json(paths.artifact("p1_context", "context_extraction.json"))
     ingest = _load_json(paths.artifact("s0_ingest", "validation_report.json"))
     plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+    pairing = ingest.get("pairing", {})
 
     def field(name: str) -> dict[str, Any]:
         return ctx.get("fields", {}).get(name, {})
@@ -117,11 +118,34 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
 
     # 2. Dataset type / modality
     modality = field("modality_type")
+    _pdeclared = pairing.get("declared", "")
+    _pcommitted = pairing.get("committed", "")
+    _pconfidence = pairing.get("confidence", "")
+    _branch_conflict = bool(_pdeclared and _pcommitted and _pdeclared != _pcommitted)
+    if modality.get("status") == "explicit":
+        _dt_certainty = "certain"
+        _dt_value = modality.get("value", "unknown")
+        _dt_reason = modality.get("rationale", "")
+    elif _branch_conflict:
+        _dt_certainty = "conflict"
+        _dt_value = modality.get("value", "unknown")
+        _dt_reason = (
+            f"Declared as '{_pdeclared}' but S0 investigation committed '{_pcommitted}'. "
+            + modality.get("rationale", "")
+        ).strip()
+    elif _pconfidence == "high":
+        _dt_certainty = "certain"
+        _dt_value = plan.get("workflow_branch", modality.get("value", "unknown"))
+        _dt_reason = _pairing_review_reason(pairing)
+    else:
+        _dt_certainty = "needs confirmation"
+        _dt_value = modality.get("value", "unknown")
+        _dt_reason = modality.get("rationale", "")
     items.append({
         "label": "Detected dataset type",
-        "value": modality.get("value", "unknown"),
-        "reason": modality.get("rationale", ""),
-        "certainty": "certain" if modality.get("status") == "explicit" else "needs confirmation",
+        "value": _dt_value,
+        "reason": _dt_reason,
+        "certainty": _dt_certainty,
     })
 
     organism = field("organism")
@@ -141,12 +165,15 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     })
 
     # 3. Pairing
-    pairing = ingest.get("pairing", {})
     items.append({
         "label": "Pairing (RNA ↔ ATAC)",
         "value": f"{pairing.get('status', 'unknown')} (overlap={pairing.get('overlap', 0):.2%})",
         "reason": _pairing_review_reason(pairing),
-        "certainty": "certain" if pairing.get("confidence") == "high" else "needs confirmation",
+        "certainty": (
+            "conflict" if _branch_conflict
+            else "certain" if pairing.get("confidence") == "high"
+            else "needs confirmation"
+        ),
     })
 
     # 4. Ambient RNA correction (S1a) — confirm at plan review
@@ -259,7 +286,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "value": policy_val,
             "detail": _paired_doublet_policy_detail(policy_val),
             "reason": "Paired multiome always uses union: remove if either detector flags.",
-            "certainty": "certain",
+            "certainty": "needs confirmation",
         })
     elif branch == "separate":
         detail = [
@@ -276,7 +303,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "detail": detail,
             "reason": ("separate branch: modalities are independent samples with disjoint barcodes; "
                        "each modality's doublets are removed by its own detector."),
-            "certainty": "certain",
+            "certainty": "needs confirmation",
         })
     elif branch == "rna_only":
         rna_thr_note = ""
@@ -286,7 +313,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "label": "Doublet removal policy",
             "value": f"Scrublet only (fixed score threshold{rna_thr_note})",
             "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
-            "certainty": "certain",
+            "certainty": "needs confirmation",
         })
     elif branch == "atac_only":
         atac_thr_note = ""
@@ -296,7 +323,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "label": "Doublet removal policy",
             "value": f"SnapATAC2 scrublet only (fixed score threshold{atac_thr_note})",
             "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
-            "certainty": "certain",
+            "certainty": "needs confirmation",
         })
 
     # 6. Clustering
@@ -307,7 +334,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         "label": "Clustering strategy",
         "value": f"Leiden sweep {grid.get('value', [])} → stable-region knee (RNA={rna_tilt.get('value', '?')}, ATAC={atac_tilt.get('value', '?')})",
         "reason": "Per-modality resolution picked from a stability plateau, not a single-metric optimum.",
-        "certainty": "certain",
+        "certainty": "needs confirmation",
     })
 
     # 7. Output location
@@ -350,7 +377,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         "label": "Missing / uncertain info",
         "value": "; ".join(parts) if parts else "none",
         "reason": "Gaps or uncertainty flagged during biological context intake.",
-        "certainty": "certain" if not parts else "needs confirmation",
+        "certainty": "conflict" if conflicts else ("certain" if not parts else "needs confirmation"),
     })
 
     return items
@@ -430,7 +457,7 @@ def _execution_review_items(run_dir: Path, plan: dict[str, Any]) -> list[dict[st
 def _render_concise_section(items: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for it in items:
-        tag = "✓" if it["certainty"] == "certain" else "?"
+        tag = {"certain": "✓", "conflict": "⚠"}.get(it["certainty"], "?")
         lines.append(f"- **{it['label']}** [{tag} {it['certainty']}]")
         lines.append(f"  - value: `{it['value']}`")
         for detail_line in it.get("detail", []):

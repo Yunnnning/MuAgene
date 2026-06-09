@@ -286,6 +286,7 @@ def status(config_path: str, watch: bool, interval: float) -> None:
         _print(_stage_states(paths))
         return
 
+    sys.stdout.reconfigure(line_buffering=True)
     last: list[tuple[str, str, str]] | None = None
     while True:
         states = _stage_states(paths)
@@ -293,6 +294,9 @@ def status(config_path: str, watch: bool, interval: float) -> None:
             click.echo(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
             _print(states)
             last = states
+        else:
+            active = next((task for _, task, st in states if st == "in_progress"), "idle")
+            click.echo(f"[{time.strftime('%H:%M:%S')}] {active}")
         if any(st == "failed" for _, _, st in states):
             click.echo("\n→ a step failed; inspect logs under "
                        f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
@@ -391,6 +395,7 @@ def hpc_status(config_path: str, watch: bool, interval: float) -> None:
         _print(_stage_states(paths))
         return
 
+    sys.stdout.reconfigure(line_buffering=True)
     last: list[tuple[str, str, str]] | None = None
     while True:
         states = _stage_states(paths)
@@ -398,6 +403,16 @@ def hpc_status(config_path: str, watch: bool, interval: float) -> None:
             click.echo(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
             _print(states)
             last = states
+        else:
+            snapshot = _sp.load_hpc_monitor_state(paths)
+            ms = (snapshot.get("monitor_state") or {}) if snapshot else {}
+            health = ms.get("health", "unknown")
+            silence = ms.get("silence_intervals", "?")
+            tolerance = ms.get("tolerance_n", "?")
+            active = next((task for _, task, st in states if st == "in_progress"), "idle")
+            click.echo(
+                f"[{time.strftime('%H:%M:%S')}] {active} | {health} | silence {silence}/{tolerance}"
+            )
         if any(st == "failed" for _, _, st in states):
             click.echo("\n→ a step failed; inspect logs under "
                        f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
@@ -462,7 +477,7 @@ def supervisor_restart(config_path: str, kill_existing: bool) -> None:
         "supervisor_pid": pid, "supervisor_log": log,
     })
     click.echo(f"Supervisor restarted (PID {pid}), logging to {log}")
-    click.echo(f"Monitor: Processing-MuAgent hpc-status --watch --config {paths.run_yaml}")
+    click.echo(f"Monitor: conda run --no-capture-output -n grn python -m executor.cli hpc-status --watch --config {paths.run_yaml}")
 
 
 @main.command(name="plan-review")
@@ -865,7 +880,7 @@ def submit(config_path: str, executor: str, target: str | None,
         click.echo(
             "\nThe supervisor daemon runs kill-on-hang protection for this job. "
             "It survives SSH disconnect (unless the site uses KillUserProcesses=yes).\n"
-            f"Monitor: Processing-MuAgent hpc-status --watch --config {paths.run_yaml}"
+            f"Monitor: conda run --no-capture-output -n grn python -m executor.cli hpc-status --watch --config {paths.run_yaml}"
         )
     else:
         m = _re.search(r"(?:head-job|job[_-]id)[:\s]+(\S+)", ea_result.get("stdout", ""))

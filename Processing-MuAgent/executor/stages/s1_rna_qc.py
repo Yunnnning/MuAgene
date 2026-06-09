@@ -93,14 +93,10 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
          f"{pct_mt_k}*MAD above median(pct_counts_mt); clamped to [{pct_mt_floor}, {pct_mt_ceil}]"),
         ("s1_rna_qc.pct_counts_ribo_max", float(pct_ribo_max),
          "Soft ribosomal-protein ceiling (filters extreme stress/dying cells)."),
-        ("s1_rna_qc.n_mt_genes_detected", n_mt,
-         "Number of variables flagged as mitochondrial (sanity check for prefix detection)."),
-        ("s1_rna_qc.n_ribo_genes_detected", n_ribo,
-         "Number of variables flagged as ribosomal protein (Rps/Rpl/Mrps/Mrpl)."),
     ]:
         _prov.set_param(params_path, key, value,
                         source="derived", confidence="high", rationale=rat,
-                        method={"name": "mad_thresholds" if "mt" in key or "min" in key or "max" in key else "var_prefix_detection",
+                        method={"name": "mad_thresholds",
                                 "code_ref": "executor/methods/mad_thresholds.py"})
 
     # Apply filters
@@ -164,6 +160,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     log_event(run_dir, {"stage": "s1_rna_qc", "event": "done",
                          "n_cells_pre": result["n_cells_pre"],
                          "n_cells_post": result["n_cells_post"],
+                         "n_mt_genes_detected": n_mt,
+                         "n_ribo_genes_detected": n_ribo,
                          "thresholds": {"total_counts": [c_lo, c_hi],
                                          "n_genes": [g_lo, g_hi],
                                          "pct_counts_mt_max": pct_mt_upper}})

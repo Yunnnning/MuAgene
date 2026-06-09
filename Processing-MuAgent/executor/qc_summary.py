@@ -144,8 +144,6 @@ def _rna_threshold_table(params: dict[str, Any], rm: dict[str, Any]) -> str:
              _rm_count(rm, "pct_counts_mt")],
             ["pct_counts_ribo_max", _param(params, "s1_rna_qc.pct_counts_ribo_max"),
              _rm_count(rm, "pct_counts_ribo")],
-            ["n_mt_genes_detected", _param(params, "s1_rna_qc.n_mt_genes_detected"), ""],
-            ["n_ribo_genes_detected", _param(params, "s1_rna_qc.n_ribo_genes_detected"), ""],
             ["multiple_metrics", "—", _rm_count(rm, "multiple_metrics")],
             ["total_removed", "—", _rm_count(rm, "total_removed")],
         ],
