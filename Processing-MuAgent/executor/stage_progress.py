@@ -280,7 +280,21 @@ def _child_job_to_rule(paths: RunPaths, job_id: str) -> str | None:
 
 
 def _load_monitor_kill_action(paths: RunPaths) -> dict | None:
-    """Parse the latest HPC monitor kill record written by Execution-MuAgent."""
+    """Return the HPC monitor kill record written by Execution-MuAgent.
+
+    Reads the structured ``kill_action`` field from latest_snapshot.json (the single
+    machine contract). Falls back to parsing the ``## Kill Action`` block in
+    latest_report.md only when the snapshot has no ``kill_action`` key — transitional
+    support for a snapshot written by an older daemon.
+    """
+    snapshot = load_hpc_monitor_state(paths)
+    if snapshot is not None and "kill_action" in snapshot:
+        payload = snapshot.get("kill_action")
+        if not isinstance(payload, dict) or not payload.get("attempted"):
+            return None
+        return payload
+
+    # transitional: pre-structured-snapshot daemon — parse the debug markdown.
     report_path = paths.run_dir / "internal" / "hpc_monitor" / "latest_report.md"
     if not report_path.is_file():
         return None
@@ -520,6 +534,22 @@ def load_hpc_monitor_state(paths: RunPaths) -> dict | None:
         return json.loads(snapshot_path.read_text(errors="replace"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def load_hpc_findings(paths: RunPaths) -> list[dict]:
+    """Return the current-check findings list from latest_snapshot.json.
+
+    Each entry is ``{"severity", "code", "message"}`` as written by the
+    Execution-MuAgent daemon. Empty list when absent — Processing renders findings
+    from this structured data, never from latest_report.md prose.
+    """
+    snapshot = load_hpc_monitor_state(paths)
+    if not snapshot:
+        return []
+    findings = snapshot.get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [f for f in findings if isinstance(f, dict)]
 
 
 def load_latest_hpc_submission(paths: RunPaths) -> dict | None:

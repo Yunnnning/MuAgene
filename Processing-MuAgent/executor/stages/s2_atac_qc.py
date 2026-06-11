@@ -667,7 +667,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "frag_size_distr_post_failed",
                              "error": str(e)})
 
-    # Figures: (1) fragment-size distribution, (2) TSS enrichment profile,
+    # Figures: (1) TSS enrichment profile, (2) fragment-size distribution,
     #          (3) FRiP histogram with threshold line.
     try:
         from .. import figures as _fig
@@ -679,7 +679,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             _fig.plot_fragment_size_distribution(
                 fsd_for_fig, out_dir=figs_dir,
                 stem="s2_atac_qc_fragment_size_distribution",
-                title="fragment size distribution (post-filtering)",
+                title="Fragment size distribution (post-filtering)",
                 distr_after=fsd_after if (fsd_after is not None and fsd_after.size) else None,
             )
 

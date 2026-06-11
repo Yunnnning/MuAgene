@@ -802,9 +802,9 @@ def _rna_section(
 
     figs = (
         _fig_block(run_dir, "s1_rna_qc_violin_pre",
-                   caption="RNA QC metrics before filtering.", render=render)
+                   caption="RNA violin plots (pre-filtering).", render=render)
         + _fig_block(run_dir, "s1_rna_qc_violin_post",
-                      caption="RNA QC metrics after filtering.", render=render)
+                      caption="RNA violin plots (post-filtering).", render=render)
     )
     return (
         "## RNA quality filtering\n"
@@ -864,17 +864,17 @@ def _atac_section(
     peak_note = f"\n_Peak source for FRiP: {peak_source}._\n" if peak_source else ""
 
     from .figures import FRIP_DISTRIBUTION_TITLE, TSS_PROFILE_CAPTION, TSS_PROFILE_TITLE
+    fig_tss = _fig_block(
+        run_dir, "s2_atac_qc_tss_enrichment_profile",
+        caption=f"{TSS_PROFILE_TITLE}; {TSS_PROFILE_CAPTION}",
+        render=render,
+    )
     fig_fsd_frip = _fig_pair_block(
         run_dir,
         ("s2_atac_qc_fragment_size_distribution",
          "Fragment size distribution (post-filtering); cells passing all S2 ATAC QC filters."),
         ("s2_atac_qc_frip_histogram",
          f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold."),
-        render=render,
-    )
-    fig_tss = _fig_block(
-        run_dir, "s2_atac_qc_tss_enrichment_profile",
-        caption=f"{TSS_PROFILE_TITLE}; {TSS_PROFILE_CAPTION}",
         render=render,
     )
     return (
@@ -892,8 +892,8 @@ def _atac_section(
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
         f"{warn_block}"
-        + fig_fsd_frip
         + fig_tss
+        + fig_fsd_frip
     )
 
 
@@ -1400,8 +1400,8 @@ def _html_rna_section(
     stats = _md_table(["metric", "mean", "median", "min", "max"], stat_rows) if stat_rows else ""
 
     plots = (
-        _html_figure(run_dir, "s1_rna_qc_violin_pre", "RNA QC metrics before filtering.")
-        + _html_figure(run_dir, "s1_rna_qc_violin_post", "RNA QC metrics after filtering.")
+        _html_figure(run_dir, "s1_rna_qc_violin_pre", "RNA violin plots (pre-filtering).")
+        + _html_figure(run_dir, "s1_rna_qc_violin_post", "RNA violin plots (post-filtering).")
     )
     intro = (
         "Removes outliers and low-quality cells using MAD-based bounds on total UMI "
@@ -1457,21 +1457,21 @@ def _html_atac_section(
         + _qc_filter_count_lines(n_pre, n_post, import_note=import_note)
     )
     from .figures import FRIP_DISTRIBUTION_TITLE, TSS_PROFILE_CAPTION, TSS_PROFILE_TITLE
-    plot_fsd = _html_figure(
-        run_dir, "s2_atac_qc_fragment_size_distribution",
-        "Fragment size distribution (post-filtering); cells passing all S2 ATAC QC filters.",
-    )
     plot_tss = _html_figure(
         run_dir, "s2_atac_qc_tss_enrichment_profile",
         f"{TSS_PROFILE_TITLE}; {TSS_PROFILE_CAPTION}",
+    )
+    plot_fsd = _html_figure(
+        run_dir, "s2_atac_qc_fragment_size_distribution",
+        "Fragment size distribution (post-filtering); cells passing all S2 ATAC QC filters.",
     )
     plot_frip = _html_figure(
         run_dir, "s2_atac_qc_frip_histogram",
         f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold.",
     )
     fsd_frip_pair = "".join(p for p in (plot_fsd, plot_frip) if p)
-    pair_row = f'<div class="qc-plot-pair">{fsd_frip_pair}</div>' if fsd_frip_pair else ""
     tss_row = f'<div class="qc-plots-below">{plot_tss}</div>' if plot_tss else ""
+    pair_row = f'<div class="qc-plot-pair">{fsd_frip_pair}</div>' if fsd_frip_pair else ""
     peak_note = f"\n_Peak source for FRiP: {peak_source}._\n" if peak_source else ""
     return (
         '<section class="qc-section qc-atac">'
@@ -1481,7 +1481,7 @@ def _html_atac_section(
         f"{_md_html(thresholds + peak_note + chr(10) + chr(10) + _REMOVAL_NOTE)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
-        f"{pair_row}{tss_row}"
+        f"{tss_row}{pair_row}"
         "</section>"
     )
 

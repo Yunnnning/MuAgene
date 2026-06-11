@@ -122,14 +122,14 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             "pct_counts_mt": a.obs["pct_counts_mt"].to_numpy(),
             "pct_counts_ribo": a.obs["pct_counts_ribo"].to_numpy(),
         }, out_dir=figs_dir, stem="s1_rna_qc_violin_pre",
-            title="RNA QC — pre-filter")
+            title="RNA violin plots (pre-filtering)")
         _fig.plot_qc_violin({
             "n_genes": a_f.obs["n_genes_by_counts"].to_numpy(),
             "total_counts": a_f.obs["total_counts"].to_numpy(),
             "pct_counts_mt": a_f.obs["pct_counts_mt"].to_numpy(),
             "pct_counts_ribo": a_f.obs["pct_counts_ribo"].to_numpy(),
         }, out_dir=figs_dir, stem="s1_rna_qc_violin_post",
-            title="RNA QC — post-filter")
+            title="RNA violin plots (post-filtering)")
     except Exception as e:
         log_event(run_dir, {"stage": "s1_rna_qc", "event": "plot_failed", "error": str(e)})
 

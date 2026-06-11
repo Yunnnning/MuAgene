@@ -325,17 +325,17 @@ def status(config_path: str, watch: bool, interval: float) -> None:
 
 @main.command(name="hpc-status")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-@click.option("--watch", is_flag=True,
-              help="Poll until a review gate needs approval, a step fails or is cancelled, "
-                   "or the pipeline completes.")
-@click.option("--interval", type=float, default=15.0,
-              help="Poll interval in seconds when --watch is set.")
-def hpc_status(config_path: str, watch: bool, interval: float) -> None:
-    """Show HPC job health (monitor state) and per-step pipeline state.
+def hpc_status(config_path: str) -> None:
+    """Report HPC job health, monitor findings, and per-step pipeline state (one-shot).
 
-    Reads Execution-MuAgent's latest_snapshot.json for health/silence/tolerance
-    and latest_submission.json for the active job, then prints per-step state.
-    Use --watch to poll until something actionable happens.
+    This is Processing-MuAgent's single window onto the Execution-MuAgent supervision
+    daemon, which is the sole monitor. It reads only structured JSON
+    (latest_snapshot.json + latest_submission.json) — health, silence/tolerance,
+    findings, kill_action, and supervisor liveness — and prints once, then exits.
+
+    There is no poll loop: the daemon does the monitoring. After `submit`, report this
+    status, then wait (non-blocking) for the daemon's completion signal — monitor.pid
+    removed or a review gate awaiting approval — and report again.
     """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
@@ -387,55 +387,42 @@ def hpc_status(config_path: str, watch: bool, interval: float) -> None:
                     f"    Processing-MuAgent supervisor-restart --config {paths.run_yaml}"
                 )
 
+    def _print_findings() -> None:
+        findings = _sp.load_hpc_findings(paths)
+        if not findings:
+            return
+        click.echo("")
+        click.echo("--- Monitor findings (latest check) ---")
+        for f in findings:
+            severity = str(f.get("severity", "info")).upper()
+            click.echo(f"  [{severity}] {f.get('code', '?')}: {f.get('message', '')}")
+
     def _print(states: list[tuple[str, str, str]]) -> None:
         click.echo("")
         click.echo("--- HPC monitor ---")
         _print_hpc_header()
+        _print_findings()
         click.echo("")
         click.echo("--- Pipeline state ---")
         for label, task, st in states:
             click.echo(f"  {label:18s}  {task:30s}  {st}")
 
-    if not watch:
-        _print(_stage_states(paths))
-        return
+    states = _stage_states(paths)
+    _print(states)
 
-    sys.stdout.reconfigure(line_buffering=True)
-    last: list[tuple[str, str, str]] | None = None
-    while True:
-        states = _stage_states(paths)
-        if states != last:
-            click.echo(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
-            _print(states)
-            last = states
-        else:
-            snapshot = _sp.load_hpc_monitor_state(paths)
-            ms = (snapshot.get("monitor_state") or {}) if snapshot else {}
-            health = ms.get("health", "unknown")
-            silence = ms.get("silence_intervals", "?")
-            tolerance = ms.get("tolerance_n", "?")
-            active = next((task for _, task, st in states if st == "in_progress"), "idle")
-            click.echo(
-                f"[{time.strftime('%H:%M:%S')}] {active} | {health} | silence {silence}/{tolerance}"
-            )
-        if any(st == "failed" for _, _, st in states):
-            click.echo("\n→ a step failed; inspect logs under "
-                       f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
-                       "then fix and `submit` again (resume target is inferred).")
-            return
-        if any(st == "cancelled" for _, _, st in states):
-            click.echo("\n→ a step was cancelled by the HPC monitor; see "
-                       f"{paths.run_dir / 'internal' / 'hpc_monitor' / 'latest_report.md'} "
-                       "for the confirmed-dead reason. Re-`submit` to resume.")
-            return
-        if any(st == "awaiting_approval" for _, _, st in states):
-            click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
-                       "`Processing-MuAgent approve <stage>` (e.g. qc_review, resolution_review).")
-            return
-        if paths.run_manifest_json.exists():
-            click.echo("\n→ run_manifest.json present; pipeline complete.")
-            return
-        time.sleep(max(2.0, interval))
+    # One-shot guidance toward the next action (no poll loop — the daemon monitors).
+    if any(st == "cancelled" for _, _, st in states):
+        click.echo("\n→ a step was cancelled by the HPC monitor (see the kill_action / "
+                   "confirmed-dead reason above). Fix the cause and re-`submit` to resume.")
+    elif any(st == "failed" for _, _, st in states):
+        click.echo("\n→ a step failed; inspect logs under "
+                   f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
+                   "then fix and `submit` again (resume target is inferred).")
+    elif any(st == "awaiting_approval" for _, _, st in states):
+        click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
+                   "`Processing-MuAgent approve <stage>` (e.g. qc_review, resolution_review).")
+    elif paths.run_manifest_json.exists():
+        click.echo("\n→ run_manifest.json present; pipeline complete.")
 
 
 @main.command(name="supervisor-restart")
@@ -482,7 +469,7 @@ def supervisor_restart(config_path: str, kill_existing: bool) -> None:
         "supervisor_pid": pid, "supervisor_log": log,
     })
     click.echo(f"Supervisor restarted (PID {pid}), logging to {log}")
-    click.echo(f"Monitor: conda run --no-capture-output -n grn python -m executor.cli hpc-status --watch --config {paths.run_yaml}")
+    click.echo(f"Report status: Processing-MuAgent hpc-status --config {paths.run_yaml}")
 
 
 @main.command(name="plan-review")
@@ -961,9 +948,13 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
         click.echo(f"  log:        {submitted_log_path}")
         click.echo(f"  supervisor: PID {pid}, log → {mon_log}")
         click.echo(
-            "\nThe supervisor daemon runs kill-on-hang protection for this job. "
-            "It survives SSH disconnect (unless the site uses KillUserProcesses=yes).\n"
-            f"Monitor: conda run --no-capture-output -n grn python -m executor.cli hpc-status --watch --config {paths.run_yaml}"
+            "\nThe supervisor daemon is the sole monitor (kill-on-hang) and runs in "
+            "the background; it survives SSH disconnect (unless the site uses "
+            "KillUserProcesses=yes). Do not run a watch loop — report its status on "
+            "demand and act when it signals (job terminal, or a review gate awaiting):\n"
+            f"  Report status: Processing-MuAgent hpc-status --config {paths.run_yaml}\n"
+            "The daemon signals completion by removing internal/hpc_monitor/monitor.pid; "
+            "a review gate shows as 'awaiting_approval'."
         )
     else:
         m = _re.search(r"(?:head-job|job[_-]id)[:\s]+(\S+)", ea_result.get("stdout", ""))

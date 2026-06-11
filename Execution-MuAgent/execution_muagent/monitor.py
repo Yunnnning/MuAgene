@@ -1024,20 +1024,48 @@ def _monitor_state_dict(monitor_state: "MonitorState") -> dict[str, Any]:
     }
 
 
+def _findings_dicts(findings: "list[MonitorFinding] | None") -> list[dict[str, Any]]:
+    return [
+        {"severity": f.severity, "code": f.code, "message": f.message}
+        for f in (findings or [])
+    ]
+
+
 def _persist_snapshot(
     submission: Submission,
     snapshot: dict[str, Any],
     monitor_state: "MonitorState | None",
+    findings: "list[MonitorFinding] | None" = None,
+    cancel_result: dict[str, Any] | None = None,
 ) -> Path:
-    """Write latest_snapshot.json (snapshot + monitor_state) for Processing to read.
+    """Write latest_snapshot.json — the single structured contract for Processing.
 
-    Called on every check — including healthy, finding-free ones — so Processing's
-    hpc-status never reads stale health.
+    Called on every check (healthy, finding-free, or unhealthy) so Processing's
+    hpc-status never reads stale state. The snapshot carries everything Processing
+    needs as structured data: scheduler/log progress, ``monitor_state`` (health,
+    silence, investigation, verified_stages), the current-check ``findings`` list,
+    and the ``kill_action``. Processing must never parse ``latest_report.md`` prose —
+    that file is a daemon-internal debug/audit log only.
+
+    ``kill_action`` is sticky: once a kill is recorded it is preserved on subsequent
+    finding-free checks, so a cancelled-step verdict survives until the monitor loop
+    exits.
     """
     full_state: dict[str, Any] = dict(snapshot)
     if monitor_state is not None:
         full_state["monitor_state"] = _monitor_state_dict(monitor_state)
+    full_state["findings"] = _findings_dicts(findings)
     state_path = run_monitor_dir(submission.run_dir) / "latest_snapshot.json"
+    if cancel_result is not None:
+        full_state["kill_action"] = cancel_result
+    else:
+        prior_kill: dict[str, Any] | None = None
+        if state_path.is_file():
+            try:
+                prior_kill = json.loads(state_path.read_text(errors="replace")).get("kill_action")
+            except (json.JSONDecodeError, OSError):
+                prior_kill = None
+        full_state["kill_action"] = prior_kill
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(full_state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return state_path
@@ -1057,8 +1085,9 @@ def write_report(
     text = render_report(snapshot, findings, cancel_result, monitor_state)
     latest = run_monitor_dir(submission.run_dir) / "latest_report.md"
     latest.write_text(text, encoding="utf-8")
-    # Persist full snapshot + monitor state so Processing-MuAgent can read health.
-    _persist_snapshot(submission, snapshot, monitor_state)
+    # Persist full snapshot + monitor state + structured findings/kill_action so
+    # Processing-MuAgent reads everything from JSON (never from this markdown).
+    _persist_snapshot(submission, snapshot, monitor_state, findings, cancel_result)
     if not record_history:
         return latest
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -1398,7 +1427,7 @@ def monitor_once(
             record_history=record_history,
         )
     else:
-        _persist_snapshot(submission, snapshot, state)
+        _persist_snapshot(submission, snapshot, state, findings, cancel_result)
 
     new_state = replace(state, previous_finding_codes=finding_codes)
     return snapshot, findings, cancel_result, report_path, new_state
