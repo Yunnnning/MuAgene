@@ -226,6 +226,12 @@ def hpc_info() -> None:
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--mode", "mode", required=True, type=EXECUTOR_CHOICE,
               help="Execution backend: local, pbs, or slurm.")
+@click.option("--confirmed-by-user/--not-confirmed", "confirmed_by_user",
+              default=False,
+              help="Record that the USER explicitly confirmed this execution mode "
+                   "(local vs HPC). `run`/`submit` refuse to launch any compute job "
+                   "until this is set. Never pass it on the user's behalf without "
+                   "having actually confirmed.")
 @click.option("--pbs-queue", default=None, help="PBS queue name (PMA_PBS_QUEUE).")
 @click.option("--pbs-project", default=None, help="PBS project code (PMA_PBS_PROJECT).")
 @click.option("--slurm-partition", default=None, help="SLURM partition (PMA_SLURM_PARTITION).")
@@ -236,6 +242,7 @@ def hpc_info() -> None:
 def configure_execution(
     config_path: str,
     mode: str,
+    confirmed_by_user: bool,
     pbs_queue: str | None,
     pbs_project: str | None,
     slurm_partition: str | None,
@@ -248,12 +255,56 @@ def configure_execution(
     paths = RunPaths(run_dir)
     paths.ensure()
 
+    params_path = str(paths.parameters_yaml)
+    prior_mode = provenance.get_value(params_path, "execution.mode", None)
+    prior_confirmed = provenance.get_value(params_path, "execution.user_confirmed", False)
+
     provenance.set_param(
-        str(paths.parameters_yaml),
+        params_path,
         "execution.mode", mode,
         source="user", confidence="high",
         rationale=f"Execution backend set via configure-execution --mode {mode}.",
     )
+
+    # Explicit, auditable record of whether the USER confirmed this execution mode.
+    # `run`/`submit` refuse to launch any compute job until this is true (see
+    # `_enforce_execution_mode_gate`). Recording the mode alone is not enough —
+    # the agent must never silently choose local vs HPC.
+    #
+    # Re-config semantics: an explicit --confirmed-by-user always confirms. Without
+    # it, confirmation is PRESERVED only when the mode is unchanged (e.g. bumping
+    # --resources-scale on the same backend) — so resource tweaks don't silently
+    # un-confirm a run. A *changed* mode (or one never confirmed) resets to
+    # unconfirmed, forcing a fresh user confirmation.
+    if confirmed_by_user:
+        confirmed = True
+        confirmed_rationale = ("User explicitly confirmed the execution mode via "
+                               "configure-execution --confirmed-by-user.")
+    elif prior_confirmed and prior_mode == mode:
+        confirmed = True
+        confirmed_rationale = (f"Confirmation preserved across re-config of unchanged "
+                               f"mode {mode!r} (no --confirmed-by-user needed for "
+                               "resource-only changes).")
+    else:
+        confirmed = False
+        confirmed_rationale = ("Execution mode recorded WITHOUT explicit user "
+                               "confirmation (--not-confirmed / default, or mode "
+                               "changed); run/submit will refuse compute.")
+    provenance.set_param(
+        params_path,
+        "execution.user_confirmed", confirmed,
+        source="user", confidence="high",
+        rationale=confirmed_rationale,
+    )
+    if not confirmed:
+        click.echo(
+            "NOTE: execution mode recorded but NOT user-confirmed. `run`/`submit` "
+            "will refuse to launch any compute job until you confirm local vs HPC "
+            "with the user and re-run:\n"
+            f"  Processing-MuAgent configure-execution --config {paths.run_yaml} "
+            f"--mode {mode} --confirmed-by-user",
+            err=True,
+        )
 
     settings: dict[str, str | None] = {
         "pbs_queue": pbs_queue or os.environ.get("PMA_PBS_QUEUE"),
@@ -707,6 +758,45 @@ def _enforce_context_gate(paths: RunPaths, no_context: bool) -> None:
                    "fields will be marked status=missing.", err=True)
 
 
+def _enforce_execution_mode_gate(run_dir: Path, paths: RunPaths) -> None:
+    """Require an explicit, user-confirmed execution mode before launching compute.
+
+    System requirement: Processing-MuAgent must ALWAYS confirm execution mode
+    (local vs HPC) with the user before running ANY compute job — not only at S0.
+    This is enforced unconditionally on every `run` and `submit`, so it also
+    covers resume submissions (S1+) and runs whose config never recorded an
+    execution mode. Mirrors `_enforce_context_gate`.
+
+    Idempotent: once `execution.user_confirmed` is true the gate passes instantly
+    on every subsequent call, so re-checking has no cost.
+    """
+    params = str(paths.parameters_yaml)
+    mode = provenance.get_value(params, "execution.mode", None)
+    confirmed = provenance.get_value(params, "execution.user_confirmed", False)
+    if mode is None:
+        raise click.ClickException(
+            "Execution mode is not set for this run. Per system policy, you MUST "
+            "confirm local vs HPC with the user before any compute job runs "
+            "(this applies to resume sessions too, not only the first S0 ingest).\n"
+            "  1. Ask the user: run locally on this machine, or submit to an HPC "
+            "cluster (PBS Pro or SLURM)?\n"
+            "  2. For HPC, probe the login node first: Processing-MuAgent hpc-info\n"
+            "  3. Record the user's explicit choice:\n"
+            f"     Processing-MuAgent configure-execution --config {paths.run_yaml} "
+            "--mode local --confirmed-by-user\n"
+            "     (or --mode pbs|slurm with queue/partition + account, "
+            "plus --confirmed-by-user)"
+        )
+    if not confirmed:
+        raise click.ClickException(
+            f"Execution mode is set to {mode!r} but was not confirmed by the user. "
+            "Per system policy, confirm local vs HPC with the user before launching "
+            "any compute job, then re-run:\n"
+            f"  Processing-MuAgent configure-execution --config {paths.run_yaml} "
+            f"--mode {mode} --confirmed-by-user"
+        )
+
+
 @main.command(name="run")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--auto-approve", is_flag=True, help="Auto-approve every checkpoint (noninteractive).")
@@ -734,6 +824,18 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
     """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
+
+    _enforce_execution_mode_gate(run_dir, paths)
+    mode = provenance.get_value(str(paths.parameters_yaml), "execution.mode", None)
+    if mode in {"pbs", "slurm"}:
+        raise click.ClickException(
+            f"execution.mode is {mode!r}, but `run` is local-only. Heavy stages "
+            "(starting with S0 ingest) must run on a compute node, never the login "
+            "node. Submit instead:\n"
+            f"  source {paths.hpc_env_sh}\n"
+            f"  Processing-MuAgent submit --config {paths.run_yaml} "
+            f"--executor {mode} --target {target}"
+        )
 
     _enforce_context_gate(paths, no_context)
 
@@ -904,6 +1006,11 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
     """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
+
+    # System requirement: confirm execution mode with the user before launching ANY
+    # cluster job. Fires before approval seeding, target inference, and the
+    # site.config check — so resume submissions (S1+) are gated too, not only S0.
+    _enforce_execution_mode_gate(run_dir, paths)
 
     auto_except = tuple(_canonical_stage(s) for s in auto_except)
     if auto_approve:

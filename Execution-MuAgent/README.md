@@ -1,10 +1,10 @@
 # Execution-MuAgent (Internal Runtime Orchestrator)
 
+The Execution Agent operates entirely in the background as MuAgene's execution layer. It **translates** workflow specifications into scheduler-ready jobs, **submits** them to PBS/SLURM, and **supervises** execution using a dual-clock state machine (heartbeat signals + walltime tracking), and **reports** the job status to Processing-MuAgent. By continuously collecting telemetry, identifying failures, detecting stalled jobs, and generating diagnostics, it maintains execution observability and traceability throughout the job lifecycle. It is an internal support agent with no direct user interaction.
+
 ```
 Head-job Spec → Job Rendering → Cluster Submission → Runtime Monitoring → Diagnostics → Status Report.
 ```
-
-The Execution Agent operates entirely in the background as MuAgene's execution layer. It **translates** workflow specifications into scheduler-ready jobs, **submits** them to PBS/SLURM, and **supervises** execution using a dual-clock state machine (heartbeat signals + walltime tracking). By continuously collecting telemetry, identifying failures, detecting stalled jobs, and generating diagnostics, it maintains execution reliability and feeds structured status and completion reports back to Processing-MuAgent. It is a purely internal support agent with no direct user interaction.
 
 ## Architecture
 

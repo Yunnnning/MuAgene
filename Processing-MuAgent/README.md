@@ -150,14 +150,19 @@ On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The
 # Probe available queues/partitions and suggest settings:
 Processing-MuAgent hpc-info
 
-# Write site.config (source of truth) and derived hpc.env:
+# Write site.config (source of truth) and derived hpc.env.
+# --confirmed-by-user records that the user approved this execution mode; run/submit
+# refuse to launch any compute until it is set (applies to local mode too).
+# Local:
+Processing-MuAgent configure-execution --config $CFG --mode local --confirmed-by-user
+
 # PBS Pro:
 Processing-MuAgent configure-execution --config $CFG --mode pbs \
-  --pbs-queue <queue> --pbs-project <project>
+  --pbs-queue <queue> --pbs-project <project> --confirmed-by-user
 
 # SLURM:
 Processing-MuAgent configure-execution --config $CFG --mode slurm \
-  --slurm-partition <partition> --slurm-account <account>
+  --slurm-partition <partition> --slurm-account <account> --confirmed-by-user
 ```
 
 This writes:
@@ -183,6 +188,8 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | PCA + neighbors + clustering | S4 → S5 → S6 → S7 (sweep) | Cluster | — |
 | Checkpoint **#3** | s7_clustering | — | Review resolution |
 | Finish | S7 (labels) → S8 → manifest | Cluster | — |
+
+**Execution mode must be user-confirmed before any compute runs.** Both `run` and `submit` hard-refuse to launch until `execution.user_confirmed=true` is recorded (via `configure-execution ... --confirmed-by-user`). This is a one-time gate enforced on fresh runs and resume sessions alike — the agent must confirm local vs HPC with the user and never auto-default. `run` additionally refuses when the mode is `pbs`/`slurm` (use `submit`). Once confirmed, the pipeline proceeds automatically.
 
 **S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, S0 runs in the foreground on this machine via `run`.
 
@@ -348,7 +355,7 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 |---------|---------|
 | `init` | Create run directory scaffold |
 | `declare-branch` | Record workflow branch in `parameters.yaml` |
-| `configure-execution` | Set `execution.mode`; write `site.config` (platform source of truth) and derived `hpc.env` |
+| `configure-execution` | Set `execution.mode` + `execution.user_confirmed` (`--confirmed-by-user`); write `site.config` (platform source of truth) and derived `hpc.env`. `run`/`submit` refuse compute until confirmed |
 | `hpc-info` | Probe PBS/SLURM queues, partitions, accounts on the login node |
 | `run` | Foreground Snakemake, **local-only** (local-mode execution + login-node localrules). No cluster path — use `submit` for PBS/SLURM |
 | `submit` | **The only cluster-execution path.** Submit head-job via Execution-MuAgent (hard dependency); starts background supervision daemon; infers phase target |

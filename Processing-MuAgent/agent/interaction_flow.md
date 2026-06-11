@@ -101,13 +101,17 @@ Once the user answers, in order:
    ```
    If the user gave only a path to an existing filled template, read the file and pass its content to `context_mapper.write_report(run_dir, content)` so it lands at the canonical location. If the user gave nothing, leave the blank template — the Phase 1 gate will block and give them a second chance, or they can explicitly opt out with `executor run --no-context`.
 
-4. **Configure execution mode** (if not already stated in Step 1/2 conversation):
-   - If the user said **local** (or gave no preference and you're not on a cluster login node): `executor configure-execution --config $CFG --mode local`.
+4. **Configure execution mode — confirm with the user first; never auto-default.**
+   This is a mandatory one-time gate: `executor run`/`submit` hard-refuse to launch
+   any compute until the user's choice is recorded with `--confirmed-by-user`. Ask
+   even when local seems obvious — do not assume local just because you're on this
+   machine.
+   - If the user explicitly chose **local**: `executor configure-execution --config $CFG --mode local --confirmed-by-user`. **Do not run this until the user has actually said local** — there is no "no preference → local" shortcut.
    - If the user said **HPC** (or you're on a login node with `qsub`/`sbatch` and the dataset is large):
      a. Run `executor hpc-info` (parse silently) and measure file sizes with `ls -la` on the input paths the user already provided.
      b. Apply the file-size → scale heuristic from `inputs_intake.md` Section 4 to derive a recommended `PMA_RESOURCES_SCALE`. Select `suggested_partition` / `suggested_account` from `hpc-info` as the candidate values.
      c. Present ONE concrete recommendation (partition + account + scale) with a brief rationale and invite confirmation or override. Do not enumerate the full partition list.
-     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ...` (or `--slurm-partition` / `--slurm-account`). This records `execution.mode` in `parameters.yaml` and writes `deliverables/plan/config/hpc.env`.
+     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ... --confirmed-by-user` (or `--slurm-partition` / `--slurm-account`). `--confirmed-by-user` records that the user approved the mode; without it, `run`/`submit` will refuse to launch. This records `execution.mode` + `execution.user_confirmed` in `parameters.yaml` and writes `deliverables/plan/config/hpc.env`.
    - Do not invent partition/account names — use `hpc-info` results. If `hpc-info` returns empty lists or a file is unreachable, see fallback rules in `inputs_intake.md` Section 4.
 
 5. Invoke `executor declare-branch <paired|separate|rna_only|atac_only> --config $CFG`.
@@ -120,23 +124,19 @@ Once the user answers, in order:
    `MissingRuleException`). One `s0_ingest_execute` run emits the ingest h5ad,
    `validation_report.json`, `preprocessing_plan.json`, and the `qc_explore`
    artifacts the plan review consumes.
-   **Execution boundary:** `run` is local-only; `submit` is cluster-only. On HPC,
-   S0 is always submitted as a supervised cluster job via `submit` (never the login
-   node) — S0's QC exploration needs 100+ GB. There is no `run --executor pbs|slurm`.
+   S0 execution location follows the configured mode (the execution model and
+   monitoring mechanics are defined once under *Running on HPC* — don't restate them).
    - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, submit S0 as a cluster head-job, then report-and-yield:
      ```
      source deliverables/plan/config/hpc.env
      executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
      executor hpc-status --config $CFG             # one-shot: report the daemon's snapshot, then yield
      ```
-     `submit` starts the Execution-MuAgent supervision daemon (kill-on-hang, survives
-     SSH disconnect) and returns in ≤90 s; the heavy S0 compute runs on a compute node.
-     The daemon is the sole monitor: read its `latest_snapshot.json` with one-shot
-     `hpc-status`, report the status to the user, then wait NON-BLOCKING for the daemon's
-     completion signal (`monitor.pid` removed, or `plan_review` becomes `awaiting_approval`)
-     and report again before driving the next gate (report-and-yield).
+     The Execution-MuAgent daemon runs S0 on a compute node and is the sole monitor;
+     follow the **report-and-yield** rule under *Running on HPC* (report one-shot
+     `hpc-status`, then wait non-blocking for the gate signal — never block or tail logs).
    - **Local mode (`execution.mode` is `local`):** `executor run --config $CFG --target s0_ingest_execute` (runs P1 → S0 + plan assembly; ~30s on small inputs).
-     - **If S0 OOMs locally:** this means the machine is too small. Switch to HPC: `executor configure-execution --config $CFG --mode slurm|pbs ...` then submit S0 as above. There is no automatic local→cluster retry.
+     - **If S0 OOMs locally:** this means the machine is too small. Switch to HPC (a mode change, so re-confirm): `executor configure-execution --config $CFG --mode slurm|pbs ... --confirmed-by-user` then submit S0 as above. There is no automatic local→cluster retry.
    - **Do not** retry logic errors (pairing ambiguous, declared-vs-detected mismatch, missing index). Relay the message; user fixes inputs or branch declaration.
    - After S0 completes, surface `validation_report.json` pairing fields if `paired` was downgraded or ambiguous.
 
@@ -285,46 +285,42 @@ Approve, revise, or abort?"
 
 ## Running on HPC (PBS Pro or SLURM)
 
-The four-step flow above is unchanged on a cluster. Only the underlying execution
-model differs: heavy `_execute` rules dispatch to scheduler jobs, while every
+The four-step flow above is unchanged on a cluster; only the execution model differs.
+
+**Execution model.** Heavy `_execute` rules dispatch to scheduler jobs; every
 `*_propose` rule and the light planning stages (`p1_context`, `plan_review`) plus
-`manifest` are declared `localrules` and run on the orchestrator host (the head-job
-in headless mode).
+`manifest` are `localrules` that run on the orchestrator host (the head-job in
+headless mode). **Execution boundary:** `executor run` is local-only and `executor
+submit` is cluster-only — Processing-MuAgent never submits or monitors cluster jobs
+itself; it prepares the head-job spec + `site.config` and delegates all cluster
+execution to Execution-MuAgent via `submit`. There is no `run --executor pbs|slurm`.
 
-**Execution boundary:** `executor run` is local-only and `executor submit` is
-cluster-only. Processing-MuAgent never submits or monitors cluster jobs itself — it
-prepares the head-job spec + `site.config`, and after `submit` the Execution-MuAgent
-supervision daemon is the **sole monitor**. Processing reads the daemon's structured
-`latest_snapshot.json` via one-shot `hpc-status` and reports the status to the user.
+**`submit` mechanics.** `submit` writes `internal/stage_meta/head_job.yaml`, then
+starts `Execution-MuAgent execute-spec` as a **background supervision daemon** that
+submits the head-job, records the job ID to `execution_manifest.jsonl`, and runs the
+watch loop (stall detection + kill-on-hang) for the job's lifetime. It returns within
+~90 s, once the job ID is confirmed, and **fails loudly if Execution-MuAgent is
+absent**. The daemon survives SSH disconnects on most clusters (on
+`KillUserProcesses=yes` sites, run `submit` inside `tmux`/`screen`); it writes
+`internal/hpc_monitor/monitor_<timestamp>.log` (symlinked `monitor.log`) and removes
+`monitor.pid` on exit — that removal is one of the gate signals you wait for.
 
-**S0 ingest** is, in HPC mode, **always** submitted as a supervised cluster head-job
-via `submit --target s0_ingest_execute` (never run on the login node — its QC
-exploration needs 100+ GB); the daemon monitors it, and Processing reports its status
-via one-shot `hpc-status`. It runs locally only when `execution.mode` is `local`.
-Pairing-detection conflicts are resolved by reading `validation_report.json` after S0
-finishes.
+**S0 ingest** is, in HPC mode, **always** submitted via `submit --target
+s0_ingest_execute` (never the login node — its QC exploration needs 100+ GB); it runs
+locally only when `execution.mode` is `local`. Pairing-detection conflicts are
+resolved by reading `validation_report.json` after S0 finishes.
 
 ### Intake (Step 2) — ask before P1 runs
 
-If the user has not said whether to run locally or on HPC, ask alongside the
-biological-context question. When they choose HPC:
-
-1. Run `executor hpc-info` on the login node. Parse silently.
-2. Measure file sizes with `ls -la` on the input paths the user already supplied.
-3. Apply the file-size → scale heuristic (see `inputs_intake.md` Section 4) to derive
-   `PMA_RESOURCES_SCALE`. Use `suggested_partition` / `suggested_account` from
-   `hpc-info` as the candidate partition and account.
-4. Present ONE concrete recommendation to the user:
-   partition + account + scale, with a one-line rationale (file size → estimated cells → scale).
-   Invite confirmation or override. Do not enumerate the full partition list unless the user asks.
-5. Run `executor configure-execution --config $CFG --mode pbs|slurm ...` to write:
-   - `deliverables/plan/config/hpc.env` — shell snippet sourced by runner scripts
-   - `deliverables/plan/config/site.config` — YAML platform description consumed by Execution-MuAgent
-   - Records `execution.mode` in `parameters.yaml`.
-
-Do not invent partition/account names — use `hpc-info` results only. If `hpc-info` returns
-empty lists, ask the user directly. If a file is unreachable, note it and ask for scale manually.
-See `inputs_intake.md` Section 4 for the full heuristic table and edge-case fallback rules.
+Execution-mode intake is identical on HPC and local — it lives in **Step 2
+AGENT_ACTIONS #4** above and is not repeated here. In short: **always** ask local
+vs HPC if the user hasn't said (never default to local silently), and record the
+choice with `executor configure-execution ... --confirmed-by-user`; `run`/`submit`
+refuse to launch until that confirmation exists. For HPC, probe with `executor
+hpc-info`, derive `PMA_RESOURCES_SCALE` from the file-size heuristic, present ONE
+partition+account+scale recommendation, then configure. The full heuristic table
+and fallback rules (empty partition lists, unreachable files) are in
+`inputs_intake.md` Section 4.
 
 ### HPC run phases (after plan review)
 
@@ -347,30 +343,17 @@ After plan review approval, `source deliverables/plan/config/hpc.env`, then:
 
 Each compute phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC, `s7_clustering_propose` for the resolution sweep), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. That is why `monitor.pid` removal coincides with `<stage>` becoming `awaiting_approval` — the two completion signals you wait for arrive together. You never need to run `propose` by hand to surface a gate.
 
-`executor submit` is a hard dependency on Execution-MuAgent — it writes `internal/stage_meta/head_job.yaml`, then starts `Execution-MuAgent execute-spec` as a **background supervision daemon**. The daemon submits the head-job, records the job ID to `execution_manifest.jsonl`, and then runs the watch loop (stall detection + kill-on-hang) for the full lifetime of the job. `submit` returns within ~90 seconds, as soon as the job ID is confirmed. If Execution-MuAgent is absent, `submit` fails loudly.
-
-The daemon survives SSH disconnects on most clusters. On sites with `KillUserProcesses=yes`, remind the user to run inside `tmux` or `screen`. The daemon writes its output to `internal/hpc_monitor/monitor_<timestamp>.log` (with a `monitor.log` symlink to the latest) and removes `monitor.pid` when it exits.
-
 **Monitoring rule — the daemon monitors; Processing reports (report-and-yield).**
-
-After `submit`, the Execution-MuAgent daemon is the sole monitor and writes only structured state. Processing-MuAgent reads `latest_snapshot.json` via one-shot `hpc-status` and reports the status to the user in chat, then waits NON-BLOCKING for the daemon's completion signal — `monitor.pid` removed, or a review-gate sentinel (`<stage>` becomes `awaiting_approval`) — and reports again before driving the next gate. Never run a blocking watch loop, never tail logs to monitor, never go silent. The user's only status surface is Processing-MuAgent's chat report (via one-shot `hpc-status`).
-
-Never run a blocking loop and never substitute `tail -f | grep` — rely on the daemon and read one-shot `hpc-status`.
-
-**If a one-shot `hpc-status` shows "a review gate is awaiting approval"** while the pipeline has barely started, a stale `<stage>.awaiting_approval` sentinel from a previous run is blocking progress. Cause: an old head job is still alive and recreated the sentinel after you deleted it. Fix: (1) `squeue -u $USER | grep pma_head` → `scancel <JOBID>` for each; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) re-run `executor submit` and report the next one-shot `hpc-status`.
+After `submit`, the Execution-MuAgent daemon is the sole monitor and writes only structured state. Processing-MuAgent reads `latest_snapshot.json` via one-shot `hpc-status`, reports the status to the user in chat, then waits **NON-BLOCKING** for the daemon's completion signal — `monitor.pid` removed, or a review-gate sentinel (`<stage>` becomes `awaiting_approval`) — and reports again before driving the next gate. Never run a blocking watch loop, never substitute `tail -f | grep`, never go silent: the user's only status surface is Processing-MuAgent's chat report via one-shot `hpc-status`.
 
 ### How Claude surfaces things during the HPC flow
 
-- **At Step 2**, if execution mode is unknown, ask local vs HPC before `executor run --target s0_ingest_execute`. Run `hpc-info` and walk through `hpc.env` setup when HPC is chosen.
-- **At Step 1–4 otherwise**, behaviour matches local mode until plan review is approved.
-- **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path. Remind them that the daemon is running in the background and the sole monitor; you report job health with one-shot `Processing-MuAgent hpc-status --config $CFG`, then yield (report-and-yield).
-- **When `status --watch` shows `s7_clustering awaiting_approval`**, surface the path to `resolution_review.html` (the
-  primary review artifact) AND `resolution_review.ipynb` (for power users who
-  want to re-cluster at custom resolutions interactively). Paste the contents
-  of `resolution_summary.md` verbatim, plus the proposal's `review_artifacts`
-  block.
-- **On approve/revise**, run the appropriate CLI as today, then `submit` again
-  (cluster execution is always via `submit` — `run` is local-only).
+Behaviour matches local mode until plan review is approved. Beyond the report-and-yield
+rule above, the HPC-specific surfacing is:
+
+- **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path, then follow the report-and-yield rule.
+- **When `s7_clustering` becomes `awaiting_approval`**, surface the path to `resolution_review.html` (the primary review artifact) and `resolution_review.ipynb` (for power users who want to re-cluster at custom resolutions interactively), and paste `resolution_summary.md` verbatim plus the proposal's `review_artifacts` block.
+- **On approve/revise**, run the appropriate CLI, then `submit` again.
 
 ### Site variables (user confirms after `hpc-info`)
 
@@ -398,7 +381,9 @@ These are written to `deliverables/plan/config/hpc.env` by `configure-execution`
 - **S0 raises "pairing is ambiguous"** — RNA+ATAC Jaccard overlap is between 30% and 80% after normalization/subset checks, and the user did not declare a branch (or declared one that doesn't resolve the ambiguity). Ask the user: are these paired or separate? Based on answer, run `executor declare-branch <paired|separate>` and re-run; for `paired`, supply `barcode_translation_path` if barcode whitelists differ. Don't auto-pick.
 - **S3 raises "paired-branch joint barcode intersection is empty"** — S0 committed `paired` but no cell survived both modalities' QC + doublet removal. This usually means QC thresholds were too aggressive. Surface the message; ask the user to revise S1/S2 thresholds via `executor revise s1_rna_qc ...` or `executor revise s2_atac_qc ...`. If the pairing decision used `pairing.translation_table`, also check that the translation table actually covers the QC-surviving cell set.
 - **Phase 1 gate raises "biological_context.md is empty"** — the user didn't give context and didn't opt out. Ask for context OR offer the explicit opt-out: `--no-context` on whichever entry point starts the run (`executor run --config $CFG --no-context` in local mode, or `executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute --no-context` on HPC).
-- **S0 OOMs / is Killed / hits walltime in HPC mode** — S0 already runs as a supervised cluster job, so this is a resource-sizing issue, not a location one. Raise `PMA_RESOURCES_SCALE` via `executor configure-execution --config $CFG --mode pbs|slurm --resources-scale N ...`, then `executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute` again. **In local mode**, an S0 OOM means the machine is too small — switch to HPC (`configure-execution --mode slurm|pbs`) and submit. There is no automatic local→cluster retry.
+- **`run`/`submit` raises "Execution mode is not set" or "was not confirmed by the user"** — you tried to launch compute before confirming local vs HPC (this gate fires on fresh runs and resume sessions alike). Stop and confirm the mode with the user: ask local vs HPC, probe `executor hpc-info` for clusters, then record their explicit choice with `executor configure-execution --config $CFG --mode <local|pbs|slurm> --confirmed-by-user`. Never pass `--confirmed-by-user` without having actually asked. Once recorded, re-run the same command and the pipeline proceeds automatically.
+- **`run` raises "execution.mode is 'pbs'/'slurm' but `run` is local-only"** — the run is configured for a cluster; `run` only executes locally. Source `hpc.env` and use `executor submit --config $CFG --executor pbs|slurm` instead.
+- **S0 OOMs / is Killed / hits walltime in HPC mode** — S0 already runs as a supervised cluster job, so this is a resource-sizing issue, not a location one. Raise `PMA_RESOURCES_SCALE` via `executor configure-execution --config $CFG --mode pbs|slurm --resources-scale N ...`, then `executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute` again. (Re-config of the *same* mode preserves the existing user confirmation — no `--confirmed-by-user` needed for a resource-only change.) **In local mode**, an S0 OOM means the machine is too small — switch to HPC (`configure-execution --mode slurm|pbs`) and submit. There is no automatic local→cluster retry.
 - **A stage execute fails at runtime** — relay the failure (HPC: read it from one-shot `executor hpc-status --config $CFG`, which renders the daemon's structured findings; local: snakemake stderr). Do not retry silently; root-cause first. If the user insists on retry, re-`executor submit --executor pbs|slurm --target <stage>_execute` (HPC) or `executor run --config $CFG --target <stage>_execute` (local only).
 - **Execution-MuAgent reports `submit_rejected_policy`** — the scheduler rejected the job as a policy error (invalid partition, account, or walltime over the site limit). One-shot `executor hpc-status --config $CFG` renders the scheduler's exact message from the daemon's structured findings. Tell the user which field to correct: partition/account via `executor configure-execution --mode <scheduler> ...` (rewrites `site.config`), or walltime by reducing `PMA_RESOURCES_SCALE`. Then `executor submit` again.
 - **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/specs/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.

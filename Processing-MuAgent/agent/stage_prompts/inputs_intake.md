@@ -114,11 +114,16 @@ P1 will fetch abstracts for each DOI during `executor run --target s0_ingest_exe
 
 ### 4. Configure execution mode
 
-If the user has not already said **local** vs **HPC**, ask now (before P1 runs).
+If the user has not already said **local** vs **HPC**, ask now (before P1 runs) —
+**always confirm; never auto-default to local.** `executor run`/`submit` hard-refuse
+to launch any compute until the user's choice is recorded with `--confirmed-by-user`
+(this gate fires on fresh runs and resume sessions alike). It is a one-time gate:
+once confirmed, the rest of the pipeline runs automatically.
 
-**Local (default for small data / laptop):**
+**Local** (only after the user explicitly chooses it — do not assume local just
+because you're on this machine):
 ```
-executor configure-execution --config $CFG --mode local
+executor configure-execution --config $CFG --mode local --confirmed-by-user
 ```
 
 **HPC (PBS or SLURM):**
@@ -171,9 +176,10 @@ executor configure-execution --config $CFG --mode local
 5. Write settings once the user confirms (or overrides):
    ```
    executor configure-execution --config $CFG --mode pbs \
-       --pbs-queue <queue> --pbs-project <project>
+       --pbs-queue <queue> --pbs-project <project> --confirmed-by-user
    ```
-   (or `--mode slurm --slurm-partition ... --slurm-account ...`)
+   (or `--mode slurm --slurm-partition ... --slurm-account ... --confirmed-by-user`).
+   `--confirmed-by-user` records the user's approval; without it `run`/`submit` refuse to launch.
 
 Do **not** invent partition/account names — use `hpc-info` results only. If `hpc-info` returns empty lists, ask the user for the values directly.
 
@@ -194,6 +200,8 @@ A single `s0_ingest_execute` run produces the ingest h5ad, `validation_report.js
 `preprocessing_plan.json`, and the `qc_explore` artifacts the plan review consumes.
 S0 execution location is determined by the configured mode. **`run` is local-only;
 `submit` is cluster-only** — Processing-MuAgent never submits cluster jobs itself.
+Both refuse to start until execution mode is user-confirmed (Section 4) — so do not
+reach this step before the user has chosen local vs HPC.
 
 **HPC mode (`execution.mode` is `pbs` or `slurm`) — submit S0 as a supervised cluster job:**
 
