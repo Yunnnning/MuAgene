@@ -193,7 +193,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 
 **S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, S0 runs in the foreground on this machine via `run`.
 
-Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`. After `submit` the supervision daemon is the sole monitor; it writes structured findings to `internal/hpc_monitor/latest_snapshot.json`, which one-shot `hpc-status` renders. (`latest_report.md` is a daemon-internal debug/audit log only.)
+Each heavy stage runs as its own scheduler job, and only the three checkpoints above need `approve`. After `submit`, a background monitor is the sole watcher of your job — report its status at any time with one-shot `hpc-status`.
 
 ### Submit workflow
 
@@ -220,9 +220,10 @@ Processing-MuAgent submit --config $CFG --executor slurm --unlock-stale-locks
 ```bash
 CFG=<run_dir>/deliverables/plan/config/run.yaml
 
-# Configure HPC settings (writes site.config + derived hpc.env):
+# Configure HPC settings (writes site.config + derived hpc.env). --confirmed-by-user
+# records the user's approval of the mode; submit refuses to launch without it:
 Processing-MuAgent configure-execution --config $CFG --mode slurm \
-  --slurm-partition cpu-medium --slurm-account mylab
+  --slurm-partition cpu-medium --slurm-account mylab --confirmed-by-user
 
 source <run_dir>/deliverables/plan/config/hpc.env
 
@@ -245,37 +246,27 @@ Processing-MuAgent approve resolution_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 ```
 
-Each `submit` call starts a background supervision daemon that watches for stalls and cancels hung jobs — it keeps running after `submit` returns and is the sole monitor. Report job health and per-step state with one-shot `Processing-MuAgent hpc-status --config $CFG`, then yield (no poll loop). For an unattended batch, pre-seed all three checkpoints with `--auto-approve` on `run` or `submit`. To keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts aliases or internal names).
+After `submit` returns, the background monitor keeps watching your job — see **How cluster jobs run and stay supervised** below. For an unattended batch, pre-seed all three checkpoints with `--auto-approve` on `run` or `submit`; to keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts checkpoint aliases).
 
-### Execution-MuAgent integration
+### How cluster jobs run and stay supervised
 
-`Processing-MuAgent submit` delegates the full submission lifecycle to the sibling `Execution-MuAgent` package (a hard dependency — the command fails loudly if it is absent):
+`Processing-MuAgent submit` hands your job to the sibling **Execution-MuAgent** package, which prepares the scheduler script, submits the job, and then runs a **background monitor** that watches it for its whole lifetime. Install Execution-MuAgent first — `submit` fails loudly without it. `submit` returns in about 90 seconds, once the job is confirmed accepted; the monitor keeps running after that and is the only thing watching your job.
 
-1. `plan-review` writes per-stage metadata YAMLs to `internal/stage_meta/` (resources, I/O paths, `progress_timeout_hint`, science description). `progress_timeout_hint` values come from `resources.smk` — that is the single source of truth; `--stale-minutes 90` is the fallback default in Execution-MuAgent when no hint is present.
-2. `configure-execution` writes `site.config` (the single platform source of truth). `hpc.env` is generated from it — the two cannot drift.
-3. `submit` writes `internal/stage_meta/head_job.yaml`, then starts `Execution-MuAgent execute-spec` as a **background supervision daemon**. The daemon submits the head-job, writes `execution_manifest.jsonl`, and then watches the job for the rest of its lifetime. `submit` returns within ~90 seconds (as soon as the job ID appears in the manifest). Snakemake submits per-stage child jobs from within the head-job.
+**The monitor is a safety layer, not optional.** It watches for stalled or hung jobs and cancels one only when the evidence is conclusive — so a genuinely stuck job doesn't sit burning cluster time, while a slow-but-alive job is left alone. As each stage finishes it also confirms the stage actually produced a complete, readable output. If the monitor dies, your cluster job keeps running but is no longer protected. Check the monitor's liveness and your job's health at any time with one-shot `hpc-status` (no poll loop):
 
-**The supervision daemon is a safety layer, not optional monitoring.** It is the process that detects stalls, gathers evidence, and cancels hung jobs. If it dies, the cluster job continues to run unprotected — stalled jobs will not be auto-cancelled. `hpc-status` shows whether the daemon is alive and warns you if it isn't.
+```bash
+Processing-MuAgent hpc-status --config $CFG
+```
 
-**Daemon lifecycle.** The daemon runs as a detached background process (`start_new_session=True`) that survives SSH disconnects on most systems. Exception: sites configured with `KillUserProcesses=yes` (a systemd setting) will kill all your processes on logout regardless. On those systems, wrap your session in `tmux` or `screen` before running `submit`. The daemon's output goes to `internal/hpc_monitor/monitor_<timestamp>.log` (with `monitor.log` as a symlink to the latest). The daemon removes `monitor.pid` when it exits normally.
-
-**If the daemon dies mid-run** (SSH drop on a KillUserProcesses site, OOM, unexpected crash) while the cluster job is still active, restart it without resubmitting:
+**Keeping the monitor alive across logout.** It runs in the background and survives SSH disconnects on most systems. Some clusters kill all your processes when you log out; on those, start your session inside `tmux` or `screen` before `submit`. If the monitor does die while the job is still running, restart it without resubmitting:
 
 ```bash
 Processing-MuAgent supervisor-restart --config $CFG
 ```
 
-This picks up from `latest_submission.json` and resumes the full watch loop (stall detection + kill-on-hang protection) against the already-running job.
+**When a job fails or is rejected.** Execution-MuAgent never contacts you directly and never resubmits — it records what it found and stops. `hpc-status` shows the result: if the scheduler rejected the job (usually a wrong partition, account, or walltime), re-run `configure-execution` with corrected settings; for any other failure, fix the cause and re-run `submit`. Cluster jobs only ever run through `submit` — there is no manual submission path.
 
-**Job monitoring.** The daemon checks in every 4.5 minutes (270 s). It counts how many checks have passed with no sign of progress — no file updates, no log growth. After enough quiet checks (determined by each stage's declared `progress_timeout_hint`), it switches to investigation mode: it looks at CPU and memory usage, tests filesystem responsiveness, and checks for error keywords in logs. A stall signal is suspicion, never a verdict — the daemon only cancels a job when the evidence is conclusive. It always kills children first, then the head job, so Snakemake can resubmit cleanly.
-
-**Per-step output verification.** On every check the daemon verifies each stage's declared outputs as they appear — it actually opens the file (h5ad, parquet, JSON), not just checks for non-empty size. A `stage_output_verified` finding is written when a stage completes cleanly. When the head-job reaches COMPLETED, the same check runs over every stage spec; any missing or corrupt output is reported as `output_missing`.
-
-**When a job is cancelled or fails.** The daemon writes a machine-readable snapshot to `internal/hpc_monitor/latest_snapshot.json` — including structured `findings` and `kill_action` — then stops. It never contacts a human and never resubmits. Read the findings via one-shot `Processing-MuAgent hpc-status --config $CFG`, fix the underlying problem, and re-run `submit`. (`latest_report.md` is a daemon-internal debug/audit log only.)
-
-If Execution-MuAgent reports a **policy rejection** (`submit_rejected_policy` in the snapshot findings, rendered by `hpc-status`), the scheduler refused the job because of an invalid partition, account, or walltime. Re-run `configure-execution` with corrected settings and resubmit.
-
-All cluster submission and monitoring goes through `Processing-MuAgent submit` → `Execution-MuAgent execute-spec`. There is no manual-submission path — Execution-MuAgent runs only via Processing-MuAgent.
+For how the monitor works internally — how it decides a job is stalled, how it verifies outputs, and the diagnostics it records — see **`Execution-MuAgent/README.md`**, the package that owns it.
 
 
 ## Run directory layout
@@ -377,6 +368,9 @@ Planning and QC stages run automatically. Snakemake stops only at the three chec
 
 ```bash
 CFG=<run_dir>/deliverables/plan/config/run.yaml
+
+# Confirm execution mode once (required before any compute — run/submit refuse otherwise):
+Processing-MuAgent configure-execution --config $CFG --mode local --confirmed-by-user
 
 # Option A — pause at each checkpoint (recommended first time):
 Processing-MuAgent run --config $CFG
