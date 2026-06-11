@@ -209,9 +209,28 @@ class StageProgressTests(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("")
 
-            # _last_incomplete_execute returns the LAST incomplete stage so Snakemake
-            # can chain s2→s3 in one submission; s3 is also missing here.
-            self.assertEqual(infer_resume_target(tmp), "s3_doublets_execute")
+            # QC phase terminus is the gate-arming localrule: Snakemake chains
+            # s2→s3→post_qc_review_propose in one submission, arming the gate.
+            self.assertEqual(infer_resume_target(tmp), "post_qc_review_propose")
+
+    def test_infer_resume_qc_complete_arms_gate(self):
+        """All QC execute stages done but post_qc_review unapproved: the target
+        is the gate-arming propose rule, not the last execute stage. This is the
+        end-state that left Mouse1_v2_test's qc_review gate stuck at 'pending'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._init_run(tmp)
+            paths.approved_sentinel("plan_review").write_text("")
+            for stage, marker in (
+                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1_rna_qc", "qc_summary.json"),
+                ("s2_atac_qc", "qc_summary.json"),
+                ("s3_doublets", "calls.parquet"),
+            ):
+                p = paths.artifact(stage, marker)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("")
+
+            self.assertEqual(infer_resume_target(tmp), "post_qc_review_propose")
 
     def test_infer_resume_after_qc_approval_at_s5(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -229,9 +248,9 @@ class StageProgressTests(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("")
 
-            # _last_incomplete_execute returns the LAST incomplete stage so Snakemake
-            # can chain s5→s6 in one submission; s6 is also missing here.
-            self.assertEqual(infer_resume_target(tmp), "s6_neighbors_execute")
+            # Mid phase terminus is the resolution gate-arming localrule:
+            # Snakemake chains s5→s6→s7_clustering_propose in one submission.
+            self.assertEqual(infer_resume_target(tmp), "s7_clustering_propose")
 
     def test_infer_resume_targets_planning_first(self):
         """A fresh run (no planning artifacts) routes the merged planning job first,

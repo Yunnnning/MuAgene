@@ -464,36 +464,21 @@ def stage_states(paths: RunPaths) -> list[tuple[str, str, str]]:
     return _apply_upstream_blocked(rows)
 
 
-def _last_incomplete_execute(
-    paths: RunPaths,
-    stages: tuple[str, ...],
-    branch_stages: set[str],
-) -> str | None:
-    """Return the LAST incomplete stage in the phase as a Snakemake target.
-
-    Targeting the last incomplete stage lets Snakemake build a single DAG that
-    spans all remaining stages in the phase: it sees intermediate outputs are
-    missing and chains s1a → s1 → s2 → s3 in one head-job submission.
-    Targeting the *first* incomplete stage (the old behaviour) would submit only
-    that single rule per head-job, requiring a separate submit call per stage.
-    """
-    last = None
-    for stage in stages:
-        if stage not in branch_stages:
-            continue
-        if not execute_done(paths, stage):
-            last = f"{stage}_execute"
-    return last
-
-
 def infer_resume_target(run_dir: Path | str) -> str:
-    """Pick the Snakemake target from the last incomplete step in the current phase.
+    """Pick the Snakemake target as the current phase's terminus.
 
-    Using the last incomplete stage ensures Snakemake builds the full remaining
-    phase DAG in a single head-job submission, rather than one stage per job.
+    Each compute phase ends at a human review gate, and each gate is armed by a
+    ``*_propose`` localrule that is *downstream* of the phase's execute stages
+    (its inputs are the last execute stage's outputs). Targeting that propose
+    rule makes Snakemake pull the whole phase's execute stages in as
+    dependencies AND run the gate-arming localrule at the end — so one head-job
+    submission runs the entire phase *and* arms the gate. Targeting the last
+    execute stage instead (the old behaviour) truncated the phase one rule
+    early, leaving the gate unarmed and the run waiting for a signal that never
+    came. Snakemake reruns any missing/failed upstream execute stage before the
+    localrule, so this also covers partial-resume.
     """
     paths = RunPaths(run_dir)
-    branch_stages = _branch_stages(paths)
 
     # Planning phase: the merged s0_ingest job (load + validate + plan + QC
     # exploration) runs before checkpoint #1. Route it through `submit` so
@@ -503,17 +488,16 @@ def infer_resume_target(run_dir: Path | str) -> str:
     if not paths.approved_sentinel("plan_review").exists():
         return "plan_review_propose"
 
-    incomplete = _last_incomplete_execute(paths, QC_EXECUTE_STAGES, branch_stages)
-    if incomplete is not None:
-        return incomplete
+    # QC phase terminus = the qc_review gate-arming localrule (pulls s1a→s3).
     if not paths.approved_sentinel("post_qc_review").exists():
         return "post_qc_review_propose"
 
-    incomplete = _last_incomplete_execute(paths, POST_QC_EXECUTE_STAGES, branch_stages)
-    if incomplete is not None:
-        return incomplete
+    # Mid phase terminus = the resolution-review gate-arming localrule
+    # (pulls s4→s6, then runs the resolution sweep that arms the gate).
     if not paths.approved_sentinel(RESOLUTION_REVIEW_STAGE).exists():
         return "s7_clustering_propose"
+
+    # Final phase: no gate follows, so execute targets are correct here.
     if not execute_done(paths, RESOLUTION_REVIEW_STAGE):
         return "s7_clustering_execute"
     if not execute_done(paths, "s8_umap"):

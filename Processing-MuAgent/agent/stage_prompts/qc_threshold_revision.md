@@ -84,13 +84,13 @@ Use this when `execution.mode` is `pbs` or `slurm`.
 
    After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and yield (report-and-yield — see `interaction_flow.md`). Never run a blocking loop or `tail -f | grep`.
 
-5. **Regenerate QC reports.** The inferred submit target is an execute rule such as `s3_doublets_execute`; the head job exits after S3 and does not run the local propose rule. After S3 completes successfully, run:
+5. **QC reports regenerate automatically.** The inferred submit target is the gate-arming localrule `post_qc_review_propose`, which Snakemake reaches after the revised QC execute stages complete — so the head job re-runs the changed stages **and** rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and the checkpoint figures under `deliverables/figures/`, then arms the gate (`post_qc_review` becomes `awaiting_approval`). You do not need to run `propose` by hand on the happy path.
+
+   Fallback only — if you need to re-render the report without re-submitting (e.g. a `local`-mode run, or a manual refresh after `marker-gene-check`):
 
    ```bash
    executor propose post_qc_review --config $CFG
    ```
-
-   This rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and checkpoint figures under `deliverables/figures/`.
 
 6. **Surface the updated report.**
 

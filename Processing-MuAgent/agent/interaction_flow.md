@@ -345,6 +345,8 @@ After plan review approval, `source deliverables/plan/config/hpc.env`, then:
 - **After QC approval:** same submit with `--auto-approve-except s7_clustering` only
 - **After resolution approval:** `executor submit --config $CFG --executor pbs|slurm`
 
+Each compute phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC, `s7_clustering_propose` for the resolution sweep), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. That is why `monitor.pid` removal coincides with `<stage>` becoming `awaiting_approval` — the two completion signals you wait for arrive together. You never need to run `propose` by hand to surface a gate.
+
 `executor submit` is a hard dependency on Execution-MuAgent — it writes `internal/stage_meta/head_job.yaml`, then starts `Execution-MuAgent execute-spec` as a **background supervision daemon**. The daemon submits the head-job, records the job ID to `execution_manifest.jsonl`, and then runs the watch loop (stall detection + kill-on-hang) for the full lifetime of the job. `submit` returns within ~90 seconds, as soon as the job ID is confirmed. If Execution-MuAgent is absent, `submit` fails loudly.
 
 The daemon survives SSH disconnects on most clusters. On sites with `KillUserProcesses=yes`, remind the user to run inside `tmux` or `screen`. The daemon writes its output to `internal/hpc_monitor/monitor_<timestamp>.log` (with a `monitor.log` symlink to the latest) and removes `monitor.pid` when it exits.
