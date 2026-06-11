@@ -54,7 +54,7 @@ Detection and decision are separate. The watcher is cheap and never kills.
 - `RECOVERED` — investigation found evidence of life; silence reset; continue monitoring.
 
 ### 7. Report findings
-Write findings to `internal/hpc_monitor/latest_report.md`, full snapshot + monitor state to `latest_snapshot.json`. You report both normal progress (`stage_output_verified`) and unhealthy verdicts. Processing-MuAgent reads these and owns all recovery. Kill action JSON (when present) includes `confirmed_dead_reason` so the failure path carries diagnostic context.
+Write the full snapshot + monitor state to `latest_snapshot.json`, which now ALSO carries structured `findings` (list of `{severity, code, message}`) and `kill_action` — the full machine contract Processing-MuAgent consumes. You report both normal progress (`stage_output_verified`) and unhealthy verdicts. Processing-MuAgent reads `latest_snapshot.json` and owns all recovery. `kill_action` (when present) includes `confirmed_dead_reason` so the failure path carries diagnostic context. `latest_report.md` is a daemon-internal debug/audit log only — Processing never parses it and it is never shown to the user.
 
 ## Hard rules
 
@@ -68,7 +68,7 @@ Write findings to `internal/hpc_monitor/latest_report.md`, full snapshot + monit
 
 ## CLI reference
 
-`execute-spec` is the machine lifecycle entry point — Processing-MuAgent invokes it. `report` is the only human-facing command (read-only). There are no manual-submission, registration, or standalone-monitor commands.
+`execute-spec` is the machine lifecycle entry point — Processing-MuAgent invokes it. Execution-MuAgent is **INTERNAL ONLY** and has **NO user-facing output** — all state goes to `internal/hpc_monitor/` as structured files, and Processing-MuAgent is the only consumer. `report` is an internal debug helper, not part of any user/agent flow. There are no manual-submission, registration, or standalone-monitor commands.
 
 ```bash
 # Validate spec, render script, submit, record, and monitor until exit:

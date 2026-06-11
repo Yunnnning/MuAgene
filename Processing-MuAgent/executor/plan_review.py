@@ -12,6 +12,63 @@ def _load_json(p: Path) -> dict:
     return json.loads(p.read_text()) if p.exists() else {}
 
 
+# --- Marker-gene-check decision gate -------------------------------------
+# Whenever ambient RNA correction is planned and no marker genes are set, the
+# user must make an explicit choice before plan_review can be approved: provide
+# genes, defer the check to QC review, or decline it. This turns the rendered
+# "needs confirmation" item into an enforced gate so the check can never be
+# silently skipped (e.g. by `submit --auto-approve`).
+
+MARKER_GENE_DECISIONS = {"provided", "deferred_to_qc", "declined"}
+
+
+def _planned_ambient_method(params_path: Path, plan: dict) -> str:
+    """Effective S1a method: parameters.yaml (revise) wins over the frozen plan."""
+    v = provenance.get_value(params_path, "s1a_ambient.method", None)
+    if v:
+        return str(v)
+    p = plan.get("stages", {}).get("s1a_ambient", {}).get("parameters", {})
+    m = p.get("method", {})
+    return str(m.get("value", "auto")) if isinstance(m, dict) else "auto"
+
+
+def marker_gene_decision_pending(run_dir: Path | str) -> bool:
+    """True iff ambient correction is planned, no marker genes are set, AND no
+    explicit decision (provided / deferred_to_qc / declined) has been recorded."""
+    from .run_paths import RunPaths
+    from .stages.s1a_ambient import resolve_marker_genes
+
+    paths = RunPaths(Path(run_dir))
+    plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+    if _planned_ambient_method(paths.parameters_yaml, plan).lower() in ("none", "skipped_empty"):
+        return False
+    plan_s1a = plan.get("stages", {}).get("s1a_ambient", {}).get("parameters", {})
+    if resolve_marker_genes(paths.parameters_yaml, plan_s1a):
+        return False  # genes provided — nothing pending
+    decision = provenance.get_value(
+        paths.parameters_yaml, "s1a_ambient.marker_genes_decision", None)
+    return decision not in MARKER_GENE_DECISIONS
+
+
+def record_marker_gene_decision(run_dir: Path | str, decision: str) -> None:
+    """Persist an explicit user decision to defer or decline the marker check."""
+    if decision not in ("deferred_to_qc", "declined"):
+        raise ValueError(
+            f"marker gene decision must be 'deferred_to_qc' or 'declined', got {decision!r}")
+    from .run_paths import RunPaths
+
+    paths = RunPaths(Path(run_dir))
+    rationale = (
+        "User chose to check marker genes at QC review instead of plan review."
+        if decision == "deferred_to_qc"
+        else "User declined the marker gene expression check for ambient correction."
+    )
+    provenance.set_param(
+        paths.parameters_yaml, "s1a_ambient.marker_genes_decision", decision,
+        source="user", confidence="high", rationale=rationale,
+    )
+
+
 _CONTEXT_FIELD_LABELS: dict[str, str] = {
     "organism": "organism",
     "tissue": "tissue",

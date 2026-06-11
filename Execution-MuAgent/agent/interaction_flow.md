@@ -85,8 +85,8 @@ Poll loop at `interval_s` (default 270 s / 4.5 min). The monitor drives a state 
 5. **Kill** (unhealthy verdict — CONFIRMED_DEAD or FS_HANG):
    - `cancel_submission_jobs()` — children first, then head (cleanup so Processing can resubmit).
    - Record `confirmed_dead_reason` (or `filesystem_hang`) in cancel result.
-   - Write report to `latest_report.md` and `reports/<job_id>_<timestamp>.md`.
-   - Write full snapshot + monitor state to `latest_snapshot.json`.
+   - Write full snapshot + monitor state to `latest_snapshot.json`, including structured `findings` and `kill_action` (the full machine contract Processing-MuAgent consumes).
+   - Also write a debug/audit copy to `latest_report.md` and `reports/<job_id>_<timestamp>.md` — daemon-internal only; Processing never parses these and they are never shown to the user.
    - Execution never holds for a human and never resubmits — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
 
 6. **Loop exit** when no jobs are active in scheduler (all terminal states).
@@ -115,7 +115,7 @@ Remove `monitor.pid` in a `finally` block, same as `execute-spec --watch`.
 
 ## Reporting back to Processing-MuAgent
 
-All findings land in `internal/hpc_monitor/latest_report.md`; monitor state in `latest_snapshot.json`. Processing-MuAgent reads these:
+All state — including structured `findings` (list of `{severity, code, message}`) and `kill_action` — is persisted STRUCTURALLY in `internal/hpc_monitor/latest_snapshot.json`, not only rendered in `latest_report.md`. `latest_report.md` is a daemon-internal debug/audit log only. Processing-MuAgent reads `latest_snapshot.json` (via one-shot `hpc-status`):
 
 | Finding code | Meaning | Processing-MuAgent action |
 |---|---|---|

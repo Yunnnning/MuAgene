@@ -184,9 +184,9 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Checkpoint **#3** | s7_clustering | — | Review resolution |
 | Finish | S7 (labels) → S8 → manifest | Cluster | — |
 
-**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; monitor it with `hpc-status --watch`. In local mode, S0 runs in the foreground on this machine via `run`.
+**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, S0 runs in the foreground on this machine via `run`.
 
-Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`. Findings and hang reports are written to `internal/hpc_monitor/latest_report.md` by Execution-MuAgent.
+Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`. After `submit` the supervision daemon is the sole monitor; it writes structured findings to `internal/hpc_monitor/latest_snapshot.json`, which one-shot `hpc-status` renders. (`latest_report.md` is a daemon-internal debug/audit log only.)
 
 ### Submit workflow
 
@@ -238,7 +238,7 @@ Processing-MuAgent approve resolution_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 ```
 
-Each `submit` call starts a background supervision daemon that watches for stalls and cancels hung jobs — it keeps running after `submit` returns. Poll job health and per-step state with `Processing-MuAgent hpc-status --watch --config $CFG`. For an unattended batch, pre-seed all three checkpoints with `--auto-approve` on `run` or `submit`. To keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts aliases or internal names).
+Each `submit` call starts a background supervision daemon that watches for stalls and cancels hung jobs — it keeps running after `submit` returns and is the sole monitor. Report job health and per-step state with one-shot `Processing-MuAgent hpc-status --config $CFG`, then yield (no poll loop). For an unattended batch, pre-seed all three checkpoints with `--auto-approve` on `run` or `submit`. To keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts aliases or internal names).
 
 ### Execution-MuAgent integration
 
@@ -264,9 +264,9 @@ This picks up from `latest_submission.json` and resumes the full watch loop (sta
 
 **Per-step output verification.** On every check the daemon verifies each stage's declared outputs as they appear — it actually opens the file (h5ad, parquet, JSON), not just checks for non-empty size. A `stage_output_verified` finding is written when a stage completes cleanly. When the head-job reaches COMPLETED, the same check runs over every stage spec; any missing or corrupt output is reported as `output_missing`.
 
-**When a job is cancelled or fails.** The daemon writes a plain-English diagnosis to `internal/hpc_monitor/latest_report.md` and a machine-readable snapshot to `latest_snapshot.json`, then stops. It never contacts a human and never resubmits. Read the report with `Execution-MuAgent report --run-dir <run_dir>`, fix the underlying problem, and re-run `submit`.
+**When a job is cancelled or fails.** The daemon writes a machine-readable snapshot to `internal/hpc_monitor/latest_snapshot.json` — including structured `findings` and `kill_action` — then stops. It never contacts a human and never resubmits. Read the findings via one-shot `Processing-MuAgent hpc-status --config $CFG`, fix the underlying problem, and re-run `submit`. (`latest_report.md` is a daemon-internal debug/audit log only.)
 
-If Execution-MuAgent reports a **policy rejection** (`submit_rejected_policy` in `latest_report.md`), the scheduler refused the job because of an invalid partition, account, or walltime. Re-run `configure-execution` with corrected settings and resubmit.
+If Execution-MuAgent reports a **policy rejection** (`submit_rejected_policy` in the snapshot findings, rendered by `hpc-status`), the scheduler refused the job because of an invalid partition, account, or walltime. Re-run `configure-execution` with corrected settings and resubmit.
 
 All cluster submission and monitoring goes through `Processing-MuAgent submit` → `Execution-MuAgent execute-spec`. There is no manual-submission path — Execution-MuAgent runs only via Processing-MuAgent.
 
@@ -354,7 +354,7 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 | `submit` | **The only cluster-execution path.** Submit head-job via Execution-MuAgent (hard dependency); starts background supervision daemon; infers phase target |
 | `supervisor-restart` | Restart the supervision daemon without resubmitting — use when the daemon died mid-run (SSH drop, site reboot, OOM) but the cluster job is still active |
 | `status` | Per-step pipeline state (S1a–S8 + review gates); `--watch` polls until actionable |
-| `hpc-status` | Job health (HEALTHY/SUSPECT/…), supervisor liveness, and per-step state; `--watch` polls; warns if supervision is offline while the cluster job is still running |
+| `hpc-status` | One-shot report of job health, supervisor liveness, monitor findings, and per-step state (no poll loop); warns if supervision is offline while the cluster job is still running |
 | `approve` | Write `internal/checkpoints/<stage>.approved` (human checkpoints only) |
 | `plan-review` | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/` |
 | `revise` | Update one parameter in `parameters.yaml` and reset a checkpoint to awaiting |
@@ -398,8 +398,8 @@ After checkpoint **#1**, use `submit` instead of foreground `run`. See **Running
 ```bash
 source <run_dir>/deliverables/plan/config/hpc.env
 Processing-MuAgent submit --config $CFG --executor slurm
-# submit returns within ~90 s; the supervision daemon keeps running in the background.
-Processing-MuAgent hpc-status --watch --config $CFG   # shows job health, supervisor liveness, per-step state
+# submit returns within ~90 s; the supervision daemon keeps running in the background as the sole monitor.
+Processing-MuAgent hpc-status --config $CFG   # one-shot: job health, supervisor liveness, findings, per-step state — then yield
 
 # If the daemon dies mid-run (SSH drop, site reboot) but the cluster job is still running:
 Processing-MuAgent supervisor-restart --config $CFG

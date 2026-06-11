@@ -200,12 +200,16 @@ S0 execution location is determined by the configured mode. **`run` is local-onl
 ```
 source deliverables/plan/config/hpc.env
 executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
-executor hpc-status --watch --config $CFG     # exits when plan_review awaits approval
+executor hpc-status --config $CFG             # one-shot: report the daemon's snapshot, then yield
 ```
 
 S0's QC exploration needs 100+ GB, so it must run on a compute node (never the login
 node). `submit` routes through Execution-MuAgent (kill-on-hang, survives SSH disconnect)
-and returns in ≤90 s; monitor it with `hpc-status --watch`.
+and returns in ≤90 s. After `submit`, the daemon is the sole monitor: read its
+`latest_snapshot.json` with one-shot `hpc-status`, report the status to the user, then
+wait NON-BLOCKING for the daemon's completion signal (`monitor.pid` removed, or
+`plan_review` becomes `awaiting_approval`) and report again before the next gate
+(report-and-yield).
 
 **Local mode (`execution.mode` is `local`) — run everything locally:**
 

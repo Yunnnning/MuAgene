@@ -122,14 +122,65 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
     return deleted
 
 
+_MARKER_GENE_GATE_MSG = (
+    "Ambient RNA correction is planned but no marker genes are set and no explicit "
+    "decision was recorded. Ask the user whether to check marker-gene expression "
+    "before vs after correction (recommended, especially at elevated contamination) "
+    "and to provide 5-10 gene symbols. Then re-run approve with one of:\n"
+    "  - provide genes:  executor revise s1a_ambient s1a_ambient.marker_genes=\"[GENE1, GENE2]\" --config <cfg>\n"
+    "  - defer to QC review:  approve plan_review --defer-marker-genes\n"
+    "  - decline:  approve plan_review --skip-marker-genes\n"
+    "Never invent or suggest gene symbols yourself."
+)
+
+
+def _apply_marker_gene_ack(run_dir: Path, ack: str | None) -> None:
+    """Record an unattended-batch marker-gene decision (`--marker-genes defer|skip`)."""
+    if not ack:
+        return
+    decision = {"defer": "deferred_to_qc", "skip": "declined"}[ack]
+    _pr.record_marker_gene_decision(run_dir, decision)
+    log_event(run_dir, {"stage": "plan_review", "event": "marker_gene_decision",
+                        "decision": decision})
+
+
+def _resolve_marker_gene_gate(run_dir: Path, *, defer: bool, skip: bool) -> None:
+    """Enforce an explicit marker-gene decision before plan_review is approved."""
+    if defer and skip:
+        raise click.ClickException(
+            "Pass at most one of --defer-marker-genes / --skip-marker-genes.")
+    if defer or skip:
+        decision = "deferred_to_qc" if defer else "declined"
+        _pr.record_marker_gene_decision(run_dir, decision)
+        log_event(run_dir, {"stage": "plan_review", "event": "marker_gene_decision",
+                            "decision": decision})
+        return
+    if _pr.marker_gene_decision_pending(run_dir):
+        raise click.ClickException(_MARKER_GENE_GATE_MSG)
+
+
 @main.command()
 @click.argument("stage")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--note", default="")
-def approve(stage: str, config_path: str, note: str) -> None:
+@click.option("--defer-marker-genes", "defer_marker_genes", is_flag=True,
+              help="plan_review only: record an explicit choice to check marker "
+                   "genes at QC review instead of now.")
+@click.option("--skip-marker-genes", "skip_marker_genes", is_flag=True,
+              help="plan_review only: record an explicit choice to decline the "
+                   "before/after-ambient marker gene expression check.")
+def approve(stage: str, config_path: str, note: str,
+            defer_marker_genes: bool, skip_marker_genes: bool) -> None:
     """Write internal/checkpoints/<stage>.approved to unblock <stage>_execute."""
     stage = _canonical_stage(stage)
     run_dir = _resolve_run_dir(config_path)
+    if stage == "plan_review":
+        _resolve_marker_gene_gate(
+            run_dir, defer=defer_marker_genes, skip=skip_marker_genes)
+    elif defer_marker_genes or skip_marker_genes:
+        raise click.ClickException(
+            "--defer-marker-genes / --skip-marker-genes apply only to "
+            "`approve plan_review`.")
     approval.approve(run_dir, stage, note=note)
     log_event(run_dir, {"stage": stage, "event": "approved", "note": note})
     if stage == "post_qc_review":
@@ -663,9 +714,14 @@ def _enforce_context_gate(paths: RunPaths, no_context: bool) -> None:
               help="With --auto-approve, do NOT pre-seed the given stage(s). Repeatable. "
                    "Example: --auto-approve-except s7_clustering")
 @click.option("--no-context", is_flag=True, help="Explicit user choice to proceed without biological context; fields marked status=missing.")
+@click.option("--marker-genes", "marker_genes_ack",
+              type=click.Choice(["defer", "skip"]), default=None,
+              help="With --auto-approve: record an explicit marker-gene decision so "
+                   "plan_review can be seeded. 'defer' = check at QC review; "
+                   "'skip' = decline. Provide actual genes via `revise` instead to run the check.")
 @click.option("--target", default="all")
 def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, ...],
-                 no_context: bool, target: str) -> None:
+                 no_context: bool, marker_genes_ack: str | None, target: str) -> None:
     """Run the DAG LOCALLY. With --auto-approve, checkpoints are unblocked automatically.
 
     `run` is local-only: it executes on this machine (local mode) or runs the
@@ -686,6 +742,7 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
         # Pre-seed approval sentinels so snakemake can run the DAG end-to-end in a
         # single invocation; --auto-approve-except keeps the listed stages gated.
         kept = set(auto_except)
+        _apply_marker_gene_ack(run_dir, marker_genes_ack)
         _seed_approvals(run_dir, HUMAN_CHECKPOINT_STAGES, note="auto-approved", kept=kept)
         if kept:
             click.echo(f"Auto-approved all stages except: "
@@ -716,6 +773,10 @@ def _seed_approvals(
     for stage in stages:
         if stage in kept:
             continue
+        if stage == "plan_review" and _pr.marker_gene_decision_pending(run_dir):
+            raise click.ClickException(
+                "Cannot auto-approve plan_review: " + _MARKER_GENE_GATE_MSG
+                + "\nFor an unattended batch, pass --marker-genes defer|skip.")
         approval.approve(run_dir, stage, note=note)
         seeded.append(stage)
         if stage == "post_qc_review":
@@ -787,6 +848,11 @@ def _prepare_submit_approvals(
               help="Pre-seed all checkpoint sentinels; head-job runs unattended end-to-end.")
 @click.option("--auto-approve-except", "auto_except", multiple=True,
               help="With --auto-approve, keep these gates honoured. Repeatable.")
+@click.option("--marker-genes", "marker_genes_ack",
+              type=click.Choice(["defer", "skip"]), default=None,
+              help="With --auto-approve: record an explicit marker-gene decision so "
+                   "plan_review can be seeded. 'defer' = check at QC review; "
+                   "'skip' = decline. Provide actual genes via `revise` instead to run the check.")
 @click.option("--output", "output_log", type=click.Path(), default=None,
               help="Scheduler output-log path for the head-job (optional).")
 @click.option("--unlock-stale-locks", is_flag=True,
@@ -801,6 +867,7 @@ def _prepare_submit_approvals(
                    "detection, no auto-cancel.")
 def submit(config_path: str, executor: str, target: str | None, no_context: bool,
            auto_approve: bool, auto_except: tuple[str, ...],
+           marker_genes_ack: str | None,
            output_log: str | None, unlock_stale_locks: bool,
            watch: bool) -> None:
     """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
@@ -841,6 +908,7 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
     auto_except = tuple(_canonical_stage(s) for s in auto_except)
     if auto_approve:
         kept = set(auto_except)
+        _apply_marker_gene_ack(run_dir, marker_genes_ack)
         _seed_approvals(run_dir, HUMAN_CHECKPOINT_STAGES, note="auto-approved (submit)", kept=kept)
         if kept:
             click.echo(f"Auto-approved all stages except: "

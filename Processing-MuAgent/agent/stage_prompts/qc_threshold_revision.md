@@ -79,10 +79,10 @@ Use this when `execution.mode` is `pbs` or `slurm`.
    ```bash
    source deliverables/plan/config/hpc.env
    executor submit --config $CFG --executor pbs|slurm
-   executor hpc-status --watch --config $CFG
+   executor hpc-status --config $CFG     # one-shot: report the daemon's snapshot, then yield
    ```
 
-   Use `hpc-status --watch` only. Never substitute `tail -f | grep`.
+   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and yield (report-and-yield — see `interaction_flow.md`). Never run a blocking loop or `tail -f | grep`.
 
 5. **Regenerate QC reports.** The inferred submit target is an execute rule such as `s3_doublets_execute`; the head job exits after S3 and does not run the local propose rule. After S3 completes successfully, run:
 

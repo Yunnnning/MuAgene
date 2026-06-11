@@ -14,7 +14,7 @@ Processing-MuAgent and Execution-MuAgent share a two-file contract:
 
 `hpc.env` is generated from `site.config` by Processing-MuAgent; it is a shell-variable projection, not an independent source. Do not edit it directly.
 
-Processing-MuAgent never submits or monitors cluster jobs directly — `Processing-MuAgent run` is local-only and `Processing-MuAgent submit` is cluster-only. `submit` delegates to `Execution-MuAgent execute-spec`, which handles rendering, submission, recording, and monitoring. Snakemake submits per-stage child jobs from within the running head-job. This boundary is absolute and includes the **planning-phase S0 ingest**: in HPC mode S0 is submitted via `submit --target s0_ingest_execute` (its QC exploration is memory-heavy and must run on a compute node), not run on the login node.
+Processing-MuAgent never submits or monitors cluster jobs directly — `Processing-MuAgent run` is local-only and `Processing-MuAgent submit` is cluster-only. `submit` delegates to `Execution-MuAgent execute-spec`, which handles rendering, submission, recording, and monitoring. Snakemake submits per-stage child jobs from within the running head-job.
 
 ## Commands
 
