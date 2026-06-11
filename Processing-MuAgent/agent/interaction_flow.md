@@ -201,12 +201,30 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
    - Also writes per-stage job spec YAMLs to `internal/specs/`.
    - The same content also lives at that path if the user wants to open it directly.
 
-2. On user decision:
-   - **Approve** → Before running `executor approve plan_review`, check whether the plan includes ambient RNA correction (`s1a_ambient_method` is not `none`). If it does, ask:
-     "The plan includes ambient RNA correction. To evaluate marker gene expression before and after correction, please provide a list of 5 to 10 genes. You can also skip this or check marker gene expression at QC reviewing phase instead."
-     - If the user provides genes: `executor revise s1a_ambient s1a_ambient.marker_genes="[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"`. Genes are stored in `parameters.yaml` and plotted automatically during S1a ambient correction (same resolution path as other revised parameters). Never automatically suggest or supply gene names (see the hard rule in [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md)).
-     - If the user skips or no ambient correction is planned: proceed directly.
-     Then: `executor approve plan_review --config $CFG --note "approved after review"`.
+4. **Marker gene check — mandatory question whenever ambient correction is planned.**
+   This is **not** optional agent housekeeping and **not** buried in the approve
+   path: surface it as part of presenting the plan. If the plan keeps ambient RNA
+   correction (`s1a_ambient.method != none`) **and** the rendered "Marker gene
+   expression check" item is still `not set`, you **must** ask the user before any
+   approval:
+   "The plan runs ambient RNA correction. I recommend checking marker-gene
+   expression *before vs after* correction — if a marker shows low ubiquitous
+   expression in cells that shouldn't express it, that's ambient contamination, and
+   correction should sharpen it back to the right populations. Please give me 5–10
+   marker gene symbols to visualise, or tell me to **defer** this to the QC review
+   step, or to **skip** it."
+   - Escalate the wording to **strongly recommended** when contamination is elevated
+     (high `qc_explore` median rho) or `study_goal=rare_populations`.
+   - **Never invent, suggest, look up, or supply gene names yourself** (hard rule,
+     [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md)).
+   - The user must make one explicit choice; record it:
+     - **provide genes** → `executor revise s1a_ambient s1a_ambient.marker_genes="[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"` (stored in `parameters.yaml`, plotted automatically during S1a).
+     - **defer to QC review** → carried as `--defer-marker-genes` on the approve call below (or `--marker-genes defer` on submit).
+     - **decline** → carried as `--skip-marker-genes` on the approve call below (or `--marker-genes skip` on submit).
+   - If `s1a_ambient.method == none`, skip this question entirely.
+
+5. On user decision:
+   - **Approve** → `executor approve plan_review --config $CFG --note "approved after review"`, adding `--defer-marker-genes` or `--skip-marker-genes` to match the user's marker-gene choice when no genes were provided. **The executor refuses to approve while the marker-gene decision is unresolved** — if you see that error, you skipped the mandatory question above; go ask it. (On HPC, the same decision is carried as `--marker-genes defer|skip` on `submit --auto-approve`.)
    - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. Stage is re-set to awaiting_approval; ask if more revisions are needed before re-approving.
    - **Abort** → stop. Tell the user the run dir is intact; they can resume later by re-invoking you on the same config.
 
@@ -226,7 +244,7 @@ If marker genes were stored at this step, confirm the stored gene list in one li
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
-- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoints/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoints/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies. **Hard rule — close the marker-gene loop here:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"** (this is the second chance when the check was deferred or skipped at plan review), you **must** relay that notice verbatim and obtain an explicit user decision — provide genes → run `executor marker-gene-check --config $CFG <genes...>` (plots before/after and refreshes the QC report), or explicitly decline — **before** approving QC. Do not auto-approve `post_qc_review` past an unaddressed "strongly recommended" notice. Follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact procedure. Never supply gene names yourself.
 - **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoints/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 

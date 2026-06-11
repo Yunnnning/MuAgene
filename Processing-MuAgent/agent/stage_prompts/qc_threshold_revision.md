@@ -129,7 +129,7 @@ Use this when `execution.mode` is `local`.
 
 This section applies when the user did not provide marker genes at plan review, or wants to check a different gene set. If genes were provided at plan review, S1a generated the figure automatically and it is already embedded in the QC report — no action needed here unless the user wants to change the gene set.
 
-If `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"**, surface it to the user.
+**Hard rule — close the marker-gene loop before approving QC:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"**, this is the second (and last) chance to run the before/after-ambient check — the user deferred or skipped it at plan review. You **must** relay the notice verbatim and obtain an explicit decision (provide genes → run the check; or explicitly decline) **before** `executor approve post_qc_review`. Do not auto-approve QC past a "strongly recommended" notice. The before/after comparison is still fully valid here: `rna_decontaminated.h5ad` retains both the pre-correction (`counts_raw`) and post-correction (`counts`) layers.
 
 **Hard rule — never pick genes yourself:**
 

@@ -231,5 +231,153 @@ class MarkerGeneCheckCliTests(unittest.TestCase):
             self.assertIn("--plot-only: QC reports unchanged", result.output)
 
 
+def _write_gate_layout(
+    tmp: Path,
+    *,
+    method: str = "auto",
+    yaml_method: str | None = None,
+    yaml_genes: list[str] | None = None,
+) -> Path:
+    """Minimal run layout for marker-gene gate tests: a frozen plan + params + cfg."""
+    plan_dir = tmp / "internal" / "artifacts" / "p2_plan"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan = {"stages": {"s1a_ambient": {"parameters": {"method": {"value": method}}}}}
+    (plan_dir / "preprocessing_plan.json").write_text(json.dumps(plan))
+
+    params_path = tmp / "internal" / "parameters.yaml"
+    params_path.parent.mkdir(parents=True, exist_ok=True)
+    params_path.write_text("{}\n")
+    if yaml_method is not None:
+        _prov.set_param(params_path, "s1a_ambient.method", yaml_method,
+                        source="user", confidence="high", rationale="test")
+    if yaml_genes is not None:
+        _prov.set_param(params_path, "s1a_ambient.marker_genes", yaml_genes,
+                        source="user", confidence="high", rationale="test")
+
+    cfg = tmp / "run.yaml"
+    cfg.write_text(yaml.safe_dump({"run_dir": str(tmp)}))
+    return tmp
+
+
+class MarkerGeneDecisionPendingTests(unittest.TestCase):
+    def test_pending_when_ambient_planned_and_no_genes(self):
+        from executor import plan_review as _pr
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            self.assertTrue(_pr.marker_gene_decision_pending(run_dir))
+
+    def test_not_pending_when_method_none(self):
+        from executor import plan_review as _pr
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="none")
+            self.assertFalse(_pr.marker_gene_decision_pending(run_dir))
+
+    def test_not_pending_when_method_revised_to_none(self):
+        from executor import plan_review as _pr
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto", yaml_method="none")
+            self.assertFalse(_pr.marker_gene_decision_pending(run_dir))
+
+    def test_not_pending_when_genes_provided(self):
+        from executor import plan_review as _pr
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto",
+                                         yaml_genes=["Kit", "Stra8"])
+            self.assertFalse(_pr.marker_gene_decision_pending(run_dir))
+
+    def test_not_pending_after_recording_decision(self):
+        from executor import plan_review as _pr
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            _pr.record_marker_gene_decision(run_dir, "deferred_to_qc")
+            self.assertFalse(_pr.marker_gene_decision_pending(run_dir))
+
+    def test_record_rejects_bad_decision(self):
+        from executor import plan_review as _pr
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            with self.assertRaises(ValueError):
+                _pr.record_marker_gene_decision(run_dir, "provided")
+
+
+class ApproveGateCliTests(unittest.TestCase):
+    def _approve(self, cfg, *extra):
+        return CliRunner().invoke(
+            cli.main, ["approve", "plan_review", "--config", str(cfg), *extra])
+
+    def test_blocks_when_decision_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            result = self._approve(run_dir / "run.yaml")
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("no marker genes are set", result.output)
+            self.assertFalse(
+                (run_dir / "internal" / "checkpoints" / "plan_review.approved").exists())
+
+    def test_defer_flag_records_and_approves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            result = self._approve(run_dir / "run.yaml", "--defer-marker-genes")
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(
+                _prov.get_value(run_dir / "internal" / "parameters.yaml",
+                                "s1a_ambient.marker_genes_decision"),
+                "deferred_to_qc")
+            self.assertTrue(
+                (run_dir / "internal" / "checkpoints" / "plan_review.approved").exists())
+
+    def test_skip_flag_records_declined(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            result = self._approve(run_dir / "run.yaml", "--skip-marker-genes")
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(
+                _prov.get_value(run_dir / "internal" / "parameters.yaml",
+                                "s1a_ambient.marker_genes_decision"),
+                "declined")
+
+    def test_genes_provided_passes_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto",
+                                         yaml_genes=["Kit"])
+            result = self._approve(run_dir / "run.yaml")
+            self.assertEqual(result.exit_code, 0, result.output)
+
+    def test_method_none_passes_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="none")
+            result = self._approve(run_dir / "run.yaml")
+            self.assertEqual(result.exit_code, 0, result.output)
+
+    def test_both_flags_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            result = self._approve(run_dir / "run.yaml",
+                                   "--defer-marker-genes", "--skip-marker-genes")
+            self.assertNotEqual(result.exit_code, 0)
+
+
+class SeedApprovalsGateTests(unittest.TestCase):
+    def test_seed_raises_when_plan_review_pending(self):
+        import click
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            with self.assertRaises(click.ClickException):
+                cli._seed_approvals(run_dir, ("plan_review",), note="auto-approved")
+
+    def test_seed_succeeds_after_ack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="auto")
+            cli._apply_marker_gene_ack(run_dir, "defer")
+            seeded = cli._seed_approvals(run_dir, ("plan_review",), note="auto-approved")
+            self.assertEqual(seeded, ["plan_review"])
+
+    def test_seed_skips_pending_check_when_method_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _write_gate_layout(Path(tmp), method="none")
+            seeded = cli._seed_approvals(run_dir, ("plan_review",), note="auto-approved")
+            self.assertEqual(seeded, ["plan_review"])
+
+
 if __name__ == "__main__":
     unittest.main()
