@@ -55,13 +55,17 @@ class RnaThresholdTests(unittest.TestCase):
         })
         th = qct.rna_thresholds(
             obs, k_mad=5.0, pct_mt_k=3.0, pct_mt_ceiling=20.0, pct_mt_floor=5.0,
-            min_counts_floor=500, min_genes_floor=200,
+            min_counts_floor=500, min_genes_floor=250,
         )
         self.assertGreaterEqual(th["total_counts_min"], 500)
-        self.assertGreaterEqual(th["n_genes_min"], 200)
+        self.assertGreaterEqual(th["n_genes_min"], 250)
         self.assertGreaterEqual(th["pct_counts_mt_max"], 5.0)
         self.assertIn("pct_counts_mt_mad_raw", th)
         self.assertLessEqual(th["pct_counts_mt_mad_raw"], th["pct_counts_mt_max"])
+        self.assertIn("total_counts_mad_lo_raw", th)
+        self.assertLessEqual(th["total_counts_mad_lo_raw"], th["total_counts_min"])
+        self.assertIn("n_genes_mad_lo_raw", th)
+        self.assertLessEqual(th["n_genes_mad_lo_raw"], th["n_genes_min"])
 
         # Pristine mito profile: MAD bound sits below the floor.
         pristine = pd.DataFrame({
@@ -71,9 +75,11 @@ class RnaThresholdTests(unittest.TestCase):
         })
         th_p = qct.rna_thresholds(
             pristine, k_mad=5.0, pct_mt_k=3.0, pct_mt_ceiling=20.0, pct_mt_floor=5.0,
-            min_counts_floor=500, min_genes_floor=200,
+            min_counts_floor=500, min_genes_floor=250,
         )
         self.assertLess(th_p["pct_counts_mt_mad_raw"], th_p["pct_counts_mt_max"])
+        if th["total_counts_mad_lo_raw"] < th["total_counts_min"]:
+            self.assertGreaterEqual(th["total_counts_min"], 500)
         masks = qct.rna_pass_masks(obs, th, pct_ribo_max=50.0)
         self.assertEqual(set(masks), {"total_counts", "n_genes",
                                        "pct_counts_mt", "pct_counts_ribo"})
@@ -84,7 +90,7 @@ class PctMtPanelRefsTests(unittest.TestCase):
         th = {"pct_counts_mt_max": 5.0, "pct_counts_mt_mad_raw": 3.4}
         refs = qc_explore._pct_mt_panel_refs(th)
         labels = [r[1] for r in refs]
-        self.assertIn("3.4% MAD", labels)
+        self.assertIn("3.4% (MAD)", labels)
         self.assertIn("5%", labels)
         self.assertIn("10%", labels)
 
@@ -92,8 +98,58 @@ class PctMtPanelRefsTests(unittest.TestCase):
         th = {"pct_counts_mt_max": 8.2, "pct_counts_mt_mad_raw": 8.2}
         refs = qc_explore._pct_mt_panel_refs(th)
         labels = [r[1] for r in refs]
-        self.assertNotIn("8.2% MAD", labels)
+        self.assertNotIn("8.2% (MAD)", labels)
         self.assertEqual(labels, ["5%", "10%"])
+
+
+class NGenesPanelRefsTests(unittest.TestCase):
+    def test_shows_mad_when_floor_clamps_applied(self):
+        th = {"n_genes_min": 250.0, "n_genes_mad_lo_raw": 180.0}
+        refs = qc_explore._n_genes_panel_refs(th, min_genes_floor=250.0)
+        labels = [r[1] for r in refs]
+        self.assertIn("180 (MAD)", labels)
+
+    def test_shows_floor_when_below_applied(self):
+        th = {"n_genes_min": 341.0, "n_genes_mad_lo_raw": 341.0}
+        refs = qc_explore._n_genes_panel_refs(th, min_genes_floor=250.0)
+        self.assertEqual(refs, [(250.0, "250")])
+
+
+class TotalCountsPanelRefsTests(unittest.TestCase):
+    def test_shows_mad_when_floor_clamps_applied(self):
+        th = {"total_counts_min": 500.0, "total_counts_mad_lo_raw": 326.0}
+        refs = qc_explore._total_counts_panel_refs(th)
+        labels = [r[1] for r in refs]
+        self.assertIn("326 (MAD)", labels)
+
+    def test_omits_mad_when_it_matches_applied(self):
+        th = {"total_counts_min": 800.0, "total_counts_mad_lo_raw": 800.0}
+        refs = qc_explore._total_counts_panel_refs(th)
+        self.assertEqual(refs, [])
+
+
+class NFragmentsPanelRefsTests(unittest.TestCase):
+    def test_shows_mad_when_floor_clamps_applied(self):
+        th = {"n_fragments_min": 1500.0, "n_fragments_mad_lo_raw": 299.0}
+        refs = qc_explore._n_fragments_panel_refs(th)
+        labels = [r[1] for r in refs]
+        self.assertIn("299 (MAD)", labels)
+
+    def test_omits_mad_when_it_matches_applied(self):
+        th = {"n_fragments_min": 1500.0, "n_fragments_mad_lo_raw": 1500.0}
+        refs = qc_explore._n_fragments_panel_refs(th)
+        self.assertEqual(refs, [])
+
+
+class AtacFragmentBoundsTests(unittest.TestCase):
+    def test_returns_mad_lower_before_floor_clamp(self):
+        rng = np.random.default_rng(0)
+        n_frag = rng.integers(1500, 20000, 500).astype(float)
+        f_lo, f_hi, mad_lo = qct.atac_n_fragment_bounds(
+            n_frag, k_mad=5.0, n_frag_floor=1500.0,
+        )
+        self.assertGreaterEqual(f_lo, 1500.0)
+        self.assertLessEqual(mad_lo, f_lo)
 
 
 class AppendixBlockTests(unittest.TestCase):

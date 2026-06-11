@@ -393,7 +393,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     frip_min = float(_resolve_param(params_path, plan_params, "frip_min", 0.25))
 
     # n_fragments MAD bounds (shared with the pre-plan QC exploration).
-    f_lo, f_hi = _qct.atac_n_fragment_bounds(
+    f_lo, f_hi, _ = _qct.atac_n_fragment_bounds(
         n_frag_values, k_mad=k_mad, n_frag_floor=n_frag_floor,
     )
 

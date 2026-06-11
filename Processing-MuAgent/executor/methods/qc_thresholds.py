@@ -39,8 +39,10 @@ def rna_thresholds(
 
     keep_floor = tc >= float(min_counts_floor)
     c_lo, c_hi = _mad.log_mad_bounds(tc[keep_floor], k=k_mad)
+    c_lo_mad_raw = float(c_lo)
     c_lo = max(c_lo, float(min_counts_floor))
     g_lo, g_hi = _mad.log_mad_bounds(ng[keep_floor], k=k_mad)
+    g_lo_mad_raw = float(g_lo)
     g_lo = max(g_lo, float(min_genes_floor))
     mt_subset = mt[keep_floor]
     pct_mt_mad_raw = _mad.mad_upper_raw(mt_subset, k=pct_mt_k)
@@ -50,8 +52,10 @@ def rna_thresholds(
     return {
         "total_counts_min": float(c_lo),
         "total_counts_max": float(c_hi),
+        "total_counts_mad_lo_raw": c_lo_mad_raw,
         "n_genes_min": float(g_lo),
         "n_genes_max": float(g_hi),
+        "n_genes_mad_lo_raw": g_lo_mad_raw,
         "pct_counts_mt_max": float(pct_mt_upper),
         "pct_counts_mt_mad_raw": float(pct_mt_mad_raw),
     }
@@ -77,19 +81,25 @@ def rna_pass_masks(
 
 def atac_n_fragment_bounds(
     n_frag: np.ndarray, *, k_mad: float, n_frag_floor: float
-) -> tuple[float, float]:
-    """MAD bounds on log(n_fragments) after the absolute floor (mirrors S2)."""
+) -> tuple[float, float, float]:
+    """MAD bounds on log(n_fragments) after the absolute floor (mirrors S2).
+
+    Returns ``(applied_lower, upper, mad_lower_raw)`` where ``mad_lower_raw`` is
+    the log-MAD lower bound before the absolute ``n_frag_floor`` clamp.
+    """
     n_frag = np.asarray(n_frag, dtype=float)
+    f_lo_mad_raw = float(n_frag_floor)
     if n_frag.size:
         keep_floor = n_frag >= float(n_frag_floor)
         if keep_floor.any():
             f_lo, f_hi = _mad.log_mad_bounds(n_frag[keep_floor], k=k_mad)
+            f_lo_mad_raw = float(f_lo)
         else:
             f_lo, f_hi = float(n_frag_floor), float(n_frag.max() if n_frag.size else 1e6)
     else:
         f_lo, f_hi = float(n_frag_floor), 1e12
     f_lo = max(f_lo, float(n_frag_floor))
-    return float(f_lo), float(f_hi)
+    return float(f_lo), float(f_hi), f_lo_mad_raw
 
 
 def atac_pass_masks(

@@ -177,7 +177,7 @@ def assemble_plan(
                 "min_counts_floor": p(500, "default",
                                         "Absolute minimum total_counts per cell; also clamps the "
                                         "MAD-derived lower bound when it falls below this value.", "medium"),
-                "min_genes_floor": p(200, "default",
+                "min_genes_floor": p(250, "default",
                                       "Absolute minimum n_genes_by_counts per cell; also clamps the "
                                       "MAD-derived lower bound when it falls below this value.", "medium"),
             }

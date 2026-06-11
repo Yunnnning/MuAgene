@@ -65,10 +65,25 @@ QC_HIST_PANEL_H = 4.6
 # transAxes y>1.0 (see _set_qc_panel_titles), which tight_layout does NOT account
 # for. Reserve a generous top band so they clear the suptitle, and add row spacing
 # so the bottom row's floating titles clear the top row's x-axis labels.
-QC_HIST_SUPTITLE_Y = 0.972
-QC_HIST_LAYOUT_RECT = (0, 0, 1, 0.88)
-QC_HIST_SUBPLOTS_TOP = 0.88
-QC_HIST_HSPACE = 0.55
+QC_HIST_SUPTITLE_Y = 0.975
+QC_HIST_LAYOUT_RECT = (0, 0, 1, 0.863)
+QC_HIST_SUBPLOTS_TOP = 0.863
+QC_HIST_HSPACE = 0.50
+
+# User-facing panel / axis labels for QC explore histograms (keys = internal metric ids).
+QC_METRIC_DISPLAY_NAMES: dict[str, str] = {
+    "total_counts": "total counts",
+    "n_genes": "number of genes",
+    "pct_counts_mt": "mitochondrial percentage",
+    "pct_counts_ribo": "ribosomal percentage",
+    "n_fragments": "number of fragments",
+    "tss_enrichment": "TSS enrichment",
+    "nucleosome_signal": "nucleosome signal",
+}
+
+
+def _qc_metric_display_name(name: str) -> str:
+    return QC_METRIC_DISPLAY_NAMES.get(name, name.replace("_", " "))
 
 
 def _qc_hist_grid_shape(n: int) -> tuple[int, int]:
@@ -114,6 +129,13 @@ def _format_cutoff_value(x: float, *, pct: bool, log_axis: bool) -> str:
     if log_axis:
         return f"{x:,.0f}" if x >= 100 else f"{x:.2g}"
     return f"{x:.2g}"
+
+
+def _cutoff_label(
+    x: float, *, pct: bool, log_axis: bool, mad: bool = False,
+) -> str:
+    text = _format_cutoff_value(x, pct=pct, log_axis=log_axis)
+    return f"{text} (MAD)" if mad else text
 
 
 def _stagger_threshold_label_ys(xs: list[float], x_range: float) -> list[float]:
@@ -310,6 +332,10 @@ def plot_qc_threshold_histograms(
       - ``refs``: optional list of ``(x, label)`` fixed reference lines drawn in a
         distinct style (e.g. 5% / 10% mito ceilings) — markers only, they do not
         affect the removed count.
+      - ``mad_lo_raw`` / ``mad_hi_raw``: optional raw MAD bounds; active ``lo`` /
+        ``hi`` labels get a `` (MAD)`` suffix when they coincide with the raw value.
+      - ``mad_hi``: when true and ``mad_hi_raw`` is omitted, the upper cutoff is
+        always labeled as MAD-derived (log-MAD upper bounds without clamping).
 
     ``extra_panel`` (optional) fills the first otherwise-empty grid slot with a
     non-histogram panel: ``{"distr": <frag_size_distr vector>, "title": str}``.
@@ -347,7 +373,7 @@ def plot_qc_threshold_histograms(
         refs = spec.get("refs") or []
         use_log = bool(spec.get("log"))
         if vals.size == 0:
-            ax.set_title(name + " (no data)")
+            ax.set_title(_qc_metric_display_name(name) + " (no data)")
             continue
 
         if use_log:
@@ -366,20 +392,30 @@ def plot_qc_threshold_histograms(
             ax.set_ylim(ymin, ymax * QC_HIST_Y_TOP_PAD)
 
         pct_metric = _is_pct_metric(name)
+        mad_lo_raw = spec.get("mad_lo_raw")
+        mad_hi_raw = spec.get("mad_hi_raw")
         removed = np.zeros(vals.shape, dtype=bool)
         markers: list[tuple[float, str, bool]] = []
         if lo is not None:
             removed |= vals < lo
+            lo_mad = (
+                mad_lo_raw is not None
+                and _thresholds_coincide(float(mad_lo_raw), float(lo), pct=pct_metric)
+            )
             markers.append((
                 float(lo),
-                _format_cutoff_value(float(lo), pct=pct_metric, log_axis=use_log),
+                _cutoff_label(float(lo), pct=pct_metric, log_axis=use_log, mad=lo_mad),
                 True,
             ))
         if hi is not None:
             removed |= vals > hi
+            if mad_hi_raw is not None:
+                hi_mad = _thresholds_coincide(float(mad_hi_raw), float(hi), pct=pct_metric)
+            else:
+                hi_mad = bool(spec.get("mad_hi", False))
             markers.append((
                 float(hi),
-                _format_cutoff_value(float(hi), pct=pct_metric, log_axis=use_log),
+                _cutoff_label(float(hi), pct=pct_metric, log_axis=use_log, mad=hi_mad),
                 True,
             ))
         for rx, rlabel in refs:
@@ -401,8 +437,8 @@ def plot_qc_threshold_histograms(
             pct=pct_metric,
         )
 
-        _set_qc_panel_titles(ax, name, int(removed.sum()))
-        ax.set_xlabel(name)
+        _set_qc_panel_titles(ax, _qc_metric_display_name(name), int(removed.sum()))
+        ax.set_xlabel(_qc_metric_display_name(name))
         ax.set_ylabel("number of cells")
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)

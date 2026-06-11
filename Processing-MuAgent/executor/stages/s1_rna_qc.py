@@ -57,7 +57,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     pct_mt_floor = params["pct_mt_floor"]["value"]
     min_cells = int(params["min_cells_per_gene"]["value"])
     min_counts_floor = params["min_counts_floor"]["value"]
-    min_genes_floor = float(params.get("min_genes_floor", {}).get("value", 200))
+    min_genes_floor = float(params.get("min_genes_floor", {}).get("value", 250))
     # Ribosomal upper-bound is recommended (not enforced strictly): some
     # tissues legitimately have very high ribo-protein expression.
     pct_ribo_max = float(params.get("pct_ribo_max", {}).get("value", 50.0))

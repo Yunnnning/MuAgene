@@ -19,6 +19,22 @@ def _fake_fsd(n=1001):
     return distr
 
 
+class CutoffLabelTests(unittest.TestCase):
+    def test_mad_suffix_on_active_when_raw_matches(self):
+        self.assertEqual(
+            figures._cutoff_label(341.0, pct=False, log_axis=True, mad=True),
+            "341 (MAD)",
+        )
+        self.assertEqual(
+            figures._cutoff_label(5.0, pct=True, log_axis=False, mad=False),
+            "5.0%",
+        )
+        self.assertEqual(
+            figures._cutoff_label(35790.0, pct=False, log_axis=True, mad=True),
+            "35,790 (MAD)",
+        )
+
+
 class FragmentSizePanelTests(unittest.TestCase):
     def test_draw_fragment_size_distribution_renders(self):
         fig, ax = plt.subplots()
@@ -40,7 +56,7 @@ class FragmentSizePanelTests(unittest.TestCase):
         rng = np.random.default_rng(0)
         metrics = {
             "n_fragments": {"values": rng.lognormal(8, 0.7, 500), "lo": 1500,
-                            "hi": 60000, "log": True},
+                            "hi": 60000, "log": True, "mad_hi": True},
             "tss_enrichment": {"values": rng.gamma(4, 1.2, 500), "lo": 1.5, "hi": 50.0},
             "nucleosome_signal": {"values": rng.gamma(2, 0.4, 500), "lo": None, "hi": 3.0},
         }
@@ -65,7 +81,7 @@ class FragmentSizePanelTests(unittest.TestCase):
                     "values": vals,
                     "lo": None,
                     "hi": 5.0,
-                    "refs": [(3.4, "3.4% MAD"), (5.0, "5%"), (10.0, "10%")],
+                    "refs": [(3.4, "3.4% (MAD)"), (5.0, "5%"), (10.0, "10%")],
                 },
             },
             out_dir=tempfile.gettempdir(),
@@ -76,7 +92,7 @@ class FragmentSizePanelTests(unittest.TestCase):
         fig2, ax = plt.subplots()
         figures._draw_threshold_markers(
             ax,
-            [(3.4, "3.4% MAD", False), (5.0, "5.0%", True), (10.0, "10%", False)],
+            [(3.4, "3.4% (MAD)", False), (5.0, "5.0%", True), (10.0, "10%", False)],
             x_range=20.0,
             pct=True,
         )

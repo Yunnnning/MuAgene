@@ -15,8 +15,6 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
   → S7 clustering + (CHECKPOINT 3) resolution_review → S8 UMAP → outputs
 ```
 
-Automated processing stages (`p1_context`, `s0_ingest`, `s1a`–`S3`, `S4`–`S6`, `s8_umap`) run from **artifact dependencies** and the three checkpoint boundaries below — they do **not** require per-stage `approve` calls. Optional `<stage>_propose` rules still exist for inspection or debugging, but they are not on the main execution path.
-
 ### User checkpoints (3)
 
 Three deliberate pauses where you review deliverables and decide before heavy downstream work continues. Everything else runs automatically once upstream artifacts exist and the relevant checkpoint is approved.
@@ -32,11 +30,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 ### Planning (pre-QC)
 
 - **P1 Context extraction** — Biological Context Report (organism, tissue, assay, DOIs) plus DOI-based prior-analysis extraction.
-- **S0 Ingest (merged planning compute)** — A single job that loads each modality **once**, validates inputs, assembles the preprocessing plan, and runs the QC threshold exploration on the in-memory matrices. It accepts Cell Ranger **filtered** and **raw** matrices, auto-detecting RNA and ATAC formats (see tables below) and validating fragments files. Performs a **diagnostic barcode check for paired multiome**: S0 checks for direct barcode matches, then tries matching after removing suffixes. If those don't match, it looks for a `barcode_translation_path` or `cell_metadata_path` provided by the user. No barcode intersection is performed here. If pairing can’t be confirmed, S0 downgrades the workflow from `paired` to `separate` and logs the reason in `validation_report.json`.
-
-  In the same job it then assembles `preprocessing_plan.json` (deterministically, from the biological context + ingest report) and runs the QC exploration: it computes per-cell QC metrics, derives the data-driven thresholds, counts cells removed per metric, and renders the threshold-preview histograms — emitting `qc_explore.json` and the figures `plan_review` shows. Per-cell QC metrics are persisted as small parquets (`internal/artifacts/qc_explore/rna_qc_metrics.parquet` / `atac_qc_metrics.parquet`) so a `revise` at the plan-review checkpoint re-derives thresholds, re-counts, and re-draws figures cheaply with no heavy reload.
-
-  S0 is heavy (RNA load + ATAC fragment import + QC — its exploration needs 100+ GB), so in HPC mode it is **always** submitted as a supervised cluster job via `submit --target s0_ingest_execute` and monitored with `hpc-status --watch`; it never runs on the login node. This follows the global execution boundary: **`executor run` is local-only and `executor submit` is cluster-only** — Processing-MuAgent prepares the head-job spec + `site.config` and Execution-MuAgent owns *all* cluster submission and monitoring (kill-on-hang, `hpc-status`). In local mode S0 runs in the foreground via `run`.
+- **S0 Ingest** — Loads and validates the input files, determines the workflow branch, and prepares the materials for user review at **checkpoint #1**. It accepts both **filtered** and **raw** Cell Ranger matrices, automatically detecting RNA and ATAC formats (see tables below). For **paired** multiome runs, it checks if RNA and ATAC modalities share cell barcodes; if not, it switches to the `separate` branch and records the reason. S0 also performs a **QC threshold preview** — exploring data distributions, estimating per-cell quality cutoffs, reporting how many cells would be removed by each metric, and generating diagnostic histograms. Based on these assessments, it produces a preprocessing plan for user review before QC filtering begins.
 
   **Supported RNA input formats (`rna_path`):**
 
@@ -54,7 +48,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   | `fragments_tsv` | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present |
   | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
-- **plan_review** — Generates a summary at `deliverables/plan/summary/plan_review.md` (including the QC threshold-preview tables + histograms from S0's exploration) for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs. _(Preprocessing-plan generation, formerly the separate P2 stage, is now folded into the merged S0 job above.)_
+- **plan_review** — Generates a summary at `deliverables/plan/summary/plan_review.md` (including the QC threshold-preview tables + histograms) for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs.
 
 ### Preprocessing
 
@@ -182,7 +176,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Step | Stages | Executes on | You |
 |------|--------|-------------|-----|
 | Context | P1 | Login node (cheap, interactive) | Fill biological context |
-| S0 ingest (load + validate + plan + QC explore) | S0 | Cluster (HPC mode, via Execution-MuAgent) / Login node (local mode) | — |
+| load + validate + plan + QC explore | S0 | Cluster | — |
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S1 → S2 → S3 | Cluster | — |
 | Checkpoint **#2** | post_qc_review | — | Review QC |
