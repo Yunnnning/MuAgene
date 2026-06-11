@@ -30,6 +30,11 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from . import qc_tables as _qc_tables
+from .md_tables import fmt as _fmt
+from .md_tables import md_table as _md_table
+from .md_tables import md_table_cell as _md_table_cell
+
 
 @dataclass(frozen=True)
 class _FigRender:
@@ -43,6 +48,14 @@ _DEFAULT_FIG_RENDER = _FigRender()
 
 _HIGH_CONTAM_THRESHOLD = 0.15  # median rho above which contamination is flagged as elevated
 
+# Marginal counting note for the "cells removed" column — matches the wording in
+# the plan-review QC exploration so the preview and the post-filter report agree.
+_REMOVAL_NOTE = (
+    "_Cells removed counts every cell failing that threshold independently (a cell "
+    "can appear under more than one row); multiple_metrics counts cells failing two "
+    "or more, and total_removed is the union._"
+)
+
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -50,42 +63,6 @@ _HIGH_CONTAM_THRESHOLD = 0.15  # median rho above which contamination is flagged
 
 def _pct(a: int, b: int) -> str:
     return f"{(100.0 * a / b):.1f}%" if b else "n/a"
-
-
-def _fmt(value: Any) -> str:
-    """Format a scalar for a user-facing threshold table."""
-    if value is None:
-        return "n/a"
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, (int, np.integer)):
-        return f"{int(value)}"
-    if isinstance(value, (float, np.floating)):
-        v = float(value)
-        if np.isnan(v):
-            return "nan"
-        if v == int(v) and abs(v) < 1e6:
-            return f"{int(v)}"
-        return f"{v:.2f}"
-    if isinstance(value, (list, tuple)):
-        return ", ".join(_fmt(x) for x in value)
-    return str(value)
-
-
-def _md_table_cell(value: Any) -> str:
-    """Format a table cell; preserve inline markdown (**, trailing *)."""
-    if isinstance(value, str) and ("**" in value or value.endswith("*")):
-        return value
-    return _fmt(value)
-
-
-def _md_table(header: list[str], rows: list[list[Any]]) -> str:
-    align = "|" + "|".join("---" for _ in header) + "|"
-    h = "| " + " | ".join(_md_table_cell(c) for c in header) + " |"
-    body = "\n".join(
-        "| " + " | ".join(_md_table_cell(x) for x in r) + " |" for r in rows
-    )
-    return f"{h}\n{align}\n{body}"
 
 
 def _stats_row(name: str, vals: np.ndarray) -> list[Any]:
@@ -112,10 +89,6 @@ def _qc_filter_count_lines(n_pre: int, n_post: int, *, import_note: str = "") ->
     )
 
 
-def _fmt_threshold_range(lo: Any, hi: Any) -> str:
-    return f"{_fmt(lo)} – {_fmt(hi)}"
-
-
 def _load_cells_removed(summary_path: Path) -> dict[str, Any]:
     if not summary_path.exists():
         return {}
@@ -131,25 +104,15 @@ def _rm_count(rm: dict[str, Any], key: str) -> Any:
 
 
 def _rna_threshold_table(params: dict[str, Any], rm: dict[str, Any]) -> str:
-    return _md_table(
-        ["parameter", "value", "cells removed"],
-        [
-            ["total_counts", _fmt_threshold_range(
-                _param(params, "s1_rna_qc.total_counts_min"),
-                _param(params, "s1_rna_qc.total_counts_max"),
-            ), _rm_count(rm, "total_counts")],
-            ["n_genes", _fmt_threshold_range(
-                _param(params, "s1_rna_qc.n_genes_min"),
-                _param(params, "s1_rna_qc.n_genes_max"),
-            ), _rm_count(rm, "n_genes")],
-            ["pct_counts_mt_max", _param(params, "s1_rna_qc.pct_counts_mt_max"),
-             _rm_count(rm, "pct_counts_mt")],
-            ["pct_counts_ribo_max", _param(params, "s1_rna_qc.pct_counts_ribo_max"),
-             _rm_count(rm, "pct_counts_ribo")],
-            ["multiple_metrics", "—", _rm_count(rm, "multiple_metrics")],
-            ["total_removed", "—", _rm_count(rm, "total_removed")],
-        ],
-    )
+    th = {
+        "total_counts_min": _param(params, "s1_rna_qc.total_counts_min"),
+        "total_counts_max": _param(params, "s1_rna_qc.total_counts_max"),
+        "n_genes_min": _param(params, "s1_rna_qc.n_genes_min"),
+        "n_genes_max": _param(params, "s1_rna_qc.n_genes_max"),
+        "pct_counts_mt_max": _param(params, "s1_rna_qc.pct_counts_mt_max"),
+        "pct_counts_ribo_max": _param(params, "s1_rna_qc.pct_counts_ribo_max"),
+    }
+    return _qc_tables.rna_removal_table(th, rm, value_label="value", include_note=False)
 
 
 def _atac_threshold_table(
@@ -158,28 +121,21 @@ def _atac_threshold_table(
     *,
     peak_source: str | None,
 ) -> str:
-    frip_min_val = _param(params, "s2_atac_qc.frip_min")
-    frip_threshold_note = (
-        frip_min_val if peak_source
-        else f"{frip_min_val} _(not applied — no peaks available)_"
+    th = {
+        "n_fragments_min": _param(params, "s2_atac_qc.n_fragments_min"),
+        "n_fragments_max": _param(params, "s2_atac_qc.n_fragments_max"),
+        "tss_enrichment_min": _param(params, "s2_atac_qc.tss_enrichment_min"),
+        "tss_enrichment_max": _param(params, "s2_atac_qc.tss_enrichment_max"),
+        "nucleosome_signal_max": _param(params, "s2_atac_qc.nucleosome_signal_max"),
+        "frip_min": _param(params, "s2_atac_qc.frip_min"),
+    }
+    frip_display = (
+        f"≥ {_fmt(th['frip_min'])}" if peak_source
+        else f"≥ {_fmt(th['frip_min'])} _(not applied — no peaks available)_"
     )
-    return _md_table(
-        ["parameter", "value", "cells removed"],
-        [
-            ["n_fragments", _fmt_threshold_range(
-                _param(params, "s2_atac_qc.n_fragments_min"),
-                _param(params, "s2_atac_qc.n_fragments_max"),
-            ), _rm_count(rm, "n_fragments")],
-            ["tss_enrichment", _fmt_threshold_range(
-                _param(params, "s2_atac_qc.tss_enrichment_min"),
-                _param(params, "s2_atac_qc.tss_enrichment_max"),
-            ), _rm_count(rm, "tss_enrichment")],
-            ["nucleosome_signal_max", _param(params, "s2_atac_qc.nucleosome_signal_max"),
-             _rm_count(rm, "nucleosome_signal")],
-            ["frip_min", frip_threshold_note, _rm_count(rm, "frip_min")],
-            ["multiple_metrics", "—", _rm_count(rm, "multiple_metrics")],
-            ["total_removed", "—", _rm_count(rm, "total_removed")],
-        ],
+    return _qc_tables.atac_removal_table(
+        th, rm, value_label="value", include_note=False,
+        frip_threshold_display=frip_display, frip_removed=_rm_count(rm, "frip_min"),
     )
 
 
@@ -236,7 +192,7 @@ def _fig_block(
     from .run_paths import RunPaths
     if not render.embed_figures:
         return ""
-    png = RunPaths(run_dir).resolve_qc_figure(stem)
+    png = RunPaths(run_dir).resolve_figure(stem)
     if not png.is_file():
         return ""
     alt = caption or stem.replace("_", " ")
@@ -261,7 +217,7 @@ def _fig_pair_block(
     rp = RunPaths(run_dir)
     panels: list[str] = []
     for stem, caption in (left, right):
-        png = rp.resolve_qc_figure(stem)
+        png = rp.resolve_figure(stem)
         if not png.is_file():
             continue
         if render.md_parent is not None:
@@ -343,8 +299,9 @@ def _markdown_to_html(text: str) -> str:
         if img:
             alt, src = img.group(1), img.group(2)
             out.append(
-                f'<p><img src="{html_module.escape(src, quote=True)}" '
-                f'alt="{html_module.escape(alt)}"></p>'
+                f'<figure class="qc-figure"><img src="{html_module.escape(src, quote=True)}" '
+                f'alt="{html_module.escape(alt)}">'
+                f'<figcaption>{html_module.escape(alt)}</figcaption></figure>'
             )
             i += 1
             continue
@@ -765,7 +722,7 @@ def _ambient_section(
 
     # Suggest marker gene check when correction ran but no figure was produced.
     from .run_paths import RunPaths as _RunPaths
-    _marker_fig = _RunPaths(run_dir).resolve_qc_figure("s1a_ambient_marker_genes")
+    _marker_fig = _RunPaths(run_dir).resolve_figure("s1a_ambient_marker_genes")
     notice = ""
     if not _marker_fig.is_file():
         if not _marker_genes:
@@ -861,6 +818,7 @@ def _rna_section(
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
+        f"\n{_REMOVAL_NOTE}\n"
         "\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
@@ -909,7 +867,7 @@ def _atac_section(
     fig_fsd_frip = _fig_pair_block(
         run_dir,
         ("s2_atac_qc_fragment_size_distribution",
-         "ATAC fragment size distribution after QC filtering."),
+         "Fragment size distribution (post-filtering); cells passing all S2 ATAC QC filters."),
         ("s2_atac_qc_frip_histogram",
          f"{FRIP_DISTRIBUTION_TITLE}; dashed line marks the filter threshold."),
         render=render,
@@ -930,6 +888,7 @@ def _atac_section(
         "### Thresholds used\n\n"
         f"{thresholds}\n"
         f"{peak_note}\n"
+        f"{_REMOVAL_NOTE}\n\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
         f"{warn_block}"
@@ -967,7 +926,7 @@ def _qc_review_intro(run_name: str, run_dir: Path) -> str:
     lines = [
         "# QC review checkpoint",
         "",
-        f"Review QC plots in `{run_name}/deliverables/checkpoint/qc_review/figures/`. "
+        f"Review QC plots in `{run_name}/deliverables/figures/`. "
         f"For a rendered report with images, open **qc_summary_{run_name}.html** in this folder "
         "(generated alongside this file). Approve when satisfied, or revise thresholds "
         "and re-run affected stages before approving.",
@@ -1344,15 +1303,16 @@ def _qc_html_styles() -> str:
         ".qc-plot-pair .qc-figure img { width: 100%; height: 300px; object-fit: contain; "
         "object-position: center top; display: block; }\n"
         ".qc-plots-below { margin-top: 1rem; }\n"
-        ".qc-figure { margin: 0; }\n"
-        ".qc-figure img { width: 100%; height: auto; display: block; }\n"
+        ".qc-figure { margin: 1rem 0; }\n"
+        ".qc-figure img { width: 100%; max-width: 100%; height: auto; display: block; }\n"
         ".qc-figure figcaption { font-size: 0.85rem; color: #555; margin-top: 0.35rem; }\n"
+        "img { max-width: 100%; height: auto; display: block; }\n"
     )
 
 
 def _html_figure(run_dir: Path, stem: str, caption: str) -> str:
     from .run_paths import RunPaths
-    png = RunPaths(run_dir).resolve_qc_figure(stem)
+    png = RunPaths(run_dir).resolve_figure(stem)
     if not png.is_file():
         return ""
     data = base64.standard_b64encode(png.read_bytes()).decode("ascii")
@@ -1454,7 +1414,7 @@ def _html_rna_section(
         "<h2>RNA quality filtering</h2>"
         f"{_md_html(intro)}"
         "<h3>Thresholds used</h3>"
-        f"{_md_html(thresholds)}"
+        f"{_md_html(thresholds + chr(10) + chr(10) + _REMOVAL_NOTE)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
         f'<div class="qc-plots-below">{plots}</div>'
@@ -1499,7 +1459,7 @@ def _html_atac_section(
     from .figures import FRIP_DISTRIBUTION_TITLE, TSS_PROFILE_CAPTION, TSS_PROFILE_TITLE
     plot_fsd = _html_figure(
         run_dir, "s2_atac_qc_fragment_size_distribution",
-        "ATAC fragment size distribution after QC filtering.",
+        "Fragment size distribution (post-filtering); cells passing all S2 ATAC QC filters.",
     )
     plot_tss = _html_figure(
         run_dir, "s2_atac_qc_tss_enrichment_profile",
@@ -1518,7 +1478,7 @@ def _html_atac_section(
         "<h2>ATAC quality filtering</h2>"
         f"{_md_html(intro)}"
         "<h3>Thresholds used</h3>"
-        f"{_md_html(thresholds + peak_note)}"
+        f"{_md_html(thresholds + peak_note + chr(10) + chr(10) + _REMOVAL_NOTE)}"
         "<h3>Summary statistics (retained cells)</h3>"
         f"{_md_html(stats)}"
         f"{pair_row}{tss_row}"
@@ -1604,8 +1564,8 @@ def write_qc_review(run_dir: Path | str) -> Path:
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
     rp.deliv_qc_review.mkdir(parents=True, exist_ok=True)
-    rp.deliv_qc_review_figures.mkdir(parents=True, exist_ok=True)
-    rp.migrate_qc_figures_to_subdir()
+    rp.deliv_figures.mkdir(parents=True, exist_ok=True)
+    rp.migrate_legacy_figures_to_central()
     for legacy in (rp.deliv_qc_review / "qc_review.md", rp.deliv_qc_review / "qc_summary.html"):
         if legacy.exists():
             legacy.unlink()
@@ -1615,14 +1575,14 @@ def write_qc_review(run_dir: Path | str) -> Path:
 
 
 def build(run_dir: Path | str) -> str:
-    """Full end-to-end QC summary (written at manifest to post_run/)."""
+    """Full end-to-end QC summary (written at manifest to results/)."""
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
     params_path = rp.parameters_yaml
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
-    render = _FigRender(md_parent=rp.deliv_post_run)
+    render = _FigRender(md_parent=rp.deliv_results)
 
     branch = _workflow_branch(run_dir, params)
     sections = [

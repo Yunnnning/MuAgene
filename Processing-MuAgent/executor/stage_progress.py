@@ -162,6 +162,22 @@ def execute_done(paths: RunPaths, stage: str) -> bool:
     return execute_artifact(paths, stage).exists()
 
 
+def _planning_done(paths: RunPaths) -> bool:
+    """True when the merged planning job (s0_ingest_execute) has fully completed.
+
+    The merged job loads + validates, assembles the plan, and runs the QC
+    exploration in one shot. ``qc_explore.json`` is its last write, so requiring
+    both the validation report and the explore JSON catches a job that died after
+    ingest but before exploration. A dedicated predicate is used (not
+    EXECUTE_MARKERS) because the explore marker lives in a different artifact dir
+    than the stage id.
+    """
+    return (
+        paths.artifact("s0_ingest", "validation_report.json").exists()
+        and paths.artifact("qc_explore", "qc_explore.json").exists()
+    )
+
+
 def _s7_sweep_done(paths: RunPaths) -> bool:
     return paths.artifact(RESOLUTION_REVIEW_STAGE, S7_SWEEP_MARKER).exists()
 
@@ -465,6 +481,14 @@ def infer_resume_target(run_dir: Path | str) -> str:
     paths = RunPaths(run_dir)
     branch_stages = _branch_stages(paths)
 
+    # Planning phase: the merged s0_ingest job (load + validate + plan + QC
+    # exploration) runs before checkpoint #1. Route it through `submit` so
+    # Execution-MuAgent owns the cluster submission.
+    if not _planning_done(paths):
+        return "s0_ingest_execute"
+    if not paths.approved_sentinel("plan_review").exists():
+        return "plan_review_propose"
+
     incomplete = _last_incomplete_execute(paths, QC_EXECUTE_STAGES, branch_stages)
     if incomplete is not None:
         return incomplete
@@ -511,6 +535,12 @@ def load_latest_hpc_submission(paths: RunPaths) -> dict | None:
 
 def required_human_approvals(target: str) -> tuple[str, ...]:
     """Human checkpoint sentinels that must exist before running ``target``."""
+    # Planning targets run BEFORE checkpoint #1 — they cannot require the
+    # plan_review sentinel (which only exists after they produce the plan).
+    # Without this short-circuit, `submit` would deadlock demanding an
+    # impossible approval.
+    if target in {"s0_ingest_execute", "plan_review_propose"}:
+        return ()
     base = ("plan_review",)
     qc_targets = {f"{s}_execute" for s in QC_EXECUTE_STAGES} | {"post_qc_review_propose"}
     mid_targets = {f"{s}_execute" for s in POST_QC_EXECUTE_STAGES} | {"s7_clustering_propose"}

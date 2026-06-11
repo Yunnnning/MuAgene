@@ -224,7 +224,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_qc_review_figures
+        figs_dir = RunPaths(run_dir).deliv_figures
         figs_dir.mkdir(parents=True, exist_ok=True)
         _fig.plot_counts_before_after(pre_counts, post_counts, out_dir=figs_dir,
                                        stem="s1a_ambient_counts_before_after",
@@ -446,7 +446,7 @@ def _plot_marker_genes(
     if found:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_qc_review_figures
+        figs_dir = RunPaths(run_dir).deliv_figures
         figs_dir.mkdir(parents=True, exist_ok=True)
         _fig.plot_marker_genes_tsne(
             coords, coords, expr_pre, expr_post,

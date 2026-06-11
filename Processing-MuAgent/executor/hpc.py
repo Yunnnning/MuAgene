@@ -51,9 +51,47 @@ SNAKEMAKE_SHARED_FS_USAGE: tuple[str, ...] = (
 )
 
 
-def snakemake_cluster_cli_args() -> list[str]:
-    """Extra snakemake CLI flags for PBS/SLURM orchestration on shared NFS."""
-    return ["--shared-fs-usage", *SNAKEMAKE_SHARED_FS_USAGE]
+# Marker bracketing the conda-activation block we inject into child jobscripts.
+# Used to keep injection idempotent across repeated sanitize passes.
+PMA_ACTIVATION_MARKER = "# >>> PMA conda activation (injected) >>>"
+
+
+def _conda_activation_block() -> str:
+    """POSIX-sh snippet that activates ``$PMA_CONDA_ENV`` when set.
+
+    Snakemake child jobscripts start with ``#!/bin/sh`` and are launched via
+    ``sbatch/qsub --export=ALL``, which propagates the submitter's environment
+    *variables* but does NOT activate the project conda env — so env-local tools
+    (``bgzip``/``tabix`` and the like) are absent from ``PATH`` inside the job.
+    This block self-activates the env so every child rule runs with the same
+    tooling the orchestrator has. Best-effort: if conda or the env is missing it
+    leaves the environment untouched rather than failing the job.
+    """
+    return (
+        f"{PMA_ACTIVATION_MARKER}\n"
+        'if [ -n "${PMA_CONDA_ENV:-}" ]; then\n'
+        '  __pma_base="$(conda info --base 2>/dev/null)"\n'
+        '  if [ -n "$__pma_base" ] && [ -f "$__pma_base/etc/profile.d/conda.sh" ]; then\n'
+        '    . "$__pma_base/etc/profile.d/conda.sh"\n'
+        '    conda activate "$PMA_CONDA_ENV" 2>/dev/null || true\n'
+        "  fi\n"
+        "fi\n"
+        "# <<< PMA conda activation (injected) <<<\n"
+    )
+
+
+def inject_conda_activation_text(text: str) -> str:
+    """Insert the conda-activation block right after the jobscript shebang.
+
+    Idempotent: returns ``text`` unchanged if the block is already present.
+    """
+    if PMA_ACTIVATION_MARKER in text:
+        return text
+    block = _conda_activation_block()
+    lines = text.splitlines(keepends=True)
+    if lines and lines[0].startswith("#!"):
+        return lines[0] + block + "".join(lines[1:])
+    return block + text
 
 
 def sanitize_snakemake_jobscript_text(text: str) -> str:
@@ -62,12 +100,15 @@ def sanitize_snakemake_jobscript_text(text: str) -> str:
     Removes `storage-local-copies` and `--local-storage-prefix` options, and replaces
     `--mode remote` with `--mode subprocess`. This avoids unnecessary local storage
     use and prevents post-job hangs during output syncing, as all I/O should occur
-    directly over NFS.
+    directly over NFS. Also injects a conda-activation block so child jobs run inside
+    ``$PMA_CONDA_ENV`` (otherwise env-local tools like ``bgzip``/``tabix`` are not on
+    PATH under ``sbatch/qsub --export=ALL``).
     """
     text = re.sub(r"(?<=\s)storage-local-copies(?=\s)", "", text)
     text = re.sub(r"--mode\s+'remote'", "--mode 'subprocess'", text)
     text = re.sub(r"--mode\s+remote(?=\s)", "--mode subprocess ", text)
     text = re.sub(r"\s--local-storage-prefix\s+\S+", "", text)
+    text = inject_conda_activation_text(text)
     return text
 
 
@@ -147,17 +188,6 @@ def head_job_log_path(executor: Executor) -> Path:
     if executor == "slurm":
         return log_dir / "pma_runner-%j.out"
     return log_dir
-
-
-def profile_path(executor: Executor) -> Path:
-    """Return the snakemake profile directory for the given executor."""
-    if executor == "local":
-        raise ValueError("profile_path is not applicable for local executor")
-    p = PROFILE_DIR[executor]
-    if not p.exists():
-        raise FileNotFoundError(
-            f"snakemake profile dir not found: {p}. Run from a clean checkout.")
-    return p
 
 
 def detect_scheduler() -> Executor:
@@ -479,8 +509,14 @@ def discover_site() -> dict[str, object]:
             slurm["suggested_partition"] = partitions[0]
 
         if user:
+            # NOTE: pass the filter as a bare `user=<name>` condition, NOT
+            # `where=user=<name>`. sacctmgr treats a literal `where=...` token as
+            # an unknown condition, prints "Unknown condition: where=user=..."
+            # to stderr, and exits 0 with empty stdout — so the account silently
+            # comes back unset and downstream submission is rejected with
+            # "Invalid account or account/partition combination".
             acct_text = _run_cmd([
-                "sacctmgr", "show", "assoc", f"where=user={user}",
+                "sacctmgr", "show", "assoc", f"user={user}",
                 "format=Account,Partition", "-P", "-n",
             ])
             accounts = _parse_slurm_accounts(acct_text)
@@ -563,7 +599,7 @@ def write_hpc_env(path: Path | str, site_config_path: Path | str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# Processing-MuAgent HPC settings — source before submit/run on cluster:",
-        "#   source deliverables/pre_run/config/hpc.env",
+        "#   source deliverables/plan/config/hpc.env",
         f"# execution mode: {mode}",
         "",
     ]
@@ -640,12 +676,13 @@ def load_execution_settings(run_dir: Path | str) -> dict[str, object]:
 
     return {
         "mode": mode,
-        "hpc_env_path": "deliverables/pre_run/config/hpc.env"
+        "hpc_env_path": "deliverables/plan/config/hpc.env"
         if hpc_env_path.exists() else None,
         "settings": settings,
         "s0_policy": (
-            "S0 ingest runs on the login node first; on OOM/walltime (or very large "
-            "inputs) it is retried as a cluster job before P2 continues."
+            "In HPC mode, S0 ingest is always submitted as a supervised cluster "
+            "head-job via Execution-MuAgent (its QC exploration is memory-heavy and "
+            "must not run on the login node). In local mode it runs on this machine."
         ),
     }
 

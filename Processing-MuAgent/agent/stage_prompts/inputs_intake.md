@@ -66,11 +66,11 @@ executor init --config <draft-run.yaml>
 This creates:
 
 - `<run_dir>/internal/` — pipeline state scaffold
-- `<run_dir>/deliverables/pre_run/config/run.yaml` — canonical copy of the config
-- `<run_dir>/deliverables/pre_run/config/biological_context.md` — blank template
-- `<run_dir>/deliverables/{pre_run,checkpoint,post_run}/` — user-facing outputs split by lifecycle phase
+- `<run_dir>/deliverables/plan/config/run.yaml` — canonical copy of the config
+- `<run_dir>/deliverables/plan/config/biological_context.md` — blank template
+- `<run_dir>/deliverables/plan/` — created at init; `figures/`, `checkpoints/`, and `results/` appear when outputs are written
 
-From now on, `$CFG = <run_dir>/deliverables/pre_run/config/run.yaml` for every subsequent CLI call.
+From now on, `$CFG = <run_dir>/deliverables/plan/config/run.yaml` for every subsequent CLI call.
 
 ### 3. Populate biological context
 
@@ -108,7 +108,7 @@ md = context_mapper.build_report_from_chat(dois=["10.xxxx/...", "10.yyyy/..."])
 context_mapper.write_report(run_dir, md)
 ```
 
-P1 will fetch abstracts for each DOI during `executor run --target p2_plan_execute`.
+P1 will fetch abstracts for each DOI during `executor run --target s0_ingest_execute` (the planning target — it runs P1 → S0 and assembles the plan in-process).
 
 **(d) Nothing supplied** — leave the blank template. Warn the user that the Phase 1 gate will block them and they'll need to either paste context later or opt out explicitly with `executor run --config $CFG --no-context`. Don't opt out silently on their behalf.
 
@@ -187,31 +187,38 @@ This writes `plan.workflow_branch_declared` to `parameters.yaml` as a `source=us
 
 ### 6. Run to the plan-review gate
 
-S0 execution location is determined by the configured mode.
+The planning target is **`s0_ingest_execute`**. It runs P1 → S0 and assembles the
+preprocessing plan in-process (the former separate `p2_plan` rule was merged into
+S0 — there is no `p2_plan_execute` rule; requesting it raises `MissingRuleException`).
+A single `s0_ingest_execute` run produces the ingest h5ad, `validation_report.json`,
+`preprocessing_plan.json`, and the `qc_explore` artifacts the plan review consumes.
+S0 execution location is determined by the configured mode. **`run` is local-only;
+`submit` is cluster-only** — Processing-MuAgent never submits cluster jobs itself.
 
-**HPC mode (`execution.mode` is `pbs` or `slurm`) — run S0 on the cluster directly:**
+**HPC mode (`execution.mode` is `pbs` or `slurm`) — submit S0 as a supervised cluster job:**
 
 ```
-source deliverables/pre_run/config/hpc.env
-executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute
-executor run --config $CFG --target p2_plan_execute
+source deliverables/plan/config/hpc.env
+executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
+executor hpc-status --watch --config $CFG     # exits when plan_review awaits approval
 ```
+
+S0's QC exploration needs 100+ GB, so it must run on a compute node (never the login
+node). `submit` routes through Execution-MuAgent (kill-on-hang, survives SSH disconnect)
+and returns in ≤90 s; monitor it with `hpc-status --watch`.
 
 **Local mode (`execution.mode` is `local`) — run everything locally:**
 
 ```
-executor run --config $CFG --target p2_plan_execute
+executor run --config $CFG --target s0_ingest_execute
 ```
 
-Runs P1 → S0 → P2 and stops at `plan_review`. Small inputs: ~30s.
+Runs P1 → S0 (+ plan assembly) and stops before `plan_review`. Small inputs: ~30s.
 
-**S0 failed locally with a resource error** (OOM, Killed, walltime — check with
-`from executor.hpc import looks_like_resource_failure` on snakemake stderr):
-
-1. Configure HPC if not done (`hpc-info` + `configure-execution`; raise `PMA_RESOURCES_SCALE` if needed).
-2. `source deliverables/pre_run/config/hpc.env`
-3. `executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute`
-4. `executor run --config $CFG --target p2_plan_execute`
+**If S0 OOMs:** in HPC mode, raise `PMA_RESOURCES_SCALE` (`configure-execution
+--resources-scale N`) and `submit` again. In local mode, the machine is too small —
+switch to HPC (`configure-execution --mode slurm|pbs`) and submit. There is no
+automatic local→cluster retry.
 
 Do **not** cluster-retry logic errors (pairing ambiguous, path missing, branch mismatch). Relay and let the user fix inputs or `declare-branch`.
 
@@ -219,19 +226,19 @@ Do **not** cluster-retry logic errors (pairing ambiguous, path missing, branch m
 
 After `executor init`: confirm the canonical config path and blank context template path.
 
-After biological-context write (cases a/b/c): confirm the file exists at `deliverables/pre_run/config/biological_context.md` and that you populated the fields the user told you about.
+After biological-context write (cases a/b/c): confirm the file exists at `deliverables/plan/config/biological_context.md` and that you populated the fields the user told you about.
 
-After `configure-execution`: confirm `execution.mode` and, for HPC, the path to `deliverables/pre_run/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume.
+After `configure-execution`: confirm `execution.mode` and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume.
 
-After `executor run --target p2_plan_execute`:
+After `executor run --target s0_ingest_execute`:
 
-- If `deliverables/pre_run/summary/context_summary.md` exists, paste its content back verbatim. Any conflicts (e.g. "report says mouse, file fingerprint says human") surface here and must be resolved before Step 3.
+- If `deliverables/plan/summary/context_summary.md` exists, paste its content back verbatim. Any conflicts (e.g. "report says mouse, file fingerprint says human") surface here and must be resolved before Step 3.
 - If `executor run` errored:
   - **Phase 1 gate error** — context template is blank and user didn't opt out. Ask for context OR tell them to re-invoke with `--no-context`.
   - **S0 declared-vs-detected mismatch** — relay the raised error and ask the user to fix the declaration or the inputs.
   - **S0 ambiguous pairing** — relay the raised error; ask paired vs separate; re-run `executor declare-branch` and re-try.
 
-Transition to Step 3 (`plan_review`) once `plan_review.md` exists under `deliverables/pre_run/summary/` (written by `plan_review_propose` or `Processing-MuAgent plan-review`).
+Transition to Step 3 (`plan_review`) once `plan_review.md` exists under `deliverables/plan/summary/` (written by `plan_review_propose` or `Processing-MuAgent plan-review`).
 
 ## Explicit non-actions
 

@@ -48,11 +48,12 @@ def _scaled_runtime_min(minutes: int) -> int:
 
 # Base resource table. Edit here; both PBS and SLURM profiles pick this up.
 _BASE_RESOURCES: dict[str, dict[str, int]] = {
-    # Local rules — declared for completeness; s0_ingest_execute uses these on cluster.
+    # Local rules — declared for completeness.
     "p1_context":     {"cpus": 1, "mem_mb": 1_000},
-    "p2_plan":        {"cpus": 1, "mem_mb": 1_000},
     "plan_review":    {"cpus": 1, "mem_mb": 1_000},
-    "s0_ingest":      {"cpus": 1, "mem_mb": 8_000},
+    # s0_ingest is the merged planning compute: load RNA + import ATAC fragments +
+    # full RNA QC + threshold exploration in one cluster job — sized like s2_atac_qc.
+    "s0_ingest":      {"cpus": 4, "mem_mb": 32_000},
     # Cluster rules.
     "s1a_ambient":    {"cpus": 2, "mem_mb": 16_000},
     "s1_rna_qc":      {"cpus": 1, "mem_mb": 8_000},
@@ -68,9 +69,8 @@ _BASE_RESOURCES: dict[str, dict[str, int]] = {
 # Walltime in MINUTES. snakemake>=8 requires `runtime` to be int minutes.
 _BASE_RUNTIME_MIN: dict[str, int] = {
     "p1_context":     15,
-    "p2_plan":        15,
     "plan_review":    10,
-    "s0_ingest":      30,
+    "s0_ingest":     360,
     "s1a_ambient":    60,
     "s1_rna_qc":     120,
     "s2_atac_qc":    360,
@@ -111,7 +111,7 @@ def mem_mb_for(stage: str, attempt: int = 1) -> int:
 # when no hint is present (e.g. for the head_job itself).
 # Independent of PMA_RESOURCES_SCALE: reflects algorithm cadence, not compute time.
 PROGRESS_TIMEOUT_HINT: dict[str, int] = {
-    "s0_ingest":        20,
+    "s0_ingest":       120,
     "s1a_ambient":      30,
     "s1_rna_qc":        45,
     "s2_atac_qc":      120,

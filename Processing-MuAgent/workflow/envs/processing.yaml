@@ -37,6 +37,11 @@ dependencies:
   - mudata>=0.2
   - muon>=0.1
   - snapatac2>=2.6
+  # htslib provides bgzip + tabix, required by executor/io.py to bgzip-compress
+  # and index the chromosome-bound-filtered / chr-renamed ATAC fragments before
+  # the SnapATAC2 import. Must be in the env (not just the base shell) so child
+  # cluster jobs that activate $PMA_CONDA_ENV have them on PATH.
+  - htslib
   - leidenalg>=0.10
   - umap-learn>=0.5
   - numpy>=1.24

@@ -30,9 +30,9 @@ P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 
 ### User checkpoints (3)
 
-1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `pre_run/summary/plan_review.md`.
-2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `checkpoint/qc_review/qc_review_<run>.md` and figures in `checkpoint/qc_review/figures/`. If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
-3. **Clustering resolution review** (`s7_clustering`) — after S6 PCA (RNA) + neighbor graph (`s6_neighbors`), before S8. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding).
+1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `plan/summary/plan_review.md`.
+2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `checkpoints/qc_review/qc_review_<run>.md` (figures embedded; raw plots in `deliverables/figures/`). If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
+3. **Clustering resolution review** (`s7_clustering`) — after S6 PCA (RNA) + neighbor graph (`s6_neighbors`), before S8. Review `checkpoints/resolution_review/`. **Separate / single-modality:** resolutions set **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding).
 
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
 - S3 (`s3_doublets`) runs before QC review and is normally auto-approved.
@@ -44,7 +44,7 @@ For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out 
 ## Hard rules
 
 1. **Never invent paths, values, or biological context.** If the user didn't give you something, ask — don't guess. If you can't proceed without it, say so plainly and wait.
-2. **Ask local vs HPC during Step 2** if the user hasn't said. For HPC, run `executor hpc-info`, surface available queues/partitions and suggested project/account, ask the user to confirm, then `executor configure-execution`. This writes both `hpc.env` (for runner scripts) and `site.config` (the YAML platform description consumed by Execution-MuAgent). Do not guess scheduler settings. **S0 ingest:** when `execution.mode` is `pbs` or `slurm`, run `s0_ingest_execute` on the cluster directly — do **not** try locally first. Only run locally when `execution.mode` is `local`. Do not cluster-retry pairing or validation logic errors regardless of mode.
+2. **Ask local vs HPC during Step 2** if the user hasn't said. For HPC, run `executor hpc-info`, surface available queues/partitions and suggested project/account, ask the user to confirm, then `executor configure-execution`. This writes both `hpc.env` (for runner scripts) and `site.config` (the YAML platform description consumed by Execution-MuAgent). Do not guess scheduler settings. **Execution boundary — this is absolute:** `executor run` is **local-only** and `executor submit` is **cluster-only**. Processing-MuAgent never submits or monitors cluster jobs itself; it only prepares the spec + `site.config` and delegates *all* cluster execution to Execution-MuAgent via `submit`. There is no `run --executor pbs|slurm`. **S0 ingest:** when `execution.mode` is `pbs` or `slurm`, S0 is **always** submitted as a cluster job with `executor submit --executor pbs|slurm --target s0_ingest_execute` (its QC exploration is memory-heavy — 100+ GB — and must run on a compute node, never the login node), then monitored with `executor hpc-status --watch`. Run S0 locally **only** when `execution.mode` is `local`. Do not cluster-retry pairing or validation logic errors regardless of mode.
 3. **Record state only via `executor` CLI.** Do not write to `parameters.yaml`, `state.yaml`, `biological_context.md`, or any checkpoint sentinel directly. Every state change goes through `executor init | declare-branch | configure-execution | hpc-info | approve | revise | plan-review | propose | run | submit`. The one exception: for biological context from chat text or DOIs, call `executor.context_mapper.build_report_from_chat(...)` + `write_report(run_dir, content)` — still deterministic, still the only path that lands the report at the canonical location. **QC threshold revision exception:** you may delete stale artifact files listed in [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) so affected stages re-run.
 4. **Surface executor output verbatim.** Don't paraphrase parameter values, plan summaries, or proposal contents. Copy the tool output back to the user. Deterministic rendering is the whole point of having `executor plan-review`, `executor status`, and the proposal yaml files — let them speak.
 5. **No silent overrides.** If the user declared `rna_only` but supplied both modalities, S0 will raise; relay the raised error, don't retry with a different flag.
@@ -65,22 +65,22 @@ If the user jumps straight to "run the pipeline on these files", that's fine —
 
 Files the user reviews BEFORE approving the plan — point them here at the right moment:
 
-- `deliverables/pre_run/config/run.yaml`
-- `deliverables/pre_run/config/biological_context.md`
-- `deliverables/pre_run/config/hpc.env` (HPC runs — source before submit)
-- `deliverables/pre_run/config/site.config` (HPC runs — YAML platform description written by `configure-execution`; consumed by Execution-MuAgent; not user-reviewed unless they ask)
-- `deliverables/pre_run/summary/context_summary.md`
-- `deliverables/pre_run/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
+- `deliverables/plan/config/run.yaml`
+- `deliverables/plan/config/biological_context.md`
+- `deliverables/plan/config/hpc.env` (HPC runs — source before submit)
+- `deliverables/plan/config/site.config` (HPC runs — YAML platform description written by `configure-execution`; consumed by Execution-MuAgent; not user-reviewed unless they ask)
+- `deliverables/plan/summary/context_summary.md`
+- `deliverables/plan/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
 
 Files at user checkpoints and at the hard stop:
 
-- `deliverables/checkpoint/qc_review/qc_review_<run>.md` (QC review checkpoint #2)
-- `deliverables/checkpoint/qc_review/qc_summary_<run>.html` (rendered QC report)
-- `deliverables/checkpoint/qc_review/figures/` (QC checkpoint plots)
-- `deliverables/checkpoint/resolution_review/resolution_summary.md` (resolution review #3)
-- `deliverables/checkpoint/resolution_review/resolution_review.{html,ipynb}`
-- `deliverables/post_run/qc_summary.md` (final QC summary, written at manifest)
-- `deliverables/post_run/run_manifest.json` (handoff artifact)
-- `deliverables/post_run/` (UMAP figures, processed data, review_processed_h5mu.ipynb)
+- `deliverables/checkpoints/qc_review/qc_review_<run>.md` (QC review checkpoint #2)
+- `deliverables/checkpoints/qc_review/qc_summary_<run>.html` (rendered QC report)
+- `deliverables/figures/` (all pipeline figures — QC, resolution compare, UMAP)
+- `deliverables/checkpoints/resolution_review/resolution_summary.md` (resolution review #3)
+- `deliverables/checkpoints/resolution_review/resolution_review.{html,ipynb}`
+- `deliverables/results/qc_summary.md` (final QC summary, written at manifest)
+- `deliverables/results/run_manifest.json` (handoff artifact)
+- `deliverables/results/` (processed data, review_processed_h5mu.ipynb)
 
-All executor CLI commands accept `--config <path-to-run.yaml>`. The canonical path after `executor init` is `deliverables/pre_run/config/run.yaml`; use that for every subsequent CLI call.
+All executor CLI commands accept `--config <path-to-run.yaml>`. The canonical path after `executor init` is `deliverables/plan/config/run.yaml`; use that for every subsequent CLI call.

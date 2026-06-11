@@ -15,16 +15,18 @@ import numpy as np
 
 
 FIGURE_DPI = 300
-FONT_SIZE = 12
+FONT_SIZE = 14
 QC_FILL_COLOR = "#f97316"
 QC_FILL_ALPHA = 0.50
 QC_EDGE_COLOR = "#c2410c"
 QC_EDGE_LINEWIDTH = 0.4
+RNA_HIST_FILL_COLOR = "royalblue"
+RNA_HIST_FILL_ALPHA = 0.50
+RNA_HIST_EDGE_COLOR = "#1e40af"
 QC_ANNOTATION_COLOR = "firebrick"
 ANNOTATION_LINEWIDTH = 1.2
-FSD_ANNOTATION_LINEWIDTH = 1.0
-ANNOTATION_FONTSIZE = FONT_SIZE - 2
-TITLE_SIZE = 14
+ANNOTATION_FONTSIZE = FONT_SIZE - 1
+TITLE_SIZE = 16
 RNA_VIOLIN_FILL_COLOR = "dodgerblue"
 RNA_VIOLIN_FILL_ALPHA = 0.50
 RNA_VIOLIN_QUANTILE_COLOR = "mediumblue"
@@ -42,6 +44,140 @@ TSS_PASS_COLOR = "coral"
 TSS_FAIL_COLOR = "lightseagreen"
 UMAP_SIZE = (6.5, 5.5)
 QC_VIOLIN_SIZE = (12, 4.5)
+QC_REF_LINE_COLOR = "#6b7280"  # grey for fixed reference markers (e.g. mt ceilings)
+THRESHOLD_LABEL_Y_TOP = 0.98
+THRESHOLD_LABEL_Y_STEP = 0.13
+THRESHOLD_LABEL_Y_MIN = 0.32
+THRESHOLD_LABEL_X_SEP_FRAC = 0.05  # fraction of x-range treated as "same slot"
+THRESHOLD_LABEL_X_OFFSET_LINEAR_FRAC = 0.018  # label shift off vline (linear axes)
+THRESHOLD_LABEL_X_OFFSET_PCT = 0.35  # fixed shift for % metrics (robust to outlier x-range)
+THRESHOLD_LABEL_X_OFFSET_LOG_FRAC = 0.055  # label shift off vline (log axes)
+QC_EXPLORE_RNA_TITLE = "RNA Data Distribution and QC Thresholds"
+QC_EXPLORE_ATAC_TITLE = "ATAC Data Distribution and QC Thresholds"
+QC_HIST_SUPTITLE_SIZE = TITLE_SIZE + 1
+QC_PANEL_SUBTITLE_SIZE = FONT_SIZE
+QC_HIST_METRIC_TITLE_Y = 1.12  # transAxes; va=bottom
+QC_HIST_REMOVED_SUBTITLE_Y = 1.04  # transAxes; va=bottom — gap above plot top (1.0)
+QC_HIST_Y_TOP_PAD = 1.10  # expand ylim after hist so bars clear the subtitle band
+QC_HIST_PANEL_W = 5.5
+QC_HIST_PANEL_H = 4.6
+# The per-panel metric name + "(cells removed: N)" are floating ax.text at
+# transAxes y>1.0 (see _set_qc_panel_titles), which tight_layout does NOT account
+# for. Reserve a generous top band so they clear the suptitle, and add row spacing
+# so the bottom row's floating titles clear the top row's x-axis labels.
+QC_HIST_SUPTITLE_Y = 0.972
+QC_HIST_LAYOUT_RECT = (0, 0, 1, 0.88)
+QC_HIST_SUBPLOTS_TOP = 0.88
+QC_HIST_HSPACE = 0.55
+
+
+def _qc_hist_grid_shape(n: int) -> tuple[int, int]:
+    """Return (nrows, ncols) for QC threshold histogram panels."""
+    if n <= 1:
+        return 1, 1
+    if n == 2:
+        return 1, 2
+    ncols = 2
+    return (n + ncols - 1) // ncols, ncols
+
+
+def _set_qc_panel_titles(ax, name: str, n_removed: int) -> None:
+    """Metric name + smaller removed-count subtitle above the histogram."""
+    ax.set_title("")
+    ax.text(
+        0.5, QC_HIST_METRIC_TITLE_Y, name,
+        transform=ax.transAxes, ha="center", va="bottom",
+        fontsize=TITLE_SIZE, clip_on=False,
+    )
+    ax.text(
+        0.5, QC_HIST_REMOVED_SUBTITLE_Y, f"(cells removed: {n_removed:,})",
+        transform=ax.transAxes, ha="center", va="bottom",
+        fontsize=QC_PANEL_SUBTITLE_SIZE, color="#333333", clip_on=False,
+    )
+
+
+def _is_pct_metric(name: str) -> bool:
+    return "pct" in name.lower()
+
+
+def _thresholds_coincide(a: float, b: float | None, *, pct: bool) -> bool:
+    """True when two cutoffs are the same marker (skip duplicate ref line)."""
+    if b is None:
+        return False
+    tol = 0.2 if pct else max(1e-9, abs(b) * 0.005)
+    return abs(a - b) <= tol
+
+
+def _format_cutoff_value(x: float, *, pct: bool, log_axis: bool) -> str:
+    if pct:
+        return f"{x:.1f}%"
+    if log_axis:
+        return f"{x:,.0f}" if x >= 100 else f"{x:.2g}"
+    return f"{x:.2g}"
+
+
+def _stagger_threshold_label_ys(xs: list[float], x_range: float) -> list[float]:
+    """Assign axes-fraction y anchors so rotated labels on nearby cutoffs don't overlap."""
+    n = len(xs)
+    if n == 0:
+        return []
+    min_sep = max(x_range * THRESHOLD_LABEL_X_SEP_FRAC, 1e-12)
+    order = sorted(range(n), key=lambda i: xs[i])
+    ys = [THRESHOLD_LABEL_Y_TOP] * n
+    cluster_slot = 0
+    for rank, idx in enumerate(order):
+        if rank > 0 and abs(xs[idx] - xs[order[rank - 1]]) < min_sep:
+            cluster_slot += 1
+        else:
+            cluster_slot = 0
+        ys[idx] = max(
+            THRESHOLD_LABEL_Y_MIN,
+            THRESHOLD_LABEL_Y_TOP - cluster_slot * THRESHOLD_LABEL_Y_STEP,
+        )
+    return ys
+
+
+def _label_x_offset(x: float, x_range: float, *, log_axis: bool, pct: bool = False) -> float:
+    """Shift label anchor off the vline so the line does not bisect the text."""
+    if log_axis and x > 0:
+        return x * (1.0 + THRESHOLD_LABEL_X_OFFSET_LOG_FRAC)
+    if pct:
+        return x + THRESHOLD_LABEL_X_OFFSET_PCT
+    return x + max(x_range * THRESHOLD_LABEL_X_OFFSET_LINEAR_FRAC, 1e-12)
+
+
+def _draw_threshold_markers(
+    ax,
+    markers: list[tuple[float, str, bool]],
+    *,
+    x_range: float,
+    log_axis: bool = False,
+    pct: bool = False,
+) -> None:
+    """Draw cutoff vlines and staggered vertical labels.
+
+    Each marker is ``(x, label, is_active)``; active lines/labels use
+    ``QC_ANNOTATION_COLOR``, reference markers use ``QC_REF_LINE_COLOR``.
+    """
+    if not markers:
+        return
+    xs = [m[0] for m in markers]
+    ys = _stagger_threshold_label_ys(xs, x_range)
+    for (x, label, is_active), y_frac in zip(markers, ys):
+        color = QC_ANNOTATION_COLOR if is_active else QC_REF_LINE_COLOR
+        linestyle = "--" if is_active else ":"
+        ax.axvline(
+            x, color=color, linestyle=linestyle,
+            linewidth=ANNOTATION_LINEWIDTH, zorder=5 if is_active else 4,
+        )
+        label_x = _label_x_offset(x, x_range, log_axis=log_axis, pct=pct)
+        ax.text(
+            label_x, y_frac, f" {label}",
+            transform=ax.get_xaxis_transform(),
+            rotation=90, va="top", ha="left",
+            fontsize=ANNOTATION_FONTSIZE - 1, color=color,
+            zorder=6, clip_on=False,
+        )
 
 
 def _apply_style():
@@ -152,6 +288,131 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
     return save_figure(fig, out_dir, stem)
 
 
+def plot_qc_threshold_histograms(
+    metrics: "dict[str, dict[str, Any]]",
+    *,
+    out_dir: Path | str,
+    stem: str,
+    title: str,
+    fill_color: str = QC_FILL_COLOR,
+    edge_color: str = QC_EDGE_COLOR,
+    fill_alpha: float = QC_FILL_ALPHA,
+    extra_panel: "dict[str, Any] | None" = None,
+) -> list[Path]:
+    """Per-metric histograms with the default QC cutoffs drawn on them.
+
+    ``metrics`` maps a metric name to a spec dict:
+      - ``values``: 1D array of per-cell values.
+      - ``lo`` / ``hi``: MAD-derived cutoffs (either may be ``None``); cells
+        outside ``[lo, hi]`` are shaded as removed and the marginal count is
+        annotated.
+      - ``log``: when truthy, use a log-spaced x-axis (counts / fragments).
+      - ``refs``: optional list of ``(x, label)`` fixed reference lines drawn in a
+        distinct style (e.g. 5% / 10% mito ceilings) — markers only, they do not
+        affect the removed count.
+
+    ``extra_panel`` (optional) fills the first otherwise-empty grid slot with a
+    non-histogram panel: ``{"distr": <frag_size_distr vector>, "title": str}``.
+    Used by the ATAC QC-explore grid to add a pre-filtering fragment-size
+    distribution in the 4th (2,2) slot.
+    """
+    _apply_style()
+    import matplotlib.pyplot as plt
+
+    n = len(metrics)
+    if n == 0:
+        fig, ax = plt.subplots(figsize=QC_PLOT_PAIR_SIZE)
+        ax.set_title(title + " (no data)")
+        return save_figure(fig, out_dir, stem)
+
+    n_used = n + (1 if extra_panel else 0)
+    nrows, ncols = _qc_hist_grid_shape(n_used)
+    fig_w = QC_HIST_PANEL_W * ncols
+    fig_h = QC_HIST_PANEL_H * nrows
+    fig, axes_grid = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h))
+    axes = list(np.atleast_1d(axes_grid).ravel())
+    for ax in axes[n_used:]:
+        ax.set_visible(False)
+    if extra_panel is not None and n < len(axes):
+        _draw_fragment_size_distribution(
+            axes[n], extra_panel.get("distr"),
+            title=extra_panel.get("title"),
+        )
+
+    for ax, (name, spec) in zip(axes, metrics.items()):
+        vals = np.asarray(spec.get("values"), dtype=float)
+        vals = vals[np.isfinite(vals)]
+        lo = spec.get("lo")
+        hi = spec.get("hi")
+        refs = spec.get("refs") or []
+        use_log = bool(spec.get("log"))
+        if vals.size == 0:
+            ax.set_title(name + " (no data)")
+            continue
+
+        if use_log:
+            pos = vals[vals > 0]
+            if pos.size:
+                bins = np.logspace(np.log10(pos.min()), np.log10(pos.max()), 50)
+                ax.set_xscale("log")
+            else:
+                bins = 50
+        else:
+            bins = 50
+        ax.hist(vals, bins=bins, color=fill_color, alpha=fill_alpha,
+                edgecolor=edge_color, linewidth=QC_EDGE_LINEWIDTH)
+        ymin, ymax = ax.get_ylim()
+        if ymax > 0:
+            ax.set_ylim(ymin, ymax * QC_HIST_Y_TOP_PAD)
+
+        pct_metric = _is_pct_metric(name)
+        removed = np.zeros(vals.shape, dtype=bool)
+        markers: list[tuple[float, str, bool]] = []
+        if lo is not None:
+            removed |= vals < lo
+            markers.append((
+                float(lo),
+                _format_cutoff_value(float(lo), pct=pct_metric, log_axis=use_log),
+                True,
+            ))
+        if hi is not None:
+            removed |= vals > hi
+            markers.append((
+                float(hi),
+                _format_cutoff_value(float(hi), pct=pct_metric, log_axis=use_log),
+                True,
+            ))
+        for rx, rlabel in refs:
+            rx_f = float(rx)
+            if any(_thresholds_coincide(rx_f, b, pct=pct_metric) for b in (lo, hi)):
+                continue
+            markers.append((rx_f, str(rlabel), False))
+
+        if use_log and vals.size:
+            pos = vals[vals > 0]
+            x_range = (
+                float(np.log10(pos.max()) - np.log10(pos.min()))
+                if pos.size else 1.0
+            )
+        else:
+            x_range = float(vals.max() - vals.min()) if vals.size else 1.0
+        _draw_threshold_markers(
+            ax, markers, x_range=max(x_range, 1e-12), log_axis=use_log,
+            pct=pct_metric,
+        )
+
+        _set_qc_panel_titles(ax, name, int(removed.sum()))
+        ax.set_xlabel(name)
+        ax.set_ylabel("number of cells")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.tight_layout(rect=QC_HIST_LAYOUT_RECT)
+    fig.subplots_adjust(top=QC_HIST_SUBPLOTS_TOP, hspace=QC_HIST_HSPACE)
+    fig.suptitle(title, fontsize=QC_HIST_SUPTITLE_SIZE, y=QC_HIST_SUPTITLE_Y)
+    return save_figure(fig, out_dir, stem)
+
+
 def plot_fragment_size_distribution(
     distr: np.ndarray,
     *,
@@ -172,62 +433,50 @@ def plot_fragment_size_distribution(
     _apply_style()
     import matplotlib.pyplot as plt
 
-    def _prep(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        d = np.asarray(d, dtype=float).ravel()
-        body = d[1:]  # drop over-max bucket at index 0
-        total = body.sum()
-        normed = body / total if total > 0 else body
-        x = np.arange(1, body.size + 1)
-        return x, normed
-
-    d = np.asarray(distr, dtype=float).ravel()
-    if d.size == 0:
-        fig, ax = plt.subplots(figsize=QC_PLOT_PAIR_SIZE)
-        ax.set_title(title + " (no data)")
-        return save_figure(fig, out_dir, stem)
-
-    x_b, body_b = _prep(d)
-    x_right = min(1000, body_b.size)
-    ylabel = "fraction of fragments"
-
-    def _annotate_nucleosome(ax, y_top: float) -> None:
-        for vline in (147, 294, 441):
-            if vline < x_right:
-                ax.axvline(
-                    vline, color=QC_ANNOTATION_COLOR, linestyle="--",
-                    linewidth=FSD_ANNOTATION_LINEWIDTH, zorder=5,
-                )
-        for x0, x1, label in [(1, 147, "nucleosome\nfree"),
-                              (147, 294, "mono"),
-                              (294, 441, "di"),
-                              (441, x_right, "tri")]:
-            xc = (x0 + x1) / 2
-            if xc < x_right:
-                ax.text(
-                    xc, y_top * 0.97, label, ha="center", va="top",
-                    fontsize=ANNOTATION_FONTSIZE, color=QC_ANNOTATION_COLOR,
-                )
-
+    # Prefer the post-QC distribution when supplied (the standalone S2 figure
+    # plots a single curve); otherwise the input distribution.
+    chosen = distr
     if distr_after is not None and np.asarray(distr_after).size > 0:
-        x_plot, body_plot = _prep(np.asarray(distr_after, dtype=float))
-    else:
-        x_plot, body_plot = x_b, body_b
+        chosen = distr_after
 
     fig, ax = plt.subplots(figsize=QC_PLOT_PAIR_SIZE)
-    x = x_plot[:x_right]
-    y = body_plot[:x_right]
+    _draw_fragment_size_distribution(ax, chosen, title=title)
+    return save_figure(fig, out_dir, stem)
+
+
+def _draw_fragment_size_distribution(
+    ax, distr: np.ndarray, *, title: str | None = None, x_right_max: int = 1000,
+) -> None:
+    """Render a normalised fragment-size distribution onto ``ax``.
+
+    Stateless rendering shared by the standalone S2 figure and the QC-explore
+    grid's 4th panel — the two callers compute their own distributions (pre- vs
+    post-QC cell sets) and must not share data.
+
+    ``distr`` is the SnapATAC2 ``frag_size_distr`` vector (index 0 is the
+    over-max bucket and is dropped).
+    """
+    d = np.asarray(distr, dtype=float).ravel()
+    if d.size == 0:
+        ax.set_title(((title + " ") if title else "") + "(no data)")
+        return
+    body = d[1:]  # drop over-max bucket at index 0
+    total = body.sum()
+    normed = body / total if total > 0 else body
+    x_full = np.arange(1, body.size + 1)
+    x_right = min(x_right_max, body.size)
+    x = x_full[:x_right]
+    y = normed[:x_right]
+
     ax.fill_between(x, 0, y, alpha=QC_FILL_ALPHA, color=QC_FILL_COLOR, linewidth=0)
     ax.plot(x, y, color=QC_EDGE_COLOR, linewidth=QC_EDGE_LINEWIDTH)
     ax.set_xlim(left=0, right=x_right)
-    ax.set_ylabel(ylabel)
+    ax.set_ylabel("fraction of fragments")
+    ax.set_xlabel("fragment length (bp)")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    y_top = float(y.max()) if y.size else 1.0
-    _annotate_nucleosome(ax, y_top)
-    ax.set_xlabel("fragment length (bp)")
-    ax.set_title(title)
-
-    return save_figure(fig, out_dir, stem)
+    if title:
+        ax.set_title(title)
 
 
 def plot_frip_histogram(

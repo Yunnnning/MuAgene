@@ -500,7 +500,7 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     if raw_source_path is not None and raw_source_fmt is not None:
         _io.write_input_ref(artifacts / "rna_raw", raw_source_path, fmt=raw_source_fmt)
         _prov.set_param(params_path, "ingest.rna_raw_source_path", str(raw_source_path.resolve()),
-                        source="user", confidence="high",
+                        source="derived", confidence="high",
                         rationale="Symlinked at S0; raw matrix is read from the original input path.",
                         method={"name": "io.write_input_ref",
                                 "code_ref": "executor/io.py::write_input_ref"})
@@ -525,6 +525,45 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         if atac_cell_whitelist_path is not None:
             atac_ingest_meta["cell_barcode_whitelist"] = str(atac_cell_whitelist_path)
         _io.write_text_safe(artifacts / "atac_ingest.json", json.dumps(atac_ingest_meta, indent=2))
+
+    # --- Preprocessing plan assembly (merged in from the former p2_plan rule) ---
+    # assemble_plan is deterministic and needs no heavy data — only the context,
+    # the just-written ingest report, and the committed branch. Assembling it here
+    # lets the single S0 job also run the QC exploration on the in-memory matrices.
+    from .. import plan_assembler as _pa
+    ctx_path = (run_dir / "internal" / "artifacts" / "p1_context"
+                / "context_extraction.json")
+    try:
+        ctx = json.loads(ctx_path.read_text()) if ctx_path.exists() else {"fields": {}}
+    except Exception:
+        ctx = {"fields": {}}
+    sample_type = (ctx.get("fields", {}).get("sample_type") or {}).get("value", "unknown")
+    plan = _pa.assemble_plan(
+        run_dir,
+        workflow_branch=workflow_branch,
+        sample_type=sample_type,
+        study_goal=config.get("study_goal"),
+        ingest=report,
+        s1a_ambient_method=config.get("s1a_ambient_method"),
+    )
+    _, plan_hash = _pa.write_plan(run_dir, plan)
+    _prov.set_param(
+        params_path, "plan.plan_hash", plan_hash,
+        source="derived", confidence="high",
+        rationale="sha256 of preprocessing_plan.json",
+        method={"name": "sha256_bytes", "code_ref": "executor/hashing.py::sha256_bytes"},
+    )
+
+    # --- QC exploration on the in-memory data (no reload) ---
+    # Pass the already-loaded RNA matrix so qc_explore never re-reads rna_ingest.h5ad;
+    # ATAC fragments are imported once here. Best-effort — exploration failure must
+    # not block plan review (a degraded report is recoverable).
+    from .. import qc_explore as _qc_explore
+    try:
+        _qc_explore.run(run_dir, rna_adata=rna)
+    except Exception as e:
+        log_event(run_dir, {"stage": "s0_ingest", "event": "qc_explore_failed",
+                            "error": str(e)})
 
     log_event(run_dir, {"stage": "s0_ingest", "event": "done",
                         "workflow_branch": workflow_branch,

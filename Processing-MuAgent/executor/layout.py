@@ -4,8 +4,8 @@ Direct-write architecture: every logical artifact is written to its canonical
 final location by the producing stage or helper. This module no longer
 mirrors or symlinks files. It does two small things:
 
-1. `ensure_scaffold(run_dir)` — create the deliverables/internal skeleton
-   if missing. Idempotent.
+1. `ensure_scaffold(run_dir)` — create the internal + plan skeleton if missing.
+   Idempotent. Does not pre-create figures/, checkpoints/, or results/.
 2. `finalize(run_dir)` — sweep any legacy symlinks left by pre-refactor runs,
    then write a `layout.json` manifest listing the files actually present
    under `deliverables/`.
@@ -59,7 +59,6 @@ def _list_deliverables(deliv_root: Path) -> list[str]:
 def finalize(run_dir: Path | str) -> dict[str, Any]:
     """Sweep stale symlinks and write the `layout.json` manifest."""
     paths = RunPaths(Path(run_dir))
-    paths.ensure()
     n_cleaned = _clean_stale_symlinks(paths.deliverables)
     deliverables_files = _list_deliverables(paths.deliverables)
     report: dict[str, Any] = {

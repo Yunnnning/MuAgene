@@ -10,6 +10,12 @@ def median_mad(values: np.ndarray) -> tuple[float, float]:
     return med, mad
 
 
+def mad_upper_raw(values: np.ndarray, k: float = 3.0) -> float:
+    """MAD upper bound before floor/ceiling clamping."""
+    med, mad = median_mad(np.asarray(values, dtype=float))
+    return float(med + k * mad)
+
+
 def upper_bound(values: np.ndarray, k: float = 3.0,
                 floor: float | None = None, ceiling: float | None = None) -> float:
     med, mad = median_mad(np.asarray(values, dtype=float))

@@ -9,8 +9,9 @@ import anndata as ad
 import numpy as np
 import scanpy as sc
 
-from ..methods import mad_thresholds as _mad
-from ..methods.qc_filter_stats import exclusive_removals
+from ..methods import qc_thresholds as _qct
+from ..methods.qc_filter_stats import marginal_removals
+from ..methods.qc_metrics import compute_rna_qc_metrics
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
@@ -37,24 +38,16 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     in_path = s1a_path if s1a_path.exists() else s0_path
     a = ad.read_h5ad(in_path)
 
-    # Mito + ribosomal flagging.
-    #
-    # Symbols vary by species/case (Mt-/mt-/MT-/mt: for fly, etc.) and by
-    # whether `var_names` are gene IDs (Ensembl) or symbols. Use a permissive
-    # case-insensitive prefix set, then sanity-check by gene-count: a typical
-    # mammalian mt gene set is ~13 genes; a typical ribosomal protein set is
-    # ~80–90 genes. If we get suspiciously few mt genes we log a warning.
-    mt_pat = r"(?i)^(mt[-:_]|mito[-:_]?)"      # mt-, MT-, Mt:, mito-, etc.
-    ribo_pat = r"(?i)^(rps|rpl|mrps|mrpl)"     # cytoplasmic + mito ribosomal proteins
-    a.var["mt"] = a.var_names.astype(str).str.contains(mt_pat, regex=True, na=False)
-    a.var["ribo"] = a.var_names.astype(str).str.contains(ribo_pat, regex=True, na=False)
-    n_mt = int(a.var["mt"].sum())
-    n_ribo = int(a.var["ribo"].sum())
+    # Mito + ribosomal flagging + per-cell QC metrics (shared with the pre-plan
+    # QC exploration). Sanity-check by gene-count: a typical mammalian mt gene
+    # set is ~13 genes; a typical ribosomal protein set is ~80–90 genes. If we
+    # get zero mt genes the MT filter is effectively disabled — log a warning.
+    qc_counts = compute_rna_qc_metrics(a)
+    n_mt = qc_counts["n_mt"]
+    n_ribo = qc_counts["n_ribo"]
     if n_mt == 0:
         log_event(run_dir, {"stage": "s1_rna_qc", "event": "no_mt_genes_detected",
                              "note": "var_names may be Ensembl IDs; pct_counts_mt will be 0 and the MT filter is effectively disabled"})
-    sc.pp.calculate_qc_metrics(a, qc_vars=["mt", "ribo"], percent_top=None,
-                                log1p=False, inplace=True)
 
     # Parameters from plan
     params = plan["stages"]["s1_rna_qc"]["parameters"]
@@ -69,17 +62,16 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # tissues legitimately have very high ribo-protein expression.
     pct_ribo_max = float(params.get("pct_ribo_max", {}).get("value", 50.0))
 
-    # Apply floor before MAD
-    keep_floor = a.obs["total_counts"] >= min_counts_floor
-    a_for_mad = a[keep_floor].copy()
-
-    # Derive thresholds; absolute floors win when MAD lower bounds fall below them.
-    c_lo, c_hi = _mad.log_mad_bounds(a_for_mad.obs["total_counts"].to_numpy(), k=k_mad)
-    c_lo = max(c_lo, float(min_counts_floor))
-    g_lo, g_hi = _mad.log_mad_bounds(a_for_mad.obs["n_genes_by_counts"].to_numpy(), k=k_mad)
-    g_lo = max(g_lo, min_genes_floor)
-    pct_mt_upper = _mad.upper_bound(a_for_mad.obs["pct_counts_mt"].to_numpy(),
-                                     k=pct_mt_k, floor=pct_mt_floor, ceiling=pct_mt_ceil)
+    # Derive thresholds (shared with the pre-plan QC exploration); absolute
+    # floors win when MAD lower bounds fall below them.
+    th = _qct.rna_thresholds(
+        a.obs, k_mad=k_mad, pct_mt_k=pct_mt_k, pct_mt_ceiling=pct_mt_ceil,
+        pct_mt_floor=pct_mt_floor, min_counts_floor=min_counts_floor,
+        min_genes_floor=min_genes_floor,
+    )
+    c_lo, c_hi = th["total_counts_min"], th["total_counts_max"]
+    g_lo, g_hi = th["n_genes_min"], th["n_genes_max"]
+    pct_mt_upper = th["pct_counts_mt_max"]
 
     # Record as provenance
     for key, value, rat in [
@@ -99,39 +91,30 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                         method={"name": "mad_thresholds",
                                 "code_ref": "executor/methods/mad_thresholds.py"})
 
+    # Per-metric pass masks (shared with the pre-plan QC exploration).
+    masks = _qct.rna_pass_masks(a.obs, th, pct_ribo_max=pct_ribo_max)
+
     # Apply filters
     keep = (
-        (a.obs["total_counts"] >= c_lo)
-        & (a.obs["total_counts"] <= c_hi)
-        & (a.obs["n_genes_by_counts"] >= g_lo)
-        & (a.obs["n_genes_by_counts"] <= g_hi)
-        & (a.obs["pct_counts_mt"] <= pct_mt_upper)
-        & (a.obs["pct_counts_ribo"] <= pct_ribo_max)
+        masks["total_counts"]
+        & masks["n_genes"]
+        & masks["pct_counts_mt"]
+        & masks["pct_counts_ribo"]
     )
     a_f = a[keep].copy()
     sc.pp.filter_genes(a_f, min_cells=min_cells)
 
-    obs = a.obs
-    cells_removed_per_metric = exclusive_removals({
-        "total_counts": (
-            (obs["total_counts"] >= c_lo) & (obs["total_counts"] <= c_hi)
-        ).to_numpy(),
-        "n_genes": (
-            (obs["n_genes_by_counts"] >= g_lo) & (obs["n_genes_by_counts"] <= g_hi)
-        ).to_numpy(),
-        "pct_counts_mt": (obs["pct_counts_mt"] <= pct_mt_upper).to_numpy(),
-        "pct_counts_ribo": (obs["pct_counts_ribo"] <= pct_ribo_max).to_numpy(),
-    })
+    cells_removed_per_metric = marginal_removals(masks)
 
     # Save qc metrics pre/post
     _io.write_parquet_safe(a.obs, art / "qc_metrics_pre.parquet")
     _io.write_parquet_safe(a_f.obs, art / "qc_metrics_post.parquet")
 
-    # QC violin figures are user-facing deliverables → checkpoint/qc_review/figures/
+    # QC violin figures are user-facing deliverables → deliverables/figures/
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_qc_review_figures
+        figs_dir = RunPaths(run_dir).deliv_figures
         figs_dir.mkdir(parents=True, exist_ok=True)
         _fig.plot_qc_violin({
             "n_genes": a.obs["n_genes_by_counts"].to_numpy(),

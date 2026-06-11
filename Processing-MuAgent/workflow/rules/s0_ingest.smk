@@ -30,9 +30,19 @@ rule s0_ingest_propose:
 
 
 rule s0_ingest_execute:
+    """Merged planning compute (single cluster job): load + validate + pair, assemble
+    the preprocessing plan in-process, and run the QC threshold exploration on the
+    in-memory matrices — emitting the data + figures plan_review consumes. Submitted
+    via Execution-MuAgent (`submit` infers `s0_ingest_execute` as the planning target);
+    not a localrule because the ATAC fragment import + RNA QC are heavy.
+    """
+    input:
+        context = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
     output:
         report  = str(INTERNAL / "artifacts" / "s0_ingest" / "validation_report.json"),
         rna_h5  = str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
+        plan    = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
+        explore = str(INTERNAL / "artifacts" / "qc_explore" / "qc_explore.json"),
     params:
         run_dir = str(RUN_DIR),
     threads: RESOURCES["s0_ingest"]["cpus"]

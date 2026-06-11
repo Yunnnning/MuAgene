@@ -37,7 +37,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 > Three user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan before heavy compute.
-> 2. **QC review** — inspect QC figures in `checkpoint/qc_review/figures/` and `checkpoint/qc_review/qc_review_<run>.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the union doublet removal policy.
+> 2. **QC review** — inspect QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run>.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the union doublet removal policy.
 > 3. **Resolution review** — choose Leiden resolution from sweep metrics. On **separate**, this sets final cluster labels; on **paired**, diagnostic labels for UMAP only.
 >
 > Ready to send me the paths?
@@ -51,7 +51,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 > Three user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan.
-> 2. **QC review** — inspect QC figures in `checkpoint/qc_review/figures/` and `checkpoint/qc_review/qc_review_<run>.md`; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
+> 2. **QC review** — inspect QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run>.md`; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
 > 3. **Resolution review** — choose resolution for final cluster labels in the processed output.
 >
 > Ready to send me the paths?
@@ -82,7 +82,7 @@ Do not offer to bundle. Do not auto-chain. Hard stop is hard stop.
 
 Ask for it plainly; don't guess a default:
 
-> I don't guess run locations. Where should I put the outputs? A fresh empty directory anywhere on your filesystem works. You'll end up with two sub-trees under it: `internal/` (pipeline state) and `deliverables/` (user-facing outputs split into `pre_run/`, `checkpoint/`, and `post_run/`).
+> I don't guess run locations. Where should I put the outputs? A fresh empty directory anywhere on your filesystem works. You'll end up with two sub-trees under it: `internal/` (pipeline state) and `deliverables/` (user-facing outputs split into `plan/` (created at init), plus `figures/`, `checkpoints/`, and `results/` as outputs appear).
 
 ### User gives a run_dir that already has a previous run in it
 

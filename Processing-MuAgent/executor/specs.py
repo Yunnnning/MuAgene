@@ -17,7 +17,7 @@ import yaml
 
 
 _SCIENCE_DESCRIPTIONS: dict[str, str] = {
-    "s0_ingest":        "Validate and ingest raw RNA/ATAC matrices, detect format and barcode overlap",
+    "s0_ingest":        "Validate/ingest RNA+ATAC, assemble the preprocessing plan, and derive data-driven QC thresholds with per-metric removal previews and figures",
     "s1a_ambient":      "Correct ambient RNA contamination using SoupX or DecontX",
     "s1_rna_qc":        "Apply MAD-based QC thresholds to filter low-quality RNA cells",
     "s2_atac_qc":       "Apply TSS enrichment and nucleosome signal QC to filter low-quality ATAC cells",
@@ -33,10 +33,14 @@ _SCIENCE_DESCRIPTIONS: dict[str, str] = {
 # Uses {run_dir} as a template token; resolved to absolute paths at write time.
 _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
     "s0_ingest": {
-        "inputs": {},
+        "inputs": {
+            "context": "{run_dir}/internal/artifacts/p1_context/context_extraction.json",
+        },
         "outputs": {
             "rna_h5ad":          "{run_dir}/internal/artifacts/s0_ingest/rna_ingest.h5ad",
             "validation_report": "{run_dir}/internal/artifacts/s0_ingest/validation_report.json",
+            "plan":              "{run_dir}/internal/artifacts/p2_plan/preprocessing_plan.json",
+            "qc_explore":        "{run_dir}/internal/artifacts/qc_explore/qc_explore.json",
         },
     },
     "s1a_ambient": {
@@ -241,7 +245,7 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
             "walltime_min": 1440,  # 24 h; matches runner.slurm/runner.pbs defaults
         },
         "inputs": {
-            "config": str(run_dir_path / "deliverables" / "pre_run" / "config" / "run.yaml"),
+            "config": str(run_dir_path / "deliverables" / "plan" / "config" / "run.yaml"),
         },
         "outputs": {},
         "progress_timeout_hint": 120,  # 2 h silence on a Snakemake orchestrator is suspicious

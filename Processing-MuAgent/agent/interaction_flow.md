@@ -6,7 +6,7 @@ Canonical entry behaviour for the chat runtime. Each step has three parts:
 - **AGENT_ACTIONS** — exact executor CLI invocations to run (no freelancing; these are the only state-changing calls).
 - **WHAT_TO_SURFACE_BACK** — what content the agent relays to the user before proceeding.
 
-`$CFG` below is shorthand for the config path passed to every CLI call. After `executor init`, the canonical path is `<run_dir>/deliverables/pre_run/config/run.yaml` — use that value for Steps 2–4.
+`$CFG` below is shorthand for the config path passed to every CLI call. After `executor init`, the canonical path is `<run_dir>/deliverables/plan/config/run.yaml` — use that value for Steps 2–4.
 
 ---
 
@@ -67,7 +67,7 @@ Biological context is optional but strongly recommended — it shapes QC thresho
 2. **A filled Biological Context Report** — paste the content, or give me a path to an existing markdown file.
 3. **A DOI list only** — I'll fetch abstracts and extract what I can.
 
-**Execution environment** — if you haven't said already: should this run **locally** on this machine, or on an **HPC cluster** (PBS Pro or SLURM)? For cluster runs I'll probe available queues/partitions on the login node, suggest a project code or account name where I can detect one, and write `deliverables/pre_run/config/hpc.env` with the `PMA_*` settings you confirm.
+**Execution environment** — if you haven't said already: should this run **locally** on this machine, or on an **HPC cluster** (PBS Pro or SLURM)? For cluster runs I'll probe available queues/partitions on the login node, suggest a project code or account name where I can detect one, and write `deliverables/plan/config/hpc.env` with the `PMA_*` settings you confirm.
 
 Which paths, biological context (if any), and local vs HPC?"
 
@@ -87,8 +87,8 @@ Once the user answers, in order:
    Write it to a temporary path like `<run_dir>/run.yaml.draft` (before init copies it to the canonical location).
 
 2. Invoke `executor init --config <draft-run.yaml>`.
-   - This scaffolds `internal/` and `deliverables/{pre_run,checkpoint,post_run}/` and writes the blank biological-context template at `deliverables/pre_run/config/biological_context.md`.
-   - From this point forward, use `$CFG = <run_dir>/deliverables/pre_run/config/run.yaml` for every CLI call.
+   - This scaffolds `internal/` and `deliverables/plan/` (only the plan subtree at init; `figures/`, `checkpoints/`, and `results/` appear when outputs are written) and writes the blank biological-context template at `deliverables/plan/config/biological_context.md`.
+   - From this point forward, use `$CFG = <run_dir>/deliverables/plan/config/run.yaml` for every CLI call.
 
 3. Populate biological context (if the user gave any):
    ```python
@@ -107,34 +107,41 @@ Once the user answers, in order:
      a. Run `executor hpc-info` (parse silently) and measure file sizes with `ls -la` on the input paths the user already provided.
      b. Apply the file-size → scale heuristic from `inputs_intake.md` Section 4 to derive a recommended `PMA_RESOURCES_SCALE`. Select `suggested_partition` / `suggested_account` from `hpc-info` as the candidate values.
      c. Present ONE concrete recommendation (partition + account + scale) with a brief rationale and invite confirmation or override. Do not enumerate the full partition list.
-     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ...` (or `--slurm-partition` / `--slurm-account`). This records `execution.mode` in `parameters.yaml` and writes `deliverables/pre_run/config/hpc.env`.
+     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ...` (or `--slurm-partition` / `--slurm-account`). This records `execution.mode` in `parameters.yaml` and writes `deliverables/plan/config/hpc.env`.
    - Do not invent partition/account names — use `hpc-info` results. If `hpc-info` returns empty lists or a file is unreachable, see fallback rules in `inputs_intake.md` Section 4.
 
 5. Invoke `executor declare-branch <paired|separate|rna_only|atac_only> --config $CFG`.
    - S0 will confirm this assertion against its own pairing detection; if they mismatch, S0 raises with a clear diff — relay it verbatim.
 
 6. **Run planning (P1 → S0 → P2) — S0 execution location depends on configured mode:**
-   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, then run S0 on the cluster:
+   The planning target is **`s0_ingest_execute`** — it runs P1 → S0 and assembles
+   the preprocessing plan in-process. The former separate `p2_plan` rule was merged
+   into S0; there is no `p2_plan_execute` rule (requesting it raises
+   `MissingRuleException`). One `s0_ingest_execute` run emits the ingest h5ad,
+   `validation_report.json`, `preprocessing_plan.json`, and the `qc_explore`
+   artifacts the plan review consumes.
+   **Execution boundary:** `run` is local-only; `submit` is cluster-only. On HPC,
+   S0 is always submitted as a supervised cluster job via `submit` (never the login
+   node) — S0's QC exploration needs 100+ GB. There is no `run --executor pbs|slurm`.
+   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, submit S0 as a cluster head-job, then monitor:
      ```
-     source deliverables/pre_run/config/hpc.env
-     executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute
-     executor run --config $CFG --target p2_plan_execute
+     source deliverables/plan/config/hpc.env
+     executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
+     executor hpc-status --watch --config $CFG     # exits when plan_review awaits approval
      ```
-   - **Local mode (`execution.mode` is `local`):** `executor run --config $CFG --target p2_plan_execute` (runs P1 → S0 → P2; ~30s on small inputs).
-     - **If S0 fails with a resource error** (OOM, `Killed`, MemoryError, walltime exceeded — use `executor.hpc.looks_like_resource_failure()` on the snakemake stderr):
-       1. Configure HPC if not done (`hpc-info` + `configure-execution`; bump `PMA_RESOURCES_SCALE` if appropriate).
-       2. `source deliverables/pre_run/config/hpc.env`
-       3. `executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute`
-       4. `executor run --config $CFG --target p2_plan_execute`
-   - **Do not** retry logic errors on the cluster (pairing ambiguous, declared-vs-detected mismatch, missing index). Relay the message; user fixes inputs or branch declaration.
+     `submit` starts the Execution-MuAgent supervision daemon (kill-on-hang, survives
+     SSH disconnect) and returns in ≤90 s; the heavy S0 compute runs on a compute node.
+   - **Local mode (`execution.mode` is `local`):** `executor run --config $CFG --target s0_ingest_execute` (runs P1 → S0 + plan assembly; ~30s on small inputs).
+     - **If S0 OOMs locally:** this means the machine is too small. Switch to HPC: `executor configure-execution --config $CFG --mode slurm|pbs ...` then submit S0 as above. There is no automatic local→cluster retry.
+   - **Do not** retry logic errors (pairing ambiguous, declared-vs-detected mismatch, missing index). Relay the message; user fixes inputs or branch declaration.
    - After S0 completes, surface `validation_report.json` pairing fields if `paired` was downgraded or ambiguous.
 
 ### WHAT_TO_SURFACE_BACK
 
-- Confirm `executor init` wrote `deliverables/pre_run/config/run.yaml` and `biological_context.md`.
-- If context was supplied, confirm it was written (`deliverables/pre_run/config/biological_context.md`).
-- If HPC mode was configured, confirm `execution.mode` and the path to `deliverables/pre_run/config/hpc.env`; remind the user to `source` it before cluster submit/resume.
-- After `executor run --target p2_plan_execute`, surface `deliverables/pre_run/summary/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
+- Confirm `executor init` wrote `deliverables/plan/config/run.yaml` and `biological_context.md`.
+- If context was supplied, confirm it was written (`deliverables/plan/config/biological_context.md`).
+- If HPC mode was configured, confirm `execution.mode` and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume.
+- After `executor run --target s0_ingest_execute`, surface `deliverables/plan/summary/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
 
 See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the canonical Step 2 script and the per-context-form handling details.
 
@@ -174,7 +181,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
         (non-cell-barcode-filtered) ATAC fragment file will have far more barcodes
         than the RNA cell set, explaining near-zero overlap; check
         `rna_raw_n_barcodes` vs `rna_n_cells` to detect this pattern.
-     c. Read `deliverables/pre_run/config/run.yaml` to inspect the actual
+     c. Read `deliverables/plan/config/run.yaml` to inspect the actual
         file paths the user supplied and look for signs of mismatched sources
         (e.g., a filtered matrix paired with unfiltered outputs, samples from a different experiment, or need barcode translations).
      d. Based on (a)–(c), propose the most likely root cause and concrete
@@ -185,7 +192,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
      `atac_only`, or `separate` branches.
 
 3. Invoke `executor plan-review --intro "<paragraph>" --config $CFG`.
-   - This re-renders (and writes) `deliverables/pre_run/summary/plan_review.md`
+   - This re-renders (and writes) `deliverables/plan/summary/plan_review.md`
      with the intro paragraph prepended before the Summary section.
    - Also writes per-stage job spec YAMLs to `internal/specs/`.
    - The same content also lives at that path if the user wants to open it directly.
@@ -215,8 +222,8 @@ If marker genes were stored at this step, confirm the stored gene list in one li
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
-- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `checkpoint/qc_review/figures/` and `checkpoint/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoint/qc_review/` for the reports and `figures/` for plots. They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
-- **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoint/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoints/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies.
+- **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoints/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
 (For other stages, auto-approve silently unless the user asked for per-stage review.)
@@ -234,7 +241,7 @@ Approve, revise, or abort?"
    - Loop:
      a. Run `executor status --config $CFG` to see which stage is currently `awaiting_approval`.
      b. Read `<run_dir>/internal/proposals/<stage>.yaml` — the structured proposal.
-     c. If the stage has a linked summary in `deliverables/checkpoint/resolution_review/` (e.g., `resolution_summary.md` for s7), read that too and surface both.
+     c. If the stage has a linked summary in `deliverables/checkpoints/resolution_review/` (e.g., `resolution_summary.md` for s7), read that too and surface both.
      d. Based on user decision:
         - Approve → `executor approve <stage> --config $CFG`.
         - Revise → if the current stage is `post_qc_review`, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
@@ -243,14 +250,14 @@ Approve, revise, or abort?"
 **QC threshold revision and post-QC marker gene check:** see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, what to surface back, and the procedure for running a marker gene check at QC review when no genes were provided at planning time. At QC review, `marker-gene-check` plots and refreshes reports in one command; use `--plot-only` to skip report refresh.
 
 2. When `manifest` finishes:
-   - Read `deliverables/post_run/run_manifest.json` and extract `workflow_branch`, `outputs`.
-   - Point the user at `deliverables/post_run/qc_summary.md`, the UMAP figures in `deliverables/post_run/`, and the handoff artifact `run_manifest.json`.
+   - Read `deliverables/results/run_manifest.json` and extract `workflow_branch`, `outputs`.
+   - Point the user at `deliverables/results/qc_summary.md`, the UMAP figures in `deliverables/figures/`, and the handoff artifact `run_manifest.json`.
 
 ### WHAT_TO_SURFACE_BACK
 
 - At each pause: the full proposal yaml content + any linked summary markdown.
-- At **`post_qc_review` after a threshold revision:** relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` **verbatim** (not the proposal yaml alone). Mention `qc_summary_<run_name>.html` for the rendered report.
-- At completion: the manifest's `outputs` keys + a one-line sign-off ("Run complete. Outputs at `deliverables/post_run/`. I stop here — integration/annotation is out of scope.").
+- At **`post_qc_review` after a threshold revision:** relay `deliverables/checkpoints/qc_review/qc_review_<run_name>.md` **verbatim** (not the proposal yaml alone). Mention `qc_summary_<run_name>.html` for the rendered report.
+- At completion: the manifest's `outputs` keys + a one-line sign-off ("Run complete. Outputs at `deliverables/results/`. I stop here — integration/annotation is out of scope.").
 
 ---
 
@@ -258,14 +265,20 @@ Approve, revise, or abort?"
 
 The four-step flow above is unchanged on a cluster. Only the underlying execution
 model differs: heavy `_execute` rules dispatch to scheduler jobs, while every
-`*_propose` rule and the light planning stages (`p1_context`, `p2_plan`,
-`plan_review`) plus `manifest` are declared `localrules` and run on the orchestrator
-host (login node in interactive mode; the head-job in headless mode).
+`*_propose` rule and the light planning stages (`p1_context`, `plan_review`) plus
+`manifest` are declared `localrules` and run on the orchestrator host (the head-job
+in headless mode).
 
-**S0 ingest** runs on the cluster directly when `execution.mode` is `pbs` or
-`slurm`; runs locally when `execution.mode` is `local` (with cluster retry on
-resource failure). Pairing-detection conflicts are always resolved interactively
-on the login node after S0 finishes.
+**Execution boundary:** `executor run` is local-only and `executor submit` is
+cluster-only. Processing-MuAgent never submits or monitors cluster jobs itself — it
+prepares the head-job spec + `site.config` and Execution-MuAgent owns all cluster
+submission and monitoring (kill-on-hang, `hpc-status`).
+
+**S0 ingest** is, in HPC mode, **always** submitted as a supervised cluster head-job
+via `submit --target s0_ingest_execute` (never run on the login node — its QC
+exploration needs 100+ GB) and monitored with `hpc-status --watch`. It runs locally
+only when `execution.mode` is `local`. Pairing-detection conflicts are resolved by
+reading `validation_report.json` after S0 finishes.
 
 ### Intake (Step 2) — ask before P1 runs
 
@@ -281,8 +294,8 @@ biological-context question. When they choose HPC:
    partition + account + scale, with a one-line rationale (file size → estimated cells → scale).
    Invite confirmation or override. Do not enumerate the full partition list unless the user asks.
 5. Run `executor configure-execution --config $CFG --mode pbs|slurm ...` to write:
-   - `deliverables/pre_run/config/hpc.env` — shell snippet sourced by runner scripts
-   - `deliverables/pre_run/config/site.config` — YAML platform description consumed by Execution-MuAgent
+   - `deliverables/plan/config/hpc.env` — shell snippet sourced by runner scripts
+   - `deliverables/plan/config/site.config` — YAML platform description consumed by Execution-MuAgent
    - Records `execution.mode` in `parameters.yaml`.
 
 Do not invent partition/account names — use `hpc-info` results only. If `hpc-info` returns
@@ -293,16 +306,16 @@ See `inputs_intake.md` Section 4 for the full heuristic table and edge-case fall
 
 | Step | Stages | Executes on | You |
 |------|--------|-------------|-----|
-| Planning | P1 → P2 | Login node | — |
-| S0 ingest | S0 | Cluster (HPC mode) / Login node (local mode) | — |
+| Context | P1 | Login node (localrule) | — |
+| S0 ingest (+ plan) | S0 | Cluster head-job via `submit` (HPC) / Login node (local) | `hpc-status --watch` |
 | Checkpoint **#1** | plan_review | Login node | Review plan |
-| QC | S1a → S3 | Cluster | — |
+| QC | S1a → S3 | Cluster head-job via `submit` | `hpc-status --watch` |
 | Checkpoint **#2** | post_qc_review | — | Review QC |
-| PCA + neighbors + clustering | S4 → S7 (sweep) | Cluster | — |
+| PCA + neighbors + clustering | S4 → S7 (sweep) | Cluster head-job via `submit` | `hpc-status --watch` |
 | Checkpoint **#3** | s7_clustering | — | Review resolution |
-| Finish | S7 (labels) → S8 → manifest | Cluster | — |
+| Finish | S7 (labels) → S8 → manifest | Cluster head-job via `submit` | — |
 
-After plan review approval, `source deliverables/pre_run/config/hpc.env`, then:
+After plan review approval, `source deliverables/plan/config/hpc.env`, then:
 
 - **QC batch:** `executor submit --config $CFG --executor pbs|slurm --auto-approve --auto-approve-except post_qc_review --auto-approve-except s7_clustering`
 - **After QC approval:** same submit with `--auto-approve-except s7_clustering` only
@@ -322,7 +335,7 @@ Never substitute `tail -f | grep` — that command never exits on its own and wi
 
 ### How Claude surfaces things during the HPC flow
 
-- **At Step 2**, if execution mode is unknown, ask local vs HPC before `executor run --target p2_plan_execute`. Run `hpc-info` and walk through `hpc.env` setup when HPC is chosen.
+- **At Step 2**, if execution mode is unknown, ask local vs HPC before `executor run --target s0_ingest_execute`. Run `hpc-info` and walk through `hpc.env` setup when HPC is chosen.
 - **At Step 1–4 otherwise**, behaviour matches local mode until plan review is approved.
 - **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path. Remind them that the daemon is running in the background and they can follow job health with `Processing-MuAgent hpc-status --watch --config $CFG`.
 - **When `status --watch` shows `s7_clustering awaiting_approval`**, surface the path to `resolution_review.html` (the
@@ -331,7 +344,7 @@ Never substitute `tail -f | grep` — that command never exits on its own and wi
   of `resolution_summary.md` verbatim, plus the proposal's `review_artifacts`
   block.
 - **On approve/revise**, run the appropriate CLI as today, then `submit` again
-  (or `run --executor pbs|slurm` if the user prefers foreground on the login node).
+  (cluster execution is always via `submit` — `run` is local-only).
 
 ### Site variables (user confirms after `hpc-info`)
 
@@ -348,7 +361,7 @@ export PMA_SLURM_ACCOUNT=<your_account_name>
 export PMA_RESOURCES_SCALE=2
 ```
 
-These are written to `deliverables/pre_run/config/hpc.env` by `configure-execution`.
+These are written to `deliverables/plan/config/hpc.env` by `configure-execution`.
 
 ---
 
@@ -358,12 +371,13 @@ These are written to `deliverables/pre_run/config/hpc.env` by `configure-executi
 - **S0 raises "declared=... conflicts with detected=..."** — the user's `executor declare-branch` doesn't match what S0 detected, AND the declaration is single-modality (`rna_only`/`atac_only`). Single-modality conflicts still raise hard because they signal a data-hygiene problem. Relay the raised message. Ask the user to either correct the declaration or correct the config (drop the unwanted modality).
 - **S0 raises "pairing is ambiguous"** — RNA+ATAC Jaccard overlap is between 30% and 80% after normalization/subset checks, and the user did not declare a branch (or declared one that doesn't resolve the ambiguity). Ask the user: are these paired or separate? Based on answer, run `executor declare-branch <paired|separate>` and re-run; for `paired`, supply `barcode_translation_path` if barcode whitelists differ. Don't auto-pick.
 - **S3 raises "paired-branch joint barcode intersection is empty"** — S0 committed `paired` but no cell survived both modalities' QC + doublet removal. This usually means QC thresholds were too aggressive. Surface the message; ask the user to revise S1/S2 thresholds via `executor revise s1_rna_qc ...` or `executor revise s2_atac_qc ...`. If the pairing decision used `pairing.translation_table`, also check that the translation table actually covers the QC-surviving cell set.
-- **Phase 1 gate raises "biological_context.md is empty"** — the user didn't give context and didn't opt out. Ask for context OR offer `executor run --config $CFG --no-context` as the explicit opt-out.
-- **S0 fails with OOM / Killed / walltime on the login node** — not a logic error. Configure HPC if needed, `source hpc.env`, retry `executor run --config $CFG --executor pbs|slurm --target s0_ingest_execute`, then resume `executor run --config $CFG --target p2_plan_execute`. Consider raising `PMA_RESOURCES_SCALE`. Tell the user what you did.
-- **A stage execute fails at runtime** — relay the traceback from snakemake. Do not retry silently; root-cause first. If the user insists on retry, use `executor run --config $CFG --target <stage>_execute`.
+- **Phase 1 gate raises "biological_context.md is empty"** — the user didn't give context and didn't opt out. Ask for context OR offer the explicit opt-out: `--no-context` on whichever entry point starts the run (`executor run --config $CFG --no-context` in local mode, or `executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute --no-context` on HPC).
+- **S0 OOMs / is Killed / hits walltime in HPC mode** — S0 already runs as a supervised cluster job, so this is a resource-sizing issue, not a location one. Raise `PMA_RESOURCES_SCALE` via `executor configure-execution --config $CFG --mode pbs|slurm --resources-scale N ...`, then `executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute` again. **In local mode**, an S0 OOM means the machine is too small — switch to HPC (`configure-execution --mode slurm|pbs`) and submit. There is no automatic local→cluster retry.
+- **A stage execute fails at runtime** — relay the traceback (HPC: `internal/hpc_monitor/latest_report.md`; local: snakemake stderr). Do not retry silently; root-cause first. If the user insists on retry, re-`executor submit --executor pbs|slurm --target <stage>_execute` (HPC) or `executor run --config $CFG --target <stage>_execute` (local only).
 - **Execution-MuAgent reports `submit_rejected_policy`** — the scheduler rejected the job as a policy error (invalid partition, account, or walltime over the site limit). Read `internal/hpc_monitor/latest_report.md` for the scheduler's exact message. Tell the user which field to correct: partition/account via `executor configure-execution --mode <scheduler> ...` (rewrites `site.config`), or walltime by reducing `PMA_RESOURCES_SCALE`. Then `executor submit` again.
 - **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/specs/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.
 - **`hpc-status` shows "Supervisor: not running" alongside a RUNNING or PENDING scheduler state** — the supervision daemon has died but the cluster job is still active. Without the daemon, stalled jobs will not be auto-cancelled. Restart the daemon: `executor supervisor-restart --config $CFG`. This resumes the full watch loop (stall detection, kill-on-hang) against the already-running job without resubmitting. Tell the user what happened and what you did.
 - **Supervision daemon crashes on a site with KillUserProcesses=yes** — when the user's SSH session ends, systemd kills all their processes including the daemon. The cluster job keeps running, but protection is gone. For the current run, tell them to use `supervisor-restart` as soon as they reconnect. Going forward, suggest running `submit` inside a `tmux` or `screen` session on that cluster.
 - **`hpc-status --watch` exits on the first poll with "review gate awaiting approval"** — a stale `awaiting_approval` sentinel from a prior run (or an old head job still writing to it) is blocking the monitor before the new pipeline has made any progress. Fix: (1) `squeue -u $USER | grep pma_head` → `scancel <JOBID>` for each result; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) restart `hpc-status --watch`. Do **not** fall back to `tail -f | grep` — it never exits.
 - **Monitor is still running long after the job finished** — a `tail -f | grep` command was used instead of `hpc-status --watch`. Stop it with TaskStop, then restart with `executor hpc-status --watch --config $CFG`.
+- **Blank ATAC QC figures ("(no data)") / `qc_explore` log shows `chrom_bound_filter_failed: bgzip not found on PATH`** — an *execution-environment* error, not a scientific one. The cluster child job did not have the project conda env's tools (`bgzip`/`tabix`, which live in `$PMA_CONDA_ENV/bin`) on PATH, so the ATAC fragment chr-renaming + chromosome-bound filter was skipped, the SnapATAC2 import matched zero fragments (Ensembl-named fragments vs UCSC-named reference), and `atac_qc_metrics.parquet` came back empty. **This is fixed structurally:** each generated jobscript now self-activates `$PMA_CONDA_ENV` (`executor.hpc.inject_conda_activation_text`, applied by `slurm-submit.sh` / `pbs-submit.sh`), `htslib` is pinned in `workflow/envs/processing.yaml`, and `executor/io.py` falls back to pure-Python gzip when `bgzip` is unavailable. If you still hit it: confirm `configure-execution --conda-env <name>` was set (recorded in `hpc.env` / `site.config`) and that `bgzip`/`tabix` exist in that env (`conda run -n <env> bgzip --version`). The pipeline now raises a clear error on an empty ATAC import instead of silently emitting a blank figure.

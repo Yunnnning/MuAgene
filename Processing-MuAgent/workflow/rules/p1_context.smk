@@ -8,7 +8,7 @@ rule p1_context_propose:
         from pathlib import Path
         from executor import context as ctx
         # Canonical user-facing location for the Biological Context Report
-        default_report_path = str(PRE_RUN / "config" / "biological_context.md")
+        default_report_path = str(PLAN / "config" / "biological_context.md")
         report_path = config.get("biological_context_path") or default_report_path
         ctx.write_template(report_path)
         Path(output.proposal).parent.mkdir(parents=True, exist_ok=True)
@@ -24,13 +24,13 @@ rule p1_context_execute:
         # Machine-readable extraction stays internal; human-readable summary is
         # a pre-run deliverable (reviewed before plan approval).
         extraction = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
-        summary    = str(PRE_RUN / "summary" / "context_summary.md"),
+        summary    = str(PLAN / "summary" / "context_summary.md"),
     params:
         run_dir = str(RUN_DIR),
     run:
         from pathlib import Path
         from executor import context as ctx
-        default_report_path = str(PRE_RUN / "config" / "biological_context.md")
+        default_report_path = str(PLAN / "config" / "biological_context.md")
         report_path = config.get("biological_context_path") or default_report_path
         payload = ctx.extract_context(report_path, params.run_dir,
                                       file_input_signals={

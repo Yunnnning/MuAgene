@@ -82,7 +82,7 @@ def write_report(run_dir: Path | str, content: str) -> Path:
     """Write `content` to the canonical Biological Context Report path.
 
     Resolves to `RunPaths(run_dir).biological_context_md` — currently
-    `<run_dir>/deliverables/pre_run/config/biological_context.md`. Creates
+    `<run_dir>/deliverables/plan/config/biological_context.md`. Creates
     parent directories as needed. Returns the written path.
     """
     from .run_paths import RunPaths

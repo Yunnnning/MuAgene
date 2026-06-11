@@ -45,6 +45,10 @@ default-resources:
   - mem_mb=4000
   - runtime=120
 
-# Conda envs are not managed by snakemake in v1 — the runner wrapper activates
-# the project env (`grn`) and child jobs inherit it.
+# Conda envs are not managed by snakemake in v1. The head-job runs inside the
+# project env (`grn`); child rule jobs self-activate it because slurm-submit.sh
+# injects a `conda activate "$PMA_CONDA_ENV"` block into each generated jobscript
+# (see executor.hpc.inject_conda_activation_text). Without that, sbatch
+# --export=ALL would propagate env *variables* but not the activated env, leaving
+# env-local tools (bgzip/tabix) off PATH inside child jobs.
 use-conda: false

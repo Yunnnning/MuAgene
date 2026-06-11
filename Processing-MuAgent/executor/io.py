@@ -505,22 +505,30 @@ def filter_fragments_to_chrom_bounds(
         out_path = in_path.parent / (stem + "_cbf.tsv.gz")
     out_path = Path(out_path)
     tbi = Path(str(out_path) + ".tbi")
-    if out_path.exists() and tbi.exists():
+    have_bgzip = shutil.which("bgzip") is not None
+    have_tabix = shutil.which("tabix") is not None
+    # Idempotency: reuse an existing output. We only require a `.tbi` to be
+    # present when tabix is available (and thus would have produced one).
+    if out_path.exists() and (tbi.exists() or not have_tabix):
         return out_path
 
-    for tool in ("bgzip", "tabix"):
-        if not shutil.which(tool):
-            raise RuntimeError(f"{tool} not found on PATH.")
-
-    # Build inline awk sizes dict — no temp file needed.
+    # `zcat`, `awk` and `gzip` are coreutils (always present). `bgzip`/`tabix`
+    # come from htslib in the project conda env; when a cluster job has not
+    # activated that env they may be missing. The essential work — chromosome
+    # renaming + out-of-bounds filtering — must still happen, so fall back to a
+    # plain gzip stream (SnapATAC2 `import_fragments` reads gzip fine; the tabix
+    # index is only an optimisation and is skipped when unavailable).
     sizes_str = "; ".join(f'sizes["{c}"]={s}' for c, s in chrom_sizes.items())
     if add_chr_prefix:
         # Fragments use Ensembl naming (no chr prefix); chrom_sizes uses UCSC naming.
-        # Try "chr"+chrom against sizes: if found, bounds-filter and rename; if not
-        # found (scaffold), pass through with the original (un-prefixed) name.
+        # Map mitochondrion "MT"/"M" → "chrM" explicitly (a bare "chr" prepend would
+        # yield "chrMT", which is absent from the UCSC reference and would silently
+        # drop all mito fragments). Otherwise try "chr"+chrom against sizes: if found,
+        # bounds-filter and rename; if not found (scaffold), pass through unchanged.
         awk_prog = (
             f'BEGIN{{ OFS="\\t"; {sizes_str} }}'
-            ' { chrom="chr"$1; if (chrom in sizes) { if (int($3)<=sizes[chrom]) { $1=chrom; print } } else { print } }'
+            ' { if ($1=="MT" || $1=="M") chrom="chrM"; else chrom="chr"$1;'
+            ' if (chrom in sizes) { if (int($3)<=sizes[chrom]) { $1=chrom; print } } else { print } }'
         )
     else:
         awk_prog = (
@@ -528,22 +536,128 @@ def filter_fragments_to_chrom_bounds(
             ' { if (!($1 in sizes) || (int($3) <= sizes[$1])) print }'
         )
 
+    compressor = ["bgzip", "-c"] if have_bgzip else ["gzip", "-c"]
     zcat = subprocess.Popen(["zcat", str(in_path)], stdout=subprocess.PIPE)
     awk = subprocess.Popen(["awk", awk_prog], stdin=zcat.stdout, stdout=subprocess.PIPE)
     with open(out_path, "wb") as fh:
-        bgzip = subprocess.Popen(["bgzip", "-c"], stdin=awk.stdout, stdout=fh)
+        comp = subprocess.Popen(compressor, stdin=awk.stdout, stdout=fh)
     for p_obj in (zcat, awk):
         if p_obj.stdout:
             p_obj.stdout.close()
-    bgzip.wait(); awk.wait(); zcat.wait()
-    for name, proc in [("zcat", zcat), ("awk", awk), ("bgzip", bgzip)]:
+    comp.wait(); awk.wait(); zcat.wait()
+    for name, proc in [("zcat", zcat), ("awk", awk), (compressor[0], comp)]:
         if proc.returncode not in (0, None):
             raise RuntimeError(f"filter_fragments_to_chrom_bounds: {name} exited {proc.returncode}")
 
-    result = subprocess.run(["tabix", "-p", "bed", str(out_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"tabix indexing failed:\n{result.stderr}")
+    # tabix indexing is best-effort: requires a bgzip-compressed file, and the
+    # downstream SnapATAC2 import does not need the index. Skip it when bgzip/tabix
+    # are unavailable or when indexing fails on a plain-gzip output.
+    if have_bgzip and have_tabix:
+        result = subprocess.run(["tabix", "-p", "bed", str(out_path)],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"tabix indexing failed:\n{result.stderr}")
     return out_path
+
+
+# Canonical chromosome tokens (both Ensembl and UCSC spellings) used to decide a
+# fragments file's naming convention from a cheap head-of-file peek.
+_CANONICAL_CHROM_TOKENS = (
+    {str(i) for i in range(1, 100)} | {"X", "Y", "M", "MT"}
+)
+_CANONICAL_CHROM_TOKENS |= {f"chr{c}" for c in _CANONICAL_CHROM_TOKENS}
+
+
+def peek_fragment_chrom_naming(
+    path: Path | str, max_lines: int = 5000
+) -> tuple[list[str], bool]:
+    """Detect a fragments file's chromosome-naming convention with pure Python.
+
+    Reads up to ``max_lines`` data rows via ``gzip`` (no ``tabix``/``bgzip``
+    needed) and returns ``(canonical_chroms_seen, has_chr_prefix)``. Detecting the
+    ``chr`` prefix only needs the first canonical contig, so a head peek of a
+    coordinate-sorted file is sufficient even though it sees few distinct chroms.
+    """
+    seen: list[str] = []
+    n = 0
+    with gzip.open(path, "rt") as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            chrom = line.split("\t", 1)[0]
+            if chrom in _CANONICAL_CHROM_TOKENS and chrom not in seen:
+                seen.append(chrom)
+            n += 1
+            if n >= max_lines:
+                break
+    has_chr_prefix = bool(seen) and all(c.startswith("chr") for c in seen)
+    return seen, has_chr_prefix
+
+
+def prepare_fragments_for_snapatac(
+    fragments_path: Path | str,
+    genome_ref: Any,
+    *,
+    out_dir: Path | str,
+    frag_has_chr_prefix: bool | None = None,
+    log=None,
+) -> tuple[Path, bool]:
+    """Normalise ATAC fragment chrom names to the SnapATAC2 reference convention
+    and bounds-filter them, returning ``(prepared_path, add_chr_prefix)``.
+
+    ``add_chr_prefix`` is returned so callers can apply the same Ensembl→UCSC
+    renaming to companion inputs (e.g. a peaks BED used for FRiP) and record the
+    decision in their stage metadata.
+
+    Cell Ranger ARC writes Ensembl-style names (``1``, ``X``, ``MT``) while
+    SnapATAC2's built-in genomes use UCSC names (``chr1``, ``chrX``, ``chrM``);
+    ``import_fragments`` and ``tsse`` both require the reference convention, so we
+    rename the fragments rather than swap references. This is the single shared
+    entry point used by both the S0 QC-exploration path and the S2 ATAC-QC stage.
+
+    Robust by construction:
+    - Naming is detected with a pure-Python peek (``frag_has_chr_prefix`` may be
+      supplied from S0 metadata to skip it) — never a ``tabix`` call, so a missing
+      ``tabix`` cannot silently disable renaming.
+    - Compression falls back to plain ``gzip`` when ``bgzip`` is absent (see
+      :func:`filter_fragments_to_chrom_bounds`).
+    - On failure it raises rather than returning the unprepared file, so an
+      execution error cannot masquerade as an empty downstream QC figure.
+
+    ``log`` is an optional ``callable(dict)`` (e.g. a closure over ``log_event``)
+    so this module stays free of the logging layer.
+    """
+    fragments_path = Path(fragments_path)
+    genome_uses_chr = any(str(k).startswith("chr") for k in genome_ref.chrom_sizes)
+    if frag_has_chr_prefix is None:
+        _, frag_has_chr_prefix = peek_fragment_chrom_naming(fragments_path)
+
+    add_chr_prefix = bool(genome_uses_chr and not frag_has_chr_prefix)
+    if log is not None:
+        if add_chr_prefix:
+            log({
+                "event": "chr_prefix_normalization",
+                "fragments_chrom_style": "ensembl_no_prefix",
+                "genome_chrom_style": "ucsc_chr_prefix",
+                "action": "adding_chr_prefix_in_cbf_filter",
+            })
+        elif (not genome_uses_chr) and frag_has_chr_prefix:
+            # Built-in SnapATAC2 genomes are all UCSC, so this should not arise;
+            # surface it loudly rather than produce an empty import if it does.
+            log({
+                "event": "chr_prefix_mismatch_unsupported",
+                "note": ("reference uses Ensembl naming but fragments are UCSC; "
+                         "no chr-strip path is implemented"),
+            })
+
+    suffix = ("atac_fragments_cbf_chrnorm.tsv.gz" if add_chr_prefix
+              else "atac_fragments_cbf.tsv.gz")
+    out_path = Path(out_dir) / suffix
+    prepared = filter_fragments_to_chrom_bounds(
+        fragments_path, dict(genome_ref.chrom_sizes), out_path,
+        add_chr_prefix=add_chr_prefix,
+    )
+    return prepared, add_chr_prefix
 
 
 def validate_fragments(path: Path | str, peek_lines: int = 2000) -> dict[str, Any]:
@@ -616,6 +730,12 @@ GENOME_CHROMS = {
     # We accept BOTH UCSC (chr-prefixed) and Ensembl/NCBI (no-prefix) naming.
     "mm10":   {"chr1", "chr19", "chrX", "chrY", "chrM",
                 "1", "19", "X", "Y", "M", "MT"},
+    "GRCm38": {"chr1", "chr19", "chrX", "chrY", "chrM",
+                "1", "19", "X", "Y", "M", "MT"},
+    "GRCm39": {"chr1", "chr19", "chrX", "chrY", "chrM",
+                "1", "19", "X", "Y", "M", "MT"},
+    "GRCh37": {"chr1", "chr22", "chrX", "chrY", "chrM",
+                "1", "22", "X", "Y", "M", "MT"},
     "GRCh38": {"chr1", "chr22", "chrX", "chrY", "chrM",
                 "1", "22", "X", "Y", "M", "MT"},
 }

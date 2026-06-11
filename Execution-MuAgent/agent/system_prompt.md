@@ -8,7 +8,7 @@ Science intent and platform mechanics are separate concerns with separate owners
 
 ## What you read
 
-**site.config** (`deliverables/pre_run/config/site.config`) — the platform description. Processing-MuAgent writes this from confirmed user input. You read it to know: which scheduler, which partition/queue, account/QOS, conda env or container, resources_scale.
+**site.config** (`deliverables/plan/config/site.config`) — the platform description. Processing-MuAgent writes this from confirmed user input. You read it to know: which scheduler, which partition/queue, account/QOS, conda env or container, resources_scale.
 
 **Per-stage specs** (`internal/stage_meta/<stage>.yaml`) — the science intent for each stage. Each spec declares:
 - `stage` — the pipeline stage name
@@ -74,7 +74,7 @@ Write findings to `internal/hpc_monitor/latest_report.md`, full snapshot + monit
 # Validate spec, render script, submit, record, and monitor until exit:
 Execution-MuAgent execute-spec \
   --spec internal/stage_meta/head_job.yaml \
-  --site-config deliverables/pre_run/config/site.config \
+  --site-config deliverables/plan/config/site.config \
   --run-dir /path/to/run \
   --repo-root /path/to/Processing-MuAgent \
   [--watch] [--interval 270] [--kill-on-hang]

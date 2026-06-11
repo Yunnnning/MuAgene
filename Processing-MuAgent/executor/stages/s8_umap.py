@@ -93,9 +93,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     paths = RunPaths(run_dir)
     art = paths.stage_dir("s8_umap")       # internal/artifacts/s8_umap/ — sentinel lives here
     art.mkdir(parents=True, exist_ok=True)
-    figures = paths.deliv_post_run
+    figures = paths.deliv_figures
     figures.mkdir(parents=True, exist_ok=True)
-    processed_dir = paths.deliv_post_run
+    processed_dir = paths.deliv_results
     processed_dir.mkdir(parents=True, exist_ok=True)
     params_path = paths.parameters_yaml
 

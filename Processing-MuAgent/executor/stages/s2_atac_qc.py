@@ -30,8 +30,8 @@ from typing import Any
 
 import numpy as np
 
-from ..methods import mad_thresholds as _mad
-from ..methods.qc_filter_stats import append_frip_exclusive, exclusive_removals
+from ..methods import qc_thresholds as _qct
+from ..methods.qc_filter_stats import append_frip, marginal_removals
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
@@ -197,12 +197,15 @@ def _acquire_peaks_for_frip(
     return None, ""
 
 
-def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
+def _import_atac_fresh(run_dir: Path, art: Path, params_path: Path):
+    """Original full ATAC import path: translation shim, genome resolution,
+    chr-prefix detection, chromosome-bound filter, ``import_fragments``, TSS
+    enrichment, and the per-cell nucleosome-signal scan.
+
+    Returns ``(adata, n_frag_values, tss_values, ns_values, genome_ref,
+    add_chr_prefix)``.
+    """
     import snapatac2 as snap
-    run_dir = Path(run_dir)
-    art = run_dir / "internal" / "artifacts" / "s2_atac_qc"
-    art.mkdir(parents=True, exist_ok=True)
-    params_path = run_dir / "internal" / "parameters.yaml"
 
     atac_meta = json.loads((run_dir / "internal" / "artifacts" / "s0_ingest" / "atac_ingest.json").read_text())
     fragments_path = atac_meta["fragments_path"]
@@ -243,47 +246,26 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             f"Available assemblies: {available}."
         )
 
-    # Detect Ensembl vs UCSC chromosome naming mismatch between the fragments
-    # file and the SnapATAC2 genome object. Cell Ranger ARC (GRCm39 / GRCh38)
-    # writes Ensembl-style names ("1", "X") while SnapATAC2 built-in genomes use
-    # UCSC-style ("chr1", "chrX"). When the mismatch is detected, add_chr_prefix
-    # is passed to filter_fragments_to_chrom_bounds so the output tsv.gz carries
-    # UCSC-style names that SnapATAC2 can match.
-    genome_uses_chr = any(k.startswith("chr") for k in genome_ref.chrom_sizes)
-    frags_chroms = _io._tabix_list_chromosomes(Path(fragments_path))
-    add_chr_prefix = False
-    if genome_uses_chr and frags_chroms:
-        canonical = [c for c in frags_chroms
-                     if c in {str(i) for i in range(1, 100)} | {"X", "Y", "M", "MT"}]
-        if canonical and not any(c.startswith("chr") for c in canonical):
-            add_chr_prefix = True
-            log_event(run_dir, {"stage": "s2_atac_qc", "event": "chr_prefix_normalization",
-                                 "fragments_chrom_style": "ensembl_no_prefix",
-                                 "genome_chrom_style": "ucsc_chr_prefix",
-                                 "action": "adding_chr_prefix_in_cbf_filter"})
-
-    # Clip fragments to declared chromosome bounds before SnapATAC2 import.
-    # Some aligners produce fragments that extend past a chromosome end
-    # (aligner treats end as open interval); SnapATAC2's Rust backend panics on
-    # these. Filter is idempotent: skipped if the _cbf file already exists.
-    cbf_suffix = "atac_fragments_cbf_chrnorm.tsv.gz" if add_chr_prefix else "atac_fragments_cbf.tsv.gz"
-    cbf_path = art / cbf_suffix
-    try:
-        fragments_path = str(_io.filter_fragments_to_chrom_bounds(
-            fragments_path, dict(genome_ref.chrom_sizes), cbf_path,
-            add_chr_prefix=add_chr_prefix,
-        ))
-        _prov.set_param(params_path, "s2_atac_qc.chrom_bound_filter",
-                        str(cbf_path),
-                        source="derived", confidence="high",
-                        rationale=("Fragments with end > chromosome length removed before "
-                                   "SnapATAC2 import. Typically <2% of fragments; artifacts of "
-                                   "aligners treating chromosome ends as open intervals."),
-                        method={"name": "io.filter_fragments_to_chrom_bounds",
-                                "code_ref": "executor/io.py::filter_fragments_to_chrom_bounds"})
-    except Exception as _e:
-        log_event(run_dir, {"stage": "s2_atac_qc", "event": "chrom_bound_filter_failed",
-                             "error": str(_e), "falling_back_to": "unfiltered"})
+    # Normalise chromosome naming (Ensembl "1"/"MT" → UCSC "chr1"/"chrM" to match
+    # the SnapATAC2 reference) and clip fragments to declared chromosome bounds
+    # before import. Shared with the S0 QC-exploration path via one helper so the
+    # two cannot drift; the helper detects naming with a Python peek (no tabix),
+    # falls back to gzip when bgzip is absent, and raises on hard failure rather
+    # than silently importing un-renamed fragments (which match zero chroms).
+    cbf_path, add_chr_prefix = _io.prepare_fragments_for_snapatac(
+        fragments_path, genome_ref, out_dir=art,
+        log=lambda d: log_event(run_dir, {"stage": "s2_atac_qc", **d}),
+    )
+    fragments_path = str(cbf_path)
+    _prov.set_param(params_path, "s2_atac_qc.chrom_bound_filter",
+                    str(cbf_path),
+                    source="derived", confidence="high",
+                    rationale=("Fragments chr-renamed to the reference convention and those with "
+                               "end > chromosome length removed before SnapATAC2 import. Typically "
+                               "<2% of fragments; artifacts of aligners treating chromosome ends "
+                               "as open intervals."),
+                    method={"name": "io.prepare_fragments_for_snapatac",
+                            "code_ref": "executor/io.py::prepare_fragments_for_snapatac"})
 
     # Import fragments into a fresh SnapATAC2-backed h5ad.
     # For Cell Ranger ARC paired multiome, S0 writes a RNA cell-barcode whitelist
@@ -320,6 +302,78 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                             "error": str(e), "fallback": "all_zeros"})
         ns_values = np.zeros(adata.n_obs, dtype=float)
 
+    return adata, n_frag_values, tss_values, ns_values, genome_ref, add_chr_prefix
+
+
+def _acquire_atac(run_dir: Path, art: Path, params_path: Path):
+    """Obtain the SnapATAC2-backed AnnData + per-cell metric arrays for QC.
+
+    Fast path: reuse the object ``qc_explore`` already imported (same whitelist,
+    same chromosome-bound-filtered fragments — the import is threshold-independent)
+    plus its per-cell metrics parquet, skipping the heavy re-import, TSS
+    enrichment, and nucleosome scan. The reused object gains a ``nucleosome_signal``
+    obs column downstream (benign; the explore h5ad is a transient artifact cleaned
+    up after QC approval). Falls back to a fresh import when the explore artifacts
+    are missing, size-mismatched, or otherwise unusable.
+
+    Returns ``(adata, n_frag_values, tss_values, ns_values, genome_ref,
+    add_chr_prefix)``.
+    """
+    import snapatac2 as snap
+
+    explore_dir = run_dir / "internal" / "artifacts" / "qc_explore"
+    meta_p = explore_dir / "atac_explore_meta.json"
+    if meta_p.exists():
+        try:
+            import pandas as pd
+            meta = json.loads(meta_p.read_text())
+            h5 = Path(meta.get("atac_snap_h5ad", ""))
+            parquet = explore_dir / meta.get("metrics_parquet", "atac_qc_metrics.parquet")
+            genome = meta.get("genome")
+            genome_ref = getattr(snap.genome, genome, None) if genome else None
+            if h5.exists() and parquet.exists() and genome_ref is not None:
+                m = pd.read_parquet(parquet)
+                adata = snap.read(str(h5))
+                if int(adata.n_obs) == int(len(m)):
+                    log_event(run_dir, {"stage": "s2_atac_qc",
+                                        "event": "reuse_explore_import",
+                                        "h5ad": str(h5), "n_cells": int(adata.n_obs)})
+                    return (
+                        adata,
+                        np.asarray(m["n_fragment"], dtype=float),
+                        np.asarray(m["tsse"], dtype=float),
+                        np.asarray(m["nucleosome_signal"], dtype=float),
+                        genome_ref,
+                        bool(meta.get("add_chr_prefix", False)),
+                    )
+                try:
+                    adata.close()
+                except Exception:
+                    pass
+                log_event(run_dir, {"stage": "s2_atac_qc",
+                                    "event": "reuse_explore_size_mismatch",
+                                    "n_obs": int(adata.n_obs), "n_metrics": int(len(m)),
+                                    "fallback": "fresh_import"})
+        except Exception as e:
+            log_event(run_dir, {"stage": "s2_atac_qc", "event": "reuse_explore_failed",
+                                "error": str(e), "fallback": "fresh_import"})
+
+    return _import_atac_fresh(run_dir, art, params_path)
+
+
+def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
+    import snapatac2 as snap
+    run_dir = Path(run_dir)
+    art = run_dir / "internal" / "artifacts" / "s2_atac_qc"
+    art.mkdir(parents=True, exist_ok=True)
+    params_path = run_dir / "internal" / "parameters.yaml"
+
+    # Acquire the imported AnnData + per-cell metrics: reuse qc_explore's import
+    # when available (skips the heavy re-import), else import fresh.
+    adata, n_frag_values, tss_values, ns_values, genome_ref, add_chr_prefix = _acquire_atac(
+        run_dir, art, params_path,
+    )
+
     # Dataset-level fragment-size distribution (cheap; for a sanity figure).
     # Captured here before adata is closed; used later in the figure block.
     fsd_for_fig: np.ndarray | None = None
@@ -338,15 +392,10 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 3.0))
     frip_min = float(_resolve_param(params_path, plan_params, "frip_min", 0.25))
 
-    if n_frag_values.size:
-        keep_floor = n_frag_values >= n_frag_floor
-        if keep_floor.any():
-            f_lo, f_hi = _mad.log_mad_bounds(n_frag_values[keep_floor], k=k_mad)
-        else:
-            f_lo, f_hi = float(n_frag_floor), float(n_frag_values.max() if n_frag_values.size else 1e6)
-    else:
-        f_lo, f_hi = float(n_frag_floor), 1e12
-    f_lo = max(f_lo, float(n_frag_floor))
+    # n_fragments MAD bounds (shared with the pre-plan QC exploration).
+    f_lo, f_hi = _qct.atac_n_fragment_bounds(
+        n_frag_values, k_mad=k_mad, n_frag_floor=n_frag_floor,
+    )
 
     _prov.set_param(params_path, "s2_atac_qc.n_fragments_min", float(f_lo),
                     source="derived", confidence="high",
@@ -557,28 +606,17 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         Path(tmp_3m).unlink(missing_ok=True)
         filtered_path_tmp = tmp_final
 
-    pass_frag = (
-        (n_frag_values >= f_lo) & (n_frag_values <= f_hi) if n_frag_values.size
-        else np.ones(n_pre, dtype=bool)
+    atac_masks = _qct.atac_pass_masks(
+        n_frag_values, tss_values, ns_values,
+        f_lo=f_lo, f_hi=f_hi, tss_min=tss_min, tss_max=tss_max,
+        nuc_max=nuc_signal_max, n_pre=n_pre,
     )
-    pass_tss = (
-        (tss_values > tss_min) & (tss_values < tss_max) if tss_values.size
-        else np.ones(n_pre, dtype=bool)
-    )
-    pass_ns = (
-        ns_values < nuc_signal_max if ns_values.size and np.isfinite(ns_values).any()
-        else np.ones(n_pre, dtype=bool)
-    )
-    cells_removed_per_metric = exclusive_removals({
-        "n_fragments": pass_frag,
-        "tss_enrichment": pass_tss,
-        "nucleosome_signal": pass_ns,
-    })
+    cells_removed_per_metric = marginal_removals(atac_masks)
     frip_fail = (
         int((frip_values < frip_min).sum())
         if frip_applied and frip_values is not None else None
     )
-    cells_removed_per_metric = append_frip_exclusive(
+    cells_removed_per_metric = append_frip(
         cells_removed_per_metric,
         frip_fail=frip_fail,
         n_pre=n_pre,
@@ -634,14 +672,14 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     try:
         from .. import figures as _fig
         from ..run_paths import RunPaths
-        figs_dir = RunPaths(run_dir).deliv_qc_review_figures
+        figs_dir = RunPaths(run_dir).deliv_figures
         figs_dir.mkdir(parents=True, exist_ok=True)
 
         if fsd_for_fig is not None and fsd_for_fig.size:
             _fig.plot_fragment_size_distribution(
                 fsd_for_fig, out_dir=figs_dir,
                 stem="s2_atac_qc_fragment_size_distribution",
-                title="ATAC fragment size distribution (after QC)",
+                title="fragment size distribution (post-filtering)",
                 distr_after=fsd_after if (fsd_after is not None and fsd_after.size) else None,
             )
 

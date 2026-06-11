@@ -20,8 +20,13 @@ PACKAGE_DIR = Path(__file__).resolve().parent.parent  # Processing-MuAgent/
 SNAKEFILE = PACKAGE_DIR / "workflow" / "Snakefile"
 
 EXECUTOR_CHOICE = click.Choice(["local", "pbs", "slurm"])
+# Cluster-only executors for `submit` — `run` is local-only, so `local` is not a
+# valid submit target (all cluster execution is owned by Execution-MuAgent).
+CLUSTER_EXECUTOR_CHOICE = click.Choice(["pbs", "slurm"])
 
-STAGES = ["p1_context", "p2_plan", "plan_review", "s0_ingest",
+# s0_ingest is the merged planning compute (load + validate + assemble plan +
+# QC exploration); the former standalone p2_plan stage no longer exists.
+STAGES = ["p1_context", "plan_review", "s0_ingest",
           "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
           "post_qc_review",
           "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"]
@@ -66,9 +71,9 @@ def init(config_path: str) -> None:
     """Initialize a run directory.
 
     Creates the `internal/` and `deliverables/` scaffolds, copies the user's
-    config into its canonical user-facing location `deliverables/config/run.yaml`,
+    config into its canonical user-facing location `deliverables/plan/config/run.yaml`,
     and writes the Biological Context Report template into
-    `deliverables/config/biological_context.md`.
+    `deliverables/plan/config/biological_context.md`.
     """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
@@ -85,29 +90,29 @@ def init(config_path: str) -> None:
 @main.command()
 @click.argument("stage")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-@click.option("--executor", type=EXECUTOR_CHOICE, default="local",
-              help="Execution backend: local (default), pbs, or slurm.")
-def propose(stage: str, config_path: str, executor: str) -> None:
-    """Run the <stage>_propose rule."""
+def propose(stage: str, config_path: str) -> None:
+    """Run the <stage>_propose rule (local — propose rules are localrules)."""
     stage = _canonical_stage(stage)
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
-    _snakemake(["--configfile", str(paths.run_yaml), f"{stage}_propose"],
-               run_dir, executor=executor)
+    _snakemake(["--configfile", str(paths.run_yaml), f"{stage}_propose"], run_dir)
 
 
 def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
     """Delete large QC-only h5ad objects after post_qc_review is approved.
 
-    Removes rna_qc.h5ad, atac_qc.h5ad, and the pre-filter atac_snap.h5ad.
-    Keeps qc_summary.json, qc_metrics parquets, CBF fragment caches, S1a output,
-    and all S3+ artifacts so threshold revision and downstream stages are unaffected.
+    Removes rna_qc.h5ad, atac_qc.h5ad, the pre-filter atac_snap.h5ad, and the
+    qc_explore ATAC import (atac_snap_explore.h5ad — reused by S2 during QC, no
+    longer needed once QC is approved). Keeps qc_summary.json, qc_metrics
+    parquets, CBF fragment caches, S1a output, and all S3+ artifacts so
+    threshold revision and downstream stages are unaffected.
     """
     rp = RunPaths(run_dir)
     targets = [
         rp.artifact("s1_rna_qc",  "rna_qc.h5ad"),
         rp.artifact("s2_atac_qc", "atac_qc.h5ad"),
         rp.artifact("s2_atac_qc", "atac_snap.h5ad"),
+        rp.artifact("qc_explore", "atac_snap_explore.h5ad"),
     ]
     deleted: list[str] = []
     for p in targets:
@@ -187,7 +192,7 @@ def configure_execution(
     resources_scale: float | None,
     conda_env: str | None,
 ) -> None:
-    """Record execution mode and write deliverables/pre_run/config/site.config + hpc.env."""
+    """Record execution mode and write deliverables/plan/config/site.config + hpc.env."""
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
     paths.ensure()
@@ -501,6 +506,8 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
     click.echo(text)
     out = _pr.write_summary(run_dir, intro=intro_text)
     click.echo(f"\nWritten: {out}")
+    html_out = _pr.write_plan_summary_html(run_dir, intro=intro_text)
+    click.echo(f"Written: {html_out}")
     # Write per-stage specs; read workflow_branch from plan if available.
     try:
         import json
@@ -631,29 +638,14 @@ def unlock_cmd(config_path: str) -> None:
     click.echo(f"Unlocked {paths.snakemake_workdir}")
 
 
-@main.command(name="run")
-@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-@click.option("--auto-approve", is_flag=True, help="Auto-approve every checkpoint (noninteractive).")
-@click.option("--auto-approve-except", "auto_except", multiple=True,
-              help="With --auto-approve, do NOT pre-seed the given stage(s). Repeatable. "
-                   "Example: --auto-approve-except s7_clustering")
-@click.option("--no-context", is_flag=True, help="Explicit user choice to proceed without biological context; fields marked status=missing.")
-@click.option("--target", default="all")
-@click.option("--executor", type=EXECUTOR_CHOICE, default="local",
-              help="Execution backend: local (default), pbs, or slurm. "
-                   "When pbs/slurm, snakemake stays in the foreground on this host "
-                   "and dispatches per-rule cluster jobs.")
-def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, ...],
-                 no_context: bool, target: str, executor: str) -> None:
-    """Run the full DAG. With --auto-approve, checkpoints are unblocked automatically.
+def _enforce_context_gate(paths: RunPaths, no_context: bool) -> None:
+    """Phase 1 biological-context gate (MANDATORY before any preprocessing).
 
-    Use --auto-approve-except <stage> to keep specific gates honoured (e.g. the
-    S7 clustering-resolution review in headless HPC mode).
+    Shared by `run` (local execution) and `submit` (cluster execution) so the gate
+    is enforced identically regardless of which entry point starts the pipeline.
+    Raises if the report is still the blank template and the caller did not pass
+    --no-context.
     """
-    run_dir = _resolve_run_dir(config_path)
-    paths = RunPaths(run_dir)
-
-    # Phase 1 biological context check (MANDATORY FIRST STEP).
     report_path = paths.biological_context_md
     report_path.parent.mkdir(parents=True, exist_ok=True)
     if not report_path.exists():
@@ -676,6 +668,32 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
         click.echo("Proceeding WITHOUT biological context (--no-context set). User-declared "
                    "fields will be marked status=missing.", err=True)
 
+
+@main.command(name="run")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+@click.option("--auto-approve", is_flag=True, help="Auto-approve every checkpoint (noninteractive).")
+@click.option("--auto-approve-except", "auto_except", multiple=True,
+              help="With --auto-approve, do NOT pre-seed the given stage(s). Repeatable. "
+                   "Example: --auto-approve-except s7_clustering")
+@click.option("--no-context", is_flag=True, help="Explicit user choice to proceed without biological context; fields marked status=missing.")
+@click.option("--target", default="all")
+def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, ...],
+                 no_context: bool, target: str) -> None:
+    """Run the DAG LOCALLY. With --auto-approve, checkpoints are unblocked automatically.
+
+    `run` is local-only: it executes on this machine (local mode) or runs the
+    login-node localrules (propose / planning / manifest). All cluster job
+    submission and monitoring is owned by Execution-MuAgent via `submit` — there
+    is no `run --executor pbs|slurm` path.
+
+    Use --auto-approve-except <stage> to keep specific gates honoured (e.g. the
+    S7 clustering-resolution review in headless HPC mode).
+    """
+    run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
+
+    _enforce_context_gate(paths, no_context)
+
     auto_except = tuple(_canonical_stage(s) for s in auto_except)
     if auto_approve:
         # Pre-seed approval sentinels so snakemake can run the DAG end-to-end in a
@@ -686,8 +704,7 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
             click.echo(f"Auto-approved all stages except: "
                        f"{sorted(_display_stage(s) for s in kept)}. "
                        "Snakemake will stop at those gates.")
-    _snakemake(["--configfile", str(paths.run_yaml), target],
-               run_dir, executor=executor)
+    _snakemake(["--configfile", str(paths.run_yaml), target], run_dir)
 
 
 def _infer_submit_target(run_dir: Path) -> str:
@@ -769,12 +786,16 @@ def _prepare_submit_approvals(
 
 @main.command()
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-@click.option("--executor", type=EXECUTOR_CHOICE, required=True,
+@click.option("--executor", type=CLUSTER_EXECUTOR_CHOICE, required=True,
               help="Scheduler to submit the head-job to (pbs or slurm). "
-                   "Use --executor local with `run` instead for foreground runs.")
+                   "For local foreground runs use `run` (which is local-only).")
 @click.option("--target", default=None,
               help="Override the Snakemake target. Omit to auto-infer the first "
-                   "incomplete step (e.g. s2_atac_qc_execute, post_qc_review_propose, all).")
+                   "incomplete step (e.g. s0_ingest_execute for planning, "
+                   "s2_atac_qc_execute, post_qc_review_propose, all).")
+@click.option("--no-context", is_flag=True,
+              help="Explicit user choice to proceed without biological context (planning "
+                   "submissions only); fields marked status=missing.")
 @click.option("--auto-approve", is_flag=True,
               help="Pre-seed all checkpoint sentinels; head-job runs unattended end-to-end.")
 @click.option("--auto-approve-except", "auto_except", multiple=True,
@@ -791,11 +812,17 @@ def _prepare_submit_approvals(
                    "Returns after job submission is confirmed (≤90 s). "
                    "--no-watch: submit only, NO supervisor daemon started — no stall "
                    "detection, no auto-cancel.")
-def submit(config_path: str, executor: str, target: str | None,
+def submit(config_path: str, executor: str, target: str | None, no_context: bool,
            auto_approve: bool, auto_except: tuple[str, ...],
            output_log: str | None, unlock_stale_locks: bool,
            watch: bool) -> None:
     """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
+
+    This is the ONLY cluster-execution path: Processing-MuAgent prepares the
+    head-job spec + site.config and Execution-MuAgent owns submission and
+    monitoring (kill-on-hang, hpc-status). This includes the planning-phase S0
+    ingest (`--target s0_ingest_execute`) on HPC — S0's QC exploration is
+    memory-heavy and must run on a compute node, never the login node.
 
     Execution-MuAgent is a hard dependency for cluster submission — it renders the
     submission script, submits the head-job, and owns monitoring. If Execution-MuAgent
@@ -821,9 +848,6 @@ def submit(config_path: str, executor: str, target: str | None,
         Processing-MuAgent approve s7_clustering --config $CFG
         Processing-MuAgent submit --config $CFG --executor slurm
     """
-    if executor == "local":
-        raise click.UsageError("--executor local is for `run`, not `submit`. "
-                               "Use pbs or slurm here.")
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
 
@@ -839,6 +863,13 @@ def submit(config_path: str, executor: str, target: str | None,
 
     inferred_target = target is None
     resolved_target = target if target is not None else _infer_submit_target(run_dir)
+
+    # Phase 1 biological-context gate — enforced for planning-phase submissions
+    # (S0) exactly as `run` does. Resume submissions (S1+) skip it: context was
+    # already validated when planning ran.
+    if resolved_target == "s0_ingest_execute":
+        _enforce_context_gate(paths, no_context)
+
     phase_seeded = _prepare_submit_approvals(
         run_dir,
         resolved_target,
@@ -960,13 +991,14 @@ def submit(config_path: str, executor: str, target: str | None,
         )
 
 
-def _snakemake(args: list[str], run_dir: Path, *, executor: str = "local") -> None:
-    """Invoke snakemake.
+def _snakemake(args: list[str], run_dir: Path) -> None:
+    """Invoke snakemake LOCALLY with --cores 1 for reproducibility.
 
-    Local mode runs snakemake with --cores 1 for reproducibility. Cluster modes
-    (pbs/slurm) attach the appropriate Snakemake profile so each non-local rule
-    is dispatched as a scheduler job; planning/propose/manifest rules remain
-    local per the `localrules:` directive in the Snakefile.
+    `run` and `propose` are local-only entry points. All cluster execution is
+    owned by Execution-MuAgent and reached via `submit` (which renders + submits
+    a supervised head-job) — never through this helper. The head-job's own
+    snakemake invocation (in launch_runner.sh) attaches the cluster profile; this
+    helper does not.
 
     Expected args shape from callers: ["--configfile", <path>, <target>].
     """
@@ -1001,19 +1033,8 @@ def _snakemake(args: list[str], run_dir: Path, *, executor: str = "local") -> No
         "-s", str(SNAKEFILE),
         "--directory", str(paths.snakemake_workdir),
         "--rerun-incomplete", *targets, *rest,
+        "--cores", "1",
     ]
-    if executor == "local":
-        cmd += ["--cores", "1"]
-    else:
-        profile = hpc.profile_path(executor)
-        cmd += ["--profile", str(profile), "--jobs", "8"]
-        cmd += hpc.snakemake_cluster_cli_args()
-        # SLURM site-specific defaults from env vars.
-        if executor == "slurm":
-            if env.get("PMA_SLURM_PARTITION"):
-                cmd += ["--default-resources", f"slurm_partition={env['PMA_SLURM_PARTITION']}"]
-            if env.get("PMA_SLURM_ACCOUNT"):
-                cmd += ["--default-resources", f"slurm_account={env['PMA_SLURM_ACCOUNT']}"]
 
     if configfile_path:
         cmd += ["--configfile", configfile_path]

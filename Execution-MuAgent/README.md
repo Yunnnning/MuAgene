@@ -8,13 +8,13 @@ Processing-MuAgent and Execution-MuAgent share a two-file contract:
 
 | File | Written by | Read by | Contains |
 |------|-----------|---------|----------|
-| `deliverables/pre_run/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition/queue, account/QOS, conda env or container, resource scale |
+| `deliverables/plan/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition/queue, account/QOS, conda env or container, resource scale |
 | `internal/stage_meta/head_job.yaml` | Processing-MuAgent (`submit`) | Execution-MuAgent | Head-job submission spec: resources (CPU/mem/walltime), input config path, progress_timeout_hint, snakemake_target |
 | `internal/stage_meta/<stage>.yaml` | Processing-MuAgent (`plan-review`) | Execution-MuAgent (monitoring) | Per-stage metadata: science_description, resources, inputs/outputs, progress_timeout_hint. Not submitted — used for output validation and monitoring hints. |
 
 `hpc.env` is generated from `site.config` by Processing-MuAgent; it is a shell-variable projection, not an independent source. Do not edit it directly.
 
-Processing-MuAgent never submits jobs directly. `Processing-MuAgent submit` delegates to `Execution-MuAgent execute-spec`, which handles rendering, submission, recording, and monitoring. Snakemake submits per-stage child jobs from within the running head-job.
+Processing-MuAgent never submits or monitors cluster jobs directly — `Processing-MuAgent run` is local-only and `Processing-MuAgent submit` is cluster-only. `submit` delegates to `Execution-MuAgent execute-spec`, which handles rendering, submission, recording, and monitoring. Snakemake submits per-stage child jobs from within the running head-job. This boundary is absolute and includes the **planning-phase S0 ingest**: in HPC mode S0 is submitted via `submit --target s0_ingest_execute` (its QC exploration is memory-heavy and must run on a compute node), not run on the login node.
 
 ## Commands
 
@@ -25,7 +25,7 @@ Takes the head-job spec + `site.config`, validates, renders a submission script,
 ```bash
 Execution-MuAgent execute-spec \
   --spec /path/to/run/internal/stage_meta/head_job.yaml \
-  --site-config /path/to/run/deliverables/pre_run/config/site.config \
+  --site-config /path/to/run/deliverables/plan/config/site.config \
   --run-dir /path/to/run \
   --repo-root /path/to/MuAgene/Processing-MuAgent \
   --target all \
@@ -187,7 +187,7 @@ resources:
   mem_mb: 4000
   walltime_min: 1440
 inputs:
-  config: /path/to/run/deliverables/pre_run/config/run.yaml
+  config: /path/to/run/deliverables/plan/config/run.yaml
 outputs: {}
 progress_timeout_hint: 120
 snakemake_target: all

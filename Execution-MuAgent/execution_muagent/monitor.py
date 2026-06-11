@@ -32,6 +32,18 @@ from pathlib import Path
 from typing import Any
 
 
+def resolve_config_yaml(run_dir: Path | str) -> Path:
+    """Return canonical config path, falling back to legacy pre_run/ layout."""
+    run_dir = Path(run_dir)
+    plan = run_dir / "deliverables" / "plan" / "config" / "run.yaml"
+    legacy = run_dir / "deliverables" / "pre_run" / "config" / "run.yaml"
+    if plan.is_file():
+        return plan
+    if legacy.is_file():
+        return legacy
+    return plan
+
+
 TERMINAL_ERROR_MARKERS = (
     "MissingInputException",
     "MissingOutputException",
@@ -392,7 +404,7 @@ def render_submission_script(
     run_dir_path = Path(run_dir).resolve()
     lines += [
         "",
-        f"export PMA_CONFIG={run_dir_path / 'deliverables' / 'pre_run' / 'config' / 'run.yaml'}",
+        f"export PMA_CONFIG={resolve_config_yaml(run_dir_path)}",
         f"export PMA_TARGET={target}",
         f"export PMA_REPO_ROOT={repo_root}",
     ]

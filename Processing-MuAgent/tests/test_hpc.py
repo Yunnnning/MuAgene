@@ -46,6 +46,24 @@ class HpcTests(unittest.TestCase):
             self.assertIs(changed, True)
             self.assertRegex(jobscript.read_text(), r"--mode\s+('subprocess'|subprocess)")
 
+    def test_injects_conda_activation_after_shebang(self):
+        text = "#!/bin/sh\npython -m snakemake --mode remote\n"
+        out = hpc.sanitize_snakemake_jobscript_text(text)
+        lines = out.splitlines()
+        # Shebang stays first; activation block is injected right after it.
+        self.assertEqual(lines[0], "#!/bin/sh")
+        self.assertIn(hpc.PMA_ACTIVATION_MARKER, out)
+        self.assertIn('conda activate "$PMA_CONDA_ENV"', out)
+        # Guarded on PMA_CONDA_ENV so local/non-conda jobs are unaffected.
+        self.assertIn('if [ -n "${PMA_CONDA_ENV:-}" ]; then', out)
+
+    def test_conda_activation_injection_is_idempotent(self):
+        text = "#!/bin/sh\npython -m snakemake\n"
+        once = hpc.sanitize_snakemake_jobscript_text(text)
+        twice = hpc.sanitize_snakemake_jobscript_text(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count(hpc.PMA_ACTIVATION_MARKER), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

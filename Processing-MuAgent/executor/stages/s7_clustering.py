@@ -292,7 +292,7 @@ def propose(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
 
     summary_lines += [approval_block]
     # Resolution summary is a user-facing deliverable — write directly to
-    # deliverables/checkpoint/resolution_review/. The sweep.parquet + adjacency_report.json remain
+    # deliverables/checkpoints/resolution_review/. The sweep.parquet + adjacency_report.json remain
     # under internal/artifacts/ as machine-readable intermediates.
     from ..run_paths import RunPaths
     summary_out = RunPaths(run_dir).resolution_summary_md

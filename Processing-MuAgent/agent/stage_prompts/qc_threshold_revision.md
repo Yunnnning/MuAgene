@@ -2,7 +2,7 @@
 
 Use this procedure whenever the user asks to adjust QC filtering or doublet thresholds while the pipeline is paused at the **QC review checkpoint** (`post_qc_review`).
 
-Canonical user-facing report after re-run: `deliverables/checkpoint/qc_review/qc_review_<run_name>.md`. The rendered HTML report is `deliverables/checkpoint/qc_review/qc_summary_<run_name>.html`.
+Canonical user-facing report after re-run: `deliverables/checkpoints/qc_review/qc_review_<run_name>.md`. The rendered HTML report is `deliverables/checkpoints/qc_review/qc_summary_<run_name>.html`.
 
 ---
 
@@ -14,8 +14,8 @@ Canonical user-facing report after re-run: `deliverables/checkpoint/qc_review/qc
 |---|---|---|
 | `internal/parameters.yaml` | Yes | Live source of truth; stages read overrides here on re-run |
 | `internal/artifacts/p2_plan/preprocessing_plan.json` | No | Frozen P2 plan snapshot |
-| `deliverables/pre_run/summary/plan_review.md` | No | Plan-review appendix may still show original P2 defaults |
-| `deliverables/checkpoint/qc_review/qc_review_<run>.md` | Yes, after re-run + `propose post_qc_review` | User-facing summary of thresholds actually applied |
+| `deliverables/plan/summary/plan_review.md` | No | Plan-review appendix may still show original P2 defaults |
+| `deliverables/checkpoints/qc_review/qc_review_<run>.md` | Yes, after re-run + `propose post_qc_review` | User-facing summary of thresholds actually applied |
 
 Do **not** re-run `plan-review` or tell the user the plan file was updated unless they explicitly ask to refresh plan documentation. After a QC revision, the QC review report is the authoritative user-facing summary of applied thresholds.
 
@@ -77,7 +77,7 @@ Use this when `execution.mode` is `pbs` or `slurm`.
    Then submit and monitor:
 
    ```bash
-   source deliverables/pre_run/config/hpc.env
+   source deliverables/plan/config/hpc.env
    executor submit --config $CFG --executor pbs|slurm
    executor hpc-status --watch --config $CFG
    ```
@@ -90,11 +90,11 @@ Use this when `execution.mode` is `pbs` or `slurm`.
    executor propose post_qc_review --config $CFG
    ```
 
-   This rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and checkpoint figures under `figures/`.
+   This rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and checkpoint figures under `deliverables/figures/`.
 
 6. **Surface the updated report.**
 
-   Read `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` and relay it **verbatim**. Point the user to `qc_summary_<run_name>.html` for the rendered report. Ask whether to approve QC and continue to dimensionality reduction and clustering, or revise again.
+   Read `deliverables/checkpoints/qc_review/qc_review_<run_name>.md` and relay it **verbatim**. Point the user to `qc_summary_<run_name>.html` for the rendered report. Ask whether to approve QC and continue to dimensionality reduction and clustering, or revise again.
 
 Do not surface `internal/proposals/post_qc_review.yaml` in place of the QC review markdown after report regeneration.
 
@@ -121,7 +121,7 @@ Use this when `execution.mode` is `local`.
    executor propose post_qc_review --config $CFG
    ```
 
-6. Read `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` and relay it **verbatim**. Ask whether to approve QC or revise again.
+6. Read `deliverables/checkpoints/qc_review/qc_review_<run_name>.md` and relay it **verbatim**. Ask whether to approve QC or revise again.
 
 ---
 
@@ -147,7 +147,7 @@ If the user wants to proceed:
    - **Cache present:** run on the **login node** — t-SNE is skipped and the pipeline opens `rna_decontaminated.h5ad` in backed (disk) mode, loading only the requested marker columns plus cached per-cell totals (`cell_totals.parquet`). This avoids loading the full counts matrix into RAM.
    - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM/PBS job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
    Do **not** submit a cluster job when the cache already exists unless the login node still OOMs (rare after backed mode; try a modest ~16G cluster job before 48G).
-3. Relay `deliverables/checkpoint/qc_review/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
+3. Relay `deliverables/checkpoints/qc_review/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
 
 If the user declines the marker check or has no relevant markers, proceed to QC approval as normal.
 
@@ -176,4 +176,4 @@ On paired runs, union doublet removal policy is confirmed at `post_qc_review`. I
 After re-run, `qc_review_<run>.md` and `qc_summary_<run>.html` show:
 
 - **Before / retained / removed** — one summary block per modality at the top of the RNA and ATAC sections (no intermediate ATAC waterfall).
-- **cells removed\*** — order-independent exclusive counts from `cells_removed_per_metric` in each stage's `qc_summary.json`. Each per-metric row counts cells failing only that threshold while passing all others in the group. Cells failing multiple thresholds appear under `multiple_metrics`. `total_removed` is the overall removal count for that stage (for ATAC, includes FRiP failures among core-metric passers).
+- **cells removed\*** — order-independent marginal counts from `cells_removed_per_metric` in each stage's `qc_summary.json`. Each per-metric row counts every cell failing that threshold, evaluated independently against the full set, so a cell can be counted under more than one metric. Cells failing two or more thresholds appear under `multiple_metrics`. `total_removed` is the union — cells failing at least one threshold (for ATAC, includes FRiP failures among core-metric passers). This matches the marginal counting shown in the plan-review QC exploration preview.

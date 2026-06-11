@@ -12,6 +12,7 @@ from executor.stage_progress import (
     collect_failed_snakemake_rules,
     collect_monitor_killed_monitor_ids,
     infer_resume_target,
+    required_human_approvals,
     snakemake_rules_for_monitor,
     stage_states,
 )
@@ -28,12 +29,28 @@ def _write_cluster_rule_log(paths: RunPaths, rule_name: str, text: str) -> None:
 
 
 class StageProgressTests(unittest.TestCase):
-    def _init_run(self, tmp: str, *, branch: str = "paired") -> RunPaths:
+    def _mark_planning_done(self, paths: RunPaths) -> None:
+        """Seed the merged-planning markers (validation_report + qc_explore JSON)
+        so infer_resume_target moves past the planning phase."""
+        for stage, marker in (
+            ("s0_ingest", "validation_report.json"),
+            ("qc_explore", "qc_explore.json"),
+        ):
+            p = paths.artifact(stage, marker)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("{}")
+
+    def _init_run(self, tmp: str, *, branch: str = "paired",
+                  planning_done: bool = True) -> RunPaths:
         paths = RunPaths(tmp)
         paths.ensure()
         paths.parameters_yaml.write_text(
             yaml.safe_dump({"plan": {"workflow_branch": branch}})
         )
+        # The merged s0_ingest planning job runs before checkpoint #1; most tests
+        # exercise the QC phase and beyond, so treat planning as done by default.
+        if planning_done:
+            self._mark_planning_done(paths)
         return paths
 
     def test_every_monitor_step_has_snakemake_rules_except_resolution_gate(self):
@@ -215,6 +232,38 @@ class StageProgressTests(unittest.TestCase):
             # _last_incomplete_execute returns the LAST incomplete stage so Snakemake
             # can chain s5→s6 in one submission; s6 is also missing here.
             self.assertEqual(infer_resume_target(tmp), "s6_neighbors_execute")
+
+    def test_infer_resume_targets_planning_first(self):
+        """A fresh run (no planning artifacts) routes the merged planning job first,
+        so `submit` dispatches it via Execution-MuAgent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init_run(tmp, planning_done=False)
+            self.assertEqual(infer_resume_target(tmp), "s0_ingest_execute")
+
+    def test_infer_resume_plan_review_after_planning(self):
+        """Once planning artifacts exist but plan_review is unapproved, the resume
+        target is the plan_review render gate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init_run(tmp, planning_done=True)
+            self.assertEqual(infer_resume_target(tmp), "plan_review_propose")
+
+    def test_infer_resume_incomplete_planning_when_explore_missing(self):
+        """A planning job that died after the validation report but before the QC
+        exploration is still treated as incomplete."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._init_run(tmp, planning_done=False)
+            report = paths.artifact("s0_ingest", "validation_report.json")
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("{}")
+            self.assertEqual(infer_resume_target(tmp), "s0_ingest_execute")
+
+    def test_required_human_approvals_planning_targets_empty(self):
+        """Planning targets run before checkpoint #1 — they cannot require the
+        plan_review sentinel (which would deadlock `submit`)."""
+        self.assertEqual(required_human_approvals("s0_ingest_execute"), ())
+        self.assertEqual(required_human_approvals("plan_review_propose"), ())
+        # QC-phase targets still require plan_review approval.
+        self.assertEqual(required_human_approvals("s1a_ambient_execute"), ("plan_review",))
 
     def test_cli_status_wrapper_matches_stage_progress(self):
         with tempfile.TemporaryDirectory() as tmp:

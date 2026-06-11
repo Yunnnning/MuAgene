@@ -489,6 +489,11 @@ def _render_concise_section(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def plan_review_heading(run_dir: Path | str) -> str:
+    """User-facing plan-review title including the run name."""
+    return f"Preprocessing plan review — {Path(run_dir).name}"
+
+
 def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str:
     """Full plan-review deliverable: concise summary + parameter appendix."""
     from .plan_assembler import render_plan_appendix
@@ -497,7 +502,7 @@ def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str
     paths = RunPaths(run_dir)
     items = build_summary(run_dir)
     plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
-    parts = ["# Preprocessing plan review", ""]
+    parts = [f"# {plan_review_heading(run_dir)}", ""]
     if intro:
         parts += [intro.strip(), ""]
     parts += [
@@ -512,7 +517,16 @@ def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str
         "",
     ]
     if plan:
-        parts.append(render_plan_appendix(plan).rstrip())
+        from . import qc_explore
+        # The Snakemake plan_review rule builds qc_explore.json first; when this is
+        # called directly (`executor plan-review`) compute it once, best-effort.
+        if not paths.artifact("qc_explore", "qc_explore.json").exists():
+            try:
+                qc_explore.run(run_dir)
+            except Exception:
+                pass
+        qc_blocks = qc_explore.render_appendix_blocks(run_dir)
+        parts.append(render_plan_appendix(plan, qc_blocks).rstrip())
         parts.append("")
     else:
         parts.append("_Appendix unavailable — `preprocessing_plan.json` not found._")
@@ -529,3 +543,38 @@ def write_summary(run_dir: Path | str, intro: str | None = None) -> Path:
     paths.plan_review_md.parent.mkdir(parents=True, exist_ok=True)
     paths.plan_review_md.write_text(merged)
     return paths.plan_review_md
+
+
+def render_plan_summary_html(run_dir: Path | str, intro: str | None = None) -> str:
+    """Self-contained HTML rendering of the plan review.
+
+    Same content as ``plan_review.md`` but figures are embedded as base64 data
+    URIs so the single file is viewable on HPC nodes without figure-preview
+    support. Reuses the markdown→HTML helpers from ``qc_summary``.
+    """
+    from .qc_summary import _embed_html_images, _markdown_to_html, _qc_html_styles
+    from .run_paths import RunPaths
+    paths = RunPaths(Path(run_dir))
+    heading = plan_review_heading(run_dir)
+    md = render_merged_markdown(run_dir, intro=intro)
+    body = _markdown_to_html(md)
+    # Image src in the markdown is relative to plan_review.md's directory.
+    body = _embed_html_images(body, paths.plan_review_md.parent)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"en\"><head>\n"
+        "<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<title>{heading}</title>\n"
+        f"<style>\n{_qc_html_styles()}</style>\n</head>\n<body>\n"
+        f"{body}\n</body></html>\n"
+    )
+
+
+def write_plan_summary_html(run_dir: Path | str, intro: str | None = None) -> Path:
+    """Write the self-contained HTML plan review next to plan_review.md."""
+    from .run_paths import RunPaths
+    paths = RunPaths(Path(run_dir))
+    html = render_plan_summary_html(run_dir, intro=intro)
+    paths.plan_summary_html.parent.mkdir(parents=True, exist_ok=True)
+    paths.plan_summary_html.write_text(html)
+    return paths.plan_summary_html

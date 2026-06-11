@@ -27,19 +27,21 @@ def _touch(path: Path, content: bytes = b"placeholder") -> Path:
 
 
 class CleanupQCIntermediatesTests(unittest.TestCase):
-    def test_deletes_three_target_h5ads(self):
+    def test_deletes_target_h5ads(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _init_run(tmp)
             rna_qc   = _touch(paths.artifact("s1_rna_qc",  "rna_qc.h5ad"))
             atac_qc  = _touch(paths.artifact("s2_atac_qc", "atac_qc.h5ad"))
             atac_snap = _touch(paths.artifact("s2_atac_qc", "atac_snap.h5ad"))
+            atac_snap_explore = _touch(paths.artifact("qc_explore", "atac_snap_explore.h5ad"))
 
             deleted = _cleanup_qc_intermediates(Path(tmp))
 
             self.assertFalse(rna_qc.exists())
             self.assertFalse(atac_qc.exists())
             self.assertFalse(atac_snap.exists())
-            self.assertEqual(len(deleted), 3)
+            self.assertFalse(atac_snap_explore.exists())
+            self.assertEqual(len(deleted), 4)
 
     def test_returns_only_paths_that_existed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -89,6 +91,24 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
                 _touch(paths.artifact("s3_doublets", "rna_post_doublet.h5ad")),
                 _touch(paths.artifact("s3_doublets", "atac_post_doublet.h5ad")),
                 _touch(paths.artifact("s3_doublets", "calls.parquet"), b"PAR1\x00PAR1"),
+            ]
+
+            _cleanup_qc_intermediates(Path(tmp))
+
+            for p in kept:
+                self.assertTrue(p.exists(), f"Expected {p} to be preserved")
+
+    def test_preserves_qc_explore_metric_parquets(self):
+        """The per-cell QC metric parquets (under qc_explore/) must survive cleanup
+        so a post-approval `revise` can re-derive thresholds without a heavy reload."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp)
+            _touch(paths.artifact("s1_rna_qc", "rna_qc.h5ad"))
+            _touch(paths.artifact("s2_atac_qc", "atac_qc.h5ad"))
+            kept = [
+                _touch(paths.artifact("qc_explore", "rna_qc_metrics.parquet"), b"PAR1\x00PAR1"),
+                _touch(paths.artifact("qc_explore", "atac_qc_metrics.parquet"), b"PAR1\x00PAR1"),
+                _touch(paths.artifact("qc_explore", "qc_explore.json"), b"{}"),
             ]
 
             _cleanup_qc_intermediates(Path(tmp))

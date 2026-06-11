@@ -16,16 +16,36 @@ from .hpc import load_execution_settings
 # Per-branch stage set. Keys are stage IDs; values are the stages that should
 # appear under `plan["stages"]` for that branch. See also: workflow_branch ∈
 # {paired, separate, rna_only, atac_only}.
+_PIPELINE_STAGE_ORDER = (
+    "s1a_ambient",
+    "s1_rna_qc",
+    "s2_atac_qc",
+    "s3_doublets",
+    "s4_rna_norm",
+    "s5_atac_spectral",
+    "s6_neighbors",
+    "s7_clustering",
+    "s8_umap",
+)
+
 _STAGES_BY_BRANCH = {
-    "paired":    {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-                   "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"},
-    "separate":  {"s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets", "s4_rna_norm",
-                   "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"},
+    "paired":    set(_PIPELINE_STAGE_ORDER),
+    "separate":  set(_PIPELINE_STAGE_ORDER),
     "rna_only":  {"s1a_ambient", "s1_rna_qc", "s3_doublets", "s4_rna_norm",
                    "s6_neighbors", "s7_clustering", "s8_umap"},
     "atac_only": {"s2_atac_qc", "s3_doublets", "s5_atac_spectral",
                    "s6_neighbors", "s7_clustering", "s8_umap"},
 }
+
+
+def _ordered_plan_stages(plan: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Return plan stages in pipeline execution order (S1a before S1, etc.)."""
+    stages = plan.get("stages") or {}
+    ordered = [s for s in _PIPELINE_STAGE_ORDER if s in stages]
+    for s in stages:
+        if s not in _PIPELINE_STAGE_ORDER:
+            ordered.append(s)
+    return [(s, stages[s]) for s in ordered]
 
 
 def _stages_for_branch(branch: str) -> set[str]:
@@ -297,8 +317,16 @@ def write_plan(run_dir: Path | str, plan: dict[str, Any]) -> tuple[Path, str]:
     return out, phash
 
 
-def render_plan_appendix(plan: dict[str, Any]) -> str:
-    """Per-stage parameter listing for the plan-review appendix."""
+def render_plan_appendix(
+    plan: dict[str, Any], qc_blocks: dict[str, str] | None = None
+) -> str:
+    """Per-stage parameter listing for the plan-review appendix.
+
+    ``qc_blocks`` maps a stage id (e.g. ``s1_rna_qc`` / ``s2_atac_qc``) to a
+    rendered markdown block (cells-removed table + exploratory histogram). When a
+    block is present it replaces that stage's parameter bullet points.
+    """
+    qc_blocks = qc_blocks or {}
     lines: list[str] = [
         "## Appendix: full parameters",
         "",
@@ -309,11 +337,14 @@ def render_plan_appendix(plan: dict[str, Any]) -> str:
     if exec_block:
         lines.extend(_render_execution_appendix(exec_block))
         lines.append("")
-    for stage, body in plan["stages"].items():
+    for stage, body in _ordered_plan_stages(plan):
         lines.append(f"### {stage}")
-        for pname, pv in body["parameters"].items():
-            lines.append(f"- **{pname}**: `{pv['value']}`")
-            lines.append(f"  - {pv['rationale']}")
+        if stage in qc_blocks:
+            lines.append(qc_blocks[stage])
+        else:
+            for pname, pv in body["parameters"].items():
+                lines.append(f"- **{pname}**: `{pv['value']}`")
+                lines.append(f"  - {pv['rationale']}")
         lines.append("")
     if plan.get("warnings"):
         lines.append("### Warnings")

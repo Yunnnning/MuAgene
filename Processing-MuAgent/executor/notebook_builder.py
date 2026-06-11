@@ -1,8 +1,8 @@
 """Generate a user-facing Jupyter review notebook for each run.
 
 Writes:
-    <run_dir>/deliverables/post_run/review_processed_h5mu.ipynb
-    <run_dir>/deliverables/post_run/review_processed_h5mu.py   (paired script)
+    <run_dir>/deliverables/results/review_processed_h5mu.ipynb
+    <run_dir>/deliverables/results/review_processed_h5mu.py   (paired script)
 
 The notebook is self-contained: RUN_DIR is baked in at generation time and can be
 overridden at runtime via the `PMA_RUN_DIR` environment variable so the notebook
@@ -77,7 +77,7 @@ import anndata as ad
 from IPython.display import Image, display
 
 RUN_DIR = Path(os.environ.get("PMA_RUN_DIR", "__BAKED_RUN_DIR__"))
-PROCESSED_DIR = RUN_DIR / "deliverables" / "post_run"
+PROCESSED_DIR = RUN_DIR / "deliverables" / "results"
 H5MU = PROCESSED_DIR / "processed.h5mu"
 RNA_H5AD = PROCESSED_DIR / "rna_processed.h5ad"
 ATAC_H5AD = PROCESSED_DIR / "atac_processed.h5ad"
@@ -145,19 +145,39 @@ if atac_cluster_col:
 
 _CELL_SHOW_HELPER = """\
 def _show_qc(stem: str) -> None:
-    p = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / "figures" / f"{stem}.png"
+    p = RUN_DIR / "deliverables" / "figures" / f"{stem}.png"
     if not p.is_file():
-        legacy = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / f"{stem}.png"
+        legacy = RUN_DIR / "deliverables" / "figure" / f"{stem}.png"
         if legacy.is_file():
             p = legacy
+        else:
+            legacy = RUN_DIR / "deliverables" / "checkpoints" / "qc_review" / "figures" / f"{stem}.png"
+            if legacy.is_file():
+                p = legacy
+            else:
+                legacy_flat = RUN_DIR / "deliverables" / "checkpoints" / "qc_review" / f"{stem}.png"
+                if legacy_flat.is_file():
+                    p = legacy_flat
+                else:
+                    legacy_ckpt = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / "figures" / f"{stem}.png"
+                    if legacy_ckpt.is_file():
+                        p = legacy_ckpt
     if p.is_file():
         display(Image(filename=str(p)))
     else:
         print(f"(missing: {p})")
 
 def _show_umap(stem: str) -> None:
-    p = RUN_DIR / "deliverables" / "post_run" / f"{stem}.png"
-    if p.exists():
+    p = RUN_DIR / "deliverables" / "figures" / f"{stem}.png"
+    if not p.is_file():
+        legacy = RUN_DIR / "deliverables" / "post_run" / f"{stem}.png"
+        if legacy.is_file():
+            p = legacy
+        else:
+            legacy_results = RUN_DIR / "deliverables" / "results" / f"{stem}.png"
+            if legacy_results.is_file():
+                p = legacy_results
+    if p.is_file():
         display(Image(filename=str(p)))
     else:
         print(f"(missing: {p})")
@@ -342,7 +362,7 @@ def write_review_notebook(run_dir: Path | str) -> tuple[Path, Path]:
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     paths = RunPaths(run_dir)
-    paths.deliv_post_run.mkdir(parents=True, exist_ok=True)
+    paths.deliv_results.mkdir(parents=True, exist_ok=True)
 
     ipynb = paths.review_notebook_ipynb
     ipynb.write_text(json.dumps(build_notebook(run_dir), indent=1))

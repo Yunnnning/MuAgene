@@ -3,7 +3,7 @@
 Given an existing run directory with S6 PCA (RNA) + neighbor graph and S5 spectral ATAC, re-cluster
 each modality at two user-specified resolutions and render a side-by-side UMAP
 figure + summary table. Writes to <run_dir>/internal/artifacts/s7_clustering/
-and surfaces comparison figures in deliverables/checkpoint/resolution_review/.
+and surfaces comparison figures in deliverables/figures/.
 
 Does not mutate the approved cluster labels on disk — this is a *comparison* tool
 to inform resolution selection at the S7 checkpoint.
@@ -107,7 +107,7 @@ def compare_rna(run_dir: Path | str, resolutions: tuple[float, float], seed: int
         labels[res] = lbl
         sizes[res] = _cluster_sizes(lbl)
     from .run_paths import RunPaths
-    fig_out = RunPaths(run_dir).deliv_resolution_review
+    fig_out = RunPaths(run_dir).deliv_figures
     fig_out.mkdir(parents=True, exist_ok=True)
     figs = _plot_two_panel(
         rna.obsm["X_umap"], labels[resolutions[0]], f"RNA res={resolutions[0]}",
@@ -160,7 +160,7 @@ def compare_atac(run_dir: Path | str, resolutions: tuple[float, float], seed: in
                 "n_clusters": {str(k): len(v) for k, v in sizes.items()},
                 "note": "ATAC UMAP unavailable; no side-by-side figure rendered."}
     from .run_paths import RunPaths
-    fig_out = RunPaths(run_dir).deliv_resolution_review
+    fig_out = RunPaths(run_dir).deliv_figures
     fig_out.mkdir(parents=True, exist_ok=True)
     figs = _plot_two_panel(
         coords, labels[resolutions[0]], f"ATAC res={resolutions[0]}",
@@ -378,8 +378,9 @@ def adjacency_comparison(run_dir: Path | str, *, modality: str, grid: list[float
     """Compare the recommended resolution to its nearest lower and higher grid values.
 
     Returns a dict with per-comparison verdicts, surface-condition flags, and (for
-    convenience) the side-by-side figure paths. Writes figures under `<run_dir>/figures/`
-    using the same naming convention as `compare_rna` / `compare_atac`.
+    convenience) the side-by-side figure paths. Writes figures under
+    `deliverables/figures/` using the same naming convention as `compare_rna` /
+    `compare_atac`.
     """
     run_dir = Path(run_dir)
     lower, higher = _neighbours(grid, recommended)

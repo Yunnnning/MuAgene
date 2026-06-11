@@ -7,6 +7,9 @@ Conda environment specs for Processing-MuAgent.
 Single shared env for local and HPC runs. Includes:
 
 - Python stack (scanpy, muon, snapatac2, snakemake, …)
+- **ATAC fragment prep:** `htslib` (provides `bgzip` + `tabix`), used to compress and index the
+  chromosome-bound-filtered / chr-renamed fragments before SnapATAC2 import. These must live in the
+  env so cluster child jobs (which activate `$PMA_CONDA_ENV`) have them on PATH.
 - **S1a ambient correction:** `r-base`, `bioconductor-celda` (DecontX), `r-soupx` (SoupX)
 
 Recreate on a fresh site:

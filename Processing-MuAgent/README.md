@@ -6,16 +6,16 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
 
 ## Pipeline overview
 
-**Stage order** (Snakemake DAG — ingest validation must finish before preprocessing plan assembly, because P2 reads `internal/artifacts/s0_ingest/validation_report.json`):
+**Stage order** (Snakemake DAG — `s0_ingest` is a single planning-compute job that loads the data once, validates it, assembles the preprocessing plan, and runs the QC threshold exploration; it emits `validation_report.json`, `preprocessing_plan.json`, and `qc_explore.json` that `plan_review` consumes):
 
 ```
-  P1 context extraction → S0 ingest validation → P2 preprocessing plan → (CHECKPOINT 1) plan_review
+  P1 context extraction → S0 ingest (load + validate + assemble plan + QC explore) → (CHECKPOINT 1) plan_review
   → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → (CHECKPOINT 2) post_qc_review
   → S4 RNA normalization + HVG → S5 ATAC spectral embedding → S6 PCA (RNA) + neighbor graph
   → S7 clustering + (CHECKPOINT 3) resolution_review → S8 UMAP → outputs
 ```
 
-Automated processing stages (`p1_context`, `s0_ingest`, `p2_plan`, `s1a`–`S3`, `S4`–`S6`, `s8_umap`) run from **artifact dependencies** and the three checkpoint boundaries below — they do **not** require per-stage `approve` calls. Optional `<stage>_propose` rules still exist for inspection or debugging, but they are not on the main execution path.
+Automated processing stages (`p1_context`, `s0_ingest`, `s1a`–`S3`, `S4`–`S6`, `s8_umap`) run from **artifact dependencies** and the three checkpoint boundaries below — they do **not** require per-stage `approve` calls. Optional `<stage>_propose` rules still exist for inspection or debugging, but they are not on the main execution path.
 
 ### User checkpoints (3)
 
@@ -23,16 +23,20 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 
 | # | CLI name | Internal stage | When | What you decide |
 |---|----------|----------------|------|-----------------|
-| **1** | **Plan review** | `plan_review` | After S0 + P2, before S1 | Approve the preprocessing plan (`pre_run/summary/plan_review.md`) |
-| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `checkpoint/qc_review/figures/` + `checkpoint/qc_review/qc_review_<run>.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
-| **3** | **Resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoint/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
+| **1** | **Plan review** | `plan_review` | After S0, before S1 | Approve the preprocessing plan (`plan/summary/plan_review.md`) |
+| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `checkpoints/qc_review/qc_review_<run>.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
+| **3** | **Resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoints/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
 
 ## Workflow stages
 
 ### Planning (pre-QC)
 
 - **P1 Context extraction** — Biological Context Report (organism, tissue, assay, DOIs) plus DOI-based prior-analysis extraction.
-- **S0 Ingest** — Accepts Cell Ranger **filtered** and **raw** matrices, auto-detecting RNA and ATAC formats (see tables below) and validating fragments files. Performs a **diagnostic barcode check for paired multiome**: S0 checks for direct barcode matches, then tries matching after removing suffixes. If those don't match, it looks for a `barcode_translation_path` or `cell_metadata_path` provided by the user. No barcode intersection is performed here. If pairing can’t be confirmed, S0 downgrades the workflow from `paired` to `separate` and logs the reason in `validation_report.json`. S0 runs after P1 and before P2; its validation report feeds into the preprocessing plan. When HPC is configured (`execution.mode = pbs | slurm`), S0 runs as a **cluster job** directly. In local mode, S0 runs on the login node and is retried on the cluster only if it hits a resource limit (OOM or walltime).
+- **S0 Ingest (merged planning compute)** — A single job that loads each modality **once**, validates inputs, assembles the preprocessing plan, and runs the QC threshold exploration on the in-memory matrices. It accepts Cell Ranger **filtered** and **raw** matrices, auto-detecting RNA and ATAC formats (see tables below) and validating fragments files. Performs a **diagnostic barcode check for paired multiome**: S0 checks for direct barcode matches, then tries matching after removing suffixes. If those don't match, it looks for a `barcode_translation_path` or `cell_metadata_path` provided by the user. No barcode intersection is performed here. If pairing can’t be confirmed, S0 downgrades the workflow from `paired` to `separate` and logs the reason in `validation_report.json`.
+
+  In the same job it then assembles `preprocessing_plan.json` (deterministically, from the biological context + ingest report) and runs the QC exploration: it computes per-cell QC metrics, derives the data-driven thresholds, counts cells removed per metric, and renders the threshold-preview histograms — emitting `qc_explore.json` and the figures `plan_review` shows. Per-cell QC metrics are persisted as small parquets (`internal/artifacts/qc_explore/rna_qc_metrics.parquet` / `atac_qc_metrics.parquet`) so a `revise` at the plan-review checkpoint re-derives thresholds, re-counts, and re-draws figures cheaply with no heavy reload.
+
+  S0 is heavy (RNA load + ATAC fragment import + QC — its exploration needs 100+ GB), so in HPC mode it is **always** submitted as a supervised cluster job via `submit --target s0_ingest_execute` and monitored with `hpc-status --watch`; it never runs on the login node. This follows the global execution boundary: **`executor run` is local-only and `executor submit` is cluster-only** — Processing-MuAgent prepares the head-job spec + `site.config` and Execution-MuAgent owns *all* cluster submission and monitoring (kill-on-hang, `hpc-status`). In local mode S0 runs in the foreground via `run`.
 
   **Supported RNA input formats (`rna_path`):**
 
@@ -50,13 +54,12 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   | `fragments_tsv` | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present |
   | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
-- **P2 Preprocessing plan generation** — Creates `preprocessing_plan.json` with execution and parameter settings for all downstream stages, using outputs from P1 context and S0 ingest.
-- **plan_review** — Generates a summary at `deliverables/pre_run/summary/plan_review.md` for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs.
+- **plan_review** — Generates a summary at `deliverables/plan/summary/plan_review.md` (including the QC threshold-preview tables + histograms from S0's exploration) for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs. _(Preprocessing-plan generation, formerly the separate P2 stage, is now folded into the merged S0 job above.)_
 
 ### Preprocessing
 
 - **S1a Ambient RNA correction** — Default `method=auto` on RNA branches (SoupX if raw+filtered exist, else DecontX). Omitted on `atac_only`. Whether to run is confirmed by user at **plan review (#1)** depending on the study goal, inputs, and sample context (see [10x ambient RNA guide](https://www.10xgenomics.com/analysis-guides/introduction-to-ambient-rna-correction)).
-- **S1 RNA QC** — MAD-derived thresholds on `total_counts` / `n_genes` / `pct_counts_mt` plus a `pct_counts_ribo` ceiling, computed on decontaminated counts from S1a. Writes pre/post QC violin figures to `deliverables/checkpoint/qc_review/figures/`.
+- **S1 RNA QC** — MAD-derived thresholds on `total_counts` / `n_genes` / `pct_counts_mt` plus a `pct_counts_ribo` ceiling, computed on decontaminated counts from S1a. Writes pre/post QC violin figures to `deliverables/figures/`.
 - **S2 ATAC QC** — Four per-cell filters:
   1. **n_fragments** — MAD-based bounds on log-scale fragment count (with an absolute floor).
   2. **TSS enrichment** — min/max bounds on SnapATAC2's TSS score.
@@ -66,8 +69,8 @@ Three deliberate pauses where you review deliverables and decide before heavy do
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
-  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoint/qc_review/qc_review_<run>.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoint/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large intermediate QC objects `rna_qc.h5ad`, `atac_qc.h5ad`, and `atac_snap.h5ad` are automatically deleted to free storage; `qc_summary.json` files and QC metrics parquets are preserved for report generation and threshold revision.
+  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoints/qc_review/qc_review_<run>.md`).
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoints/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large intermediate QC objects `rna_qc.h5ad`, `atac_qc.h5ad`, and `atac_snap.h5ad` are automatically deleted to free storage; `qc_summary.json` files and QC metrics parquets are preserved for report generation and threshold revision.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
   0. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
@@ -77,7 +80,7 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 
   Spectral embedding in `obsm['X_spectral']` (with `X_lsi` as a backward-compat alias) is always computed from the tile matrix regardless of peak-export mode. When `drop_first=True`, the first component is removed before S6–S8.
 - **S6 PCA (RNA) + neighbor graph** (`s6_neighbors`) — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** KNN graph on the S5 spectral embedding (`X_spectral` via `snap.pp.knn`). Artifact: `internal/artifacts/s6_neighbors/rna_neighbors.h5ad`.
-- **S7 Clustering** — Leiden resolution sweep with per-modality grid and stable-region knee picker. **Resolution review checkpoint (#3):** `checkpoint/resolution_review/resolution_review.html` / `.ipynb`. Separate branch: chosen resolutions become final labels. Paired branch: diagnostic per-modality labels for UMAP only.
+- **S7 Clustering** — Leiden resolution sweep with per-modality grid and stable-region knee picker. **Resolution review checkpoint (#3):** `checkpoints/resolution_review/resolution_review.html` / `.ipynb`. Separate branch: chosen resolutions become final labels. Paired branch: diagnostic per-modality labels for UMAP only.
 - **S8 UMAP** — Per-modality UMAP. **Paired** → `processed.h5mu`; **separate** → `rna_processed.h5ad` + `atac_processed.h5ad`. On the paired branch, S8 expects matching barcodes from S3; final assembly includes a defensive re-intersection logged only when it filters cells.
 - **manifest** — `run_manifest.json` handoff contract (v1.0.0), final `qc_summary.md`, and `layout.json`.
 
@@ -164,8 +167,8 @@ Processing-MuAgent configure-execution --config $CFG --mode slurm \
 ```
 
 This writes:
-- `deliverables/pre_run/config/site.config` — YAML platform description (consumed by Execution-MuAgent)
-- `deliverables/pre_run/config/hpc.env` — shell snippet generated from site.config; source before `submit`
+- `deliverables/plan/config/site.config` — YAML platform description (consumed by Execution-MuAgent)
+- `deliverables/plan/config/hpc.env` — shell snippet generated from site.config; source before `submit`
 
 For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` for ~100k). Per-stage CPU, memory, and walltime defaults live in `workflow/resources.smk`; OOM-killed jobs are retried once at double memory.
 
@@ -178,8 +181,8 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 
 | Step | Stages | Executes on | You |
 |------|--------|-------------|-----|
-| Planning | P1 → P2 | Login node (default), or `srun` on a compute node if the login node memory is limited| — |
-| S0 ingest | S0 | Cluster (HPC mode) / Login node (local mode) | — |
+| Context | P1 | Login node (cheap, interactive) | Fill biological context |
+| S0 ingest (load + validate + plan + QC explore) | S0 | Cluster (HPC mode, via Execution-MuAgent) / Login node (local mode) | — |
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S1 → S2 → S3 | Cluster | — |
 | Checkpoint **#2** | post_qc_review | — | Review QC |
@@ -187,19 +190,21 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Checkpoint **#3** | s7_clustering | — | Review resolution |
 | Finish | S7 (labels) → S8 → manifest | Cluster | — |
 
-**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), the agent runs S0 on the cluster directly (after sourcing `hpc.env`). In local mode, S0 runs on the login node; on OOM or walltime failure the agent configures HPC (if needed) and retries `s0_ingest_execute` on the cluster before continuing with P2.
+**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; monitor it with `hpc-status --watch`. In local mode, S0 runs in the foreground on this machine via `run`.
 
 Each heavy `_execute` stage runs as its own scheduler job. Only the three checkpoints above require `approve`. Findings and hang reports are written to `internal/hpc_monitor/latest_report.md` by Execution-MuAgent.
 
 ### Submit workflow
 
-After checkpoint **#1** (`plan_review`), source `deliverables/pre_run/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. **`submit` auto-infers the Snakemake target** from checkpoint state — you do not need to pick `post_qc_review_propose`, `s7_clustering_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
+Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. **`submit` auto-infers the Snakemake target** from run state — you do not need to pick `s0_ingest_execute`, `post_qc_review_propose`, `s7_clustering_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
 
-| Checkpoint state | Inferred target | Runs through |
-|------------------|-----------------|--------------|
+| Run state | Inferred target | Runs through |
+|-----------|-----------------|--------------|
+| planning not done | `s0_ingest_execute` | load + validate + assemble plan + QC explore, then pauses for plan review |
+| planning done, `plan_review` not approved | `plan_review_propose` | renders the plan-review deliverable, then pauses |
 | `post_qc_review` not approved | `post_qc_review_propose` | S1a → S3 + QC summary, then pauses |
 | `s7_clustering` not approved | `s7_clustering_propose` | S4 → S6 + resolution sweep, then pauses |
-| Both approved | `all` | S7 labels → S8 → manifest |
+| All approved | `all` | S7 labels → S8 → manifest |
 
 Override with `--target <name>` only when debugging.
 
@@ -212,20 +217,22 @@ Processing-MuAgent submit --config $CFG --executor slurm --unlock-stale-locks
 ```
 
 ```bash
-CFG=<run_dir>/deliverables/pre_run/config/run.yaml
+CFG=<run_dir>/deliverables/plan/config/run.yaml
 
 # Configure HPC settings (writes site.config + derived hpc.env):
 Processing-MuAgent configure-execution --config $CFG --mode slurm \
   --slurm-partition cpu-medium --slurm-account mylab
 
-source <run_dir>/deliverables/pre_run/config/hpc.env
+source <run_dir>/deliverables/plan/config/hpc.env
 
-# Run planning + plan review on login node, then submit heavy batch:
-Processing-MuAgent run --config $CFG --target p2_plan_execute
+# Submit the planning job (load + validate + plan + QC explore) via Execution-MuAgent;
+# `submit` with no --target infers `s0_ingest_execute` as the planning target:
+Processing-MuAgent submit --config $CFG --executor slurm
+# When it completes, render the plan-review deliverable and approve:
 Processing-MuAgent plan-review --config $CFG  # also writes internal/stage_meta/
 Processing-MuAgent approve plan_review --config $CFG
 
-# First heavy batch (stops at QC review):
+# First heavy QC batch (stops at QC review):
 Processing-MuAgent submit --config $CFG --executor slurm
 
 # After QC review:
@@ -272,12 +279,12 @@ All cluster submission and monitoring goes through `Processing-MuAgent submit` �
 
 ## Run directory layout
 
-Per-run state lives under `run_dir` from your config — never inside the source tree.
+After `init`, only `deliverables/plan/` exists under deliverables. The `figures/`, `checkpoints/`, and `results/` folders are created when the pipeline first writes into them.
 
 ```
 <run_dir>/
   deliverables/
-    pre_run/
+    plan/
       config/
         run.yaml                  ← canonical config (use this for all CLI calls)
         biological_context.md     ← Biological Context Report
@@ -286,12 +293,11 @@ Per-run state lives under `run_dir` from your config — never inside the source
       summary/
         context_summary.md        ← P1 output
         plan_review.md            ← plan review gate (summary + parameter appendix)
-    checkpoint/
-      qc_review/                  ← QC review checkpoint (#2): qc_review_<run>.md + qc_summary_<run>.html
-        figures/                  ← QC checkpoint plots (S1a, S1, S2, post_qc_review)
+    figures/                      ← all pipeline figures (created at first plot)
+    checkpoints/                  ← review reports (created at first checkpoint)
+      qc_review/                    ← QC review (#2): qc_review_<run>.md + qc_summary_<run>.html
       resolution_review/          ← resolution_summary.md + resolution_review.{html,ipynb}
-    post_run/                     ← flat final deliverables
-      s8_umap_*.{png,pdf}         ← UMAP figures only
+    results/                      ← final deliverables (created at S8/manifest; data + manifest)
       processed.h5mu              ← or rna/atac_processed.h5ad (separate branch)
       review_processed_h5mu.{ipynb,py}
       qc_summary.md               ← final QC summary
@@ -319,7 +325,7 @@ Per-run state lives under `run_dir` from your config — never inside the source
 
 ## CLI
 
-Commands below use `$CFG` = `<run_dir>/deliverables/pre_run/config/run.yaml` (written by `init`).
+Commands below use `$CFG` = `<run_dir>/deliverables/plan/config/run.yaml` (written by `init`).
 
 ### Install
 
@@ -336,11 +342,11 @@ Edit `config/run.example.yaml` (at minimum `run_dir`, `genome_assembly`, `study_
 
 ```bash
 Processing-MuAgent init --config config/run.example.yaml
-CFG=<run_dir>/deliverables/pre_run/config/run.yaml
+CFG=<run_dir>/deliverables/plan/config/run.yaml
 Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | rna_only | atac_only
 ```
 
-`init` creates `<run_dir>/`, copies config to `deliverables/pre_run/config/run.yaml`, and writes the Biological Context Report template at `deliverables/pre_run/config/biological_context.md`.
+`init` creates `<run_dir>/`, copies config to `deliverables/plan/config/run.yaml`, and writes the Biological Context Report template at `deliverables/plan/config/biological_context.md`.
 
 ### Command reference
 
@@ -350,8 +356,8 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 | `declare-branch` | Record workflow branch in `parameters.yaml` |
 | `configure-execution` | Set `execution.mode`; write `site.config` (platform source of truth) and derived `hpc.env` |
 | `hpc-info` | Probe PBS/SLURM queues, partitions, accounts on the login node |
-| `run` | Foreground Snakemake (`--executor local\|pbs\|slurm`) |
-| `submit` | Submit head-job via Execution-MuAgent (hard dependency); starts background supervision daemon; infers phase target |
+| `run` | Foreground Snakemake, **local-only** (local-mode execution + login-node localrules). No cluster path — use `submit` for PBS/SLURM |
+| `submit` | **The only cluster-execution path.** Submit head-job via Execution-MuAgent (hard dependency); starts background supervision daemon; infers phase target |
 | `supervisor-restart` | Restart the supervision daemon without resubmitting — use when the daemon died mid-run (SSH drop, site reboot, OOM) but the cluster job is still active |
 | `status` | Per-step pipeline state (S1a–S8 + review gates); `--watch` polls until actionable |
 | `hpc-status` | Job health (HEALTHY/SUSPECT/…), supervisor liveness, and per-step state; `--watch` polls; warns if supervision is offline while the cluster job is still running |
@@ -369,22 +375,22 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 Planning and QC stages run automatically. Snakemake stops only at the three checkpoints.
 
 ```bash
-CFG=<run_dir>/deliverables/pre_run/config/run.yaml
+CFG=<run_dir>/deliverables/plan/config/run.yaml
 
 # Option A — pause at each checkpoint (recommended first time):
-Processing-MuAgent run --config $CFG --executor local
+Processing-MuAgent run --config $CFG
 Processing-MuAgent approve plan_review --config $CFG
-Processing-MuAgent run --config $CFG --executor local
+Processing-MuAgent run --config $CFG
 Processing-MuAgent approve qc_review --config $CFG
-Processing-MuAgent run --config $CFG --executor local
+Processing-MuAgent run --config $CFG
 Processing-MuAgent approve resolution_review --config $CFG
-Processing-MuAgent run --config $CFG --executor local
+Processing-MuAgent run --config $CFG
 
 # Option B — pre-seed all three checkpoints (unattended Snakemake; you still review outputs):
-Processing-MuAgent run --config $CFG --executor local --auto-approve
+Processing-MuAgent run --config $CFG --auto-approve
 
 # Option C — unattended except one gate (example: keep QC review interactive):
-Processing-MuAgent run --config $CFG --executor local --auto-approve --auto-approve-except qc_review
+Processing-MuAgent run --config $CFG --auto-approve --auto-approve-except qc_review
 
 Processing-MuAgent status --watch --config $CFG
 ```
@@ -396,7 +402,7 @@ Processing-MuAgent status --watch --config $CFG
 After checkpoint **#1**, use `submit` instead of foreground `run`. See **Running on HPC → Submit workflow** for the resume loop, `unlock`, and `--unlock-stale-locks`.
 
 ```bash
-source <run_dir>/deliverables/pre_run/config/hpc.env
+source <run_dir>/deliverables/plan/config/hpc.env
 Processing-MuAgent submit --config $CFG --executor slurm
 # submit returns within ~90 s; the supervision daemon keeps running in the background.
 Processing-MuAgent hpc-status --watch --config $CFG   # shows job health, supervisor liveness, per-step state

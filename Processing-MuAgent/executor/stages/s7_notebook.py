@@ -2,8 +2,8 @@
 
 Invoked by the `s7_clustering_propose` rule after the sweep + adjacency report are
 written. Produces:
-    <run_dir>/deliverables/checkpoint/resolution_review/resolution_review.ipynb
-    <run_dir>/deliverables/checkpoint/resolution_review/resolution_review.html
+    <run_dir>/deliverables/checkpoints/resolution_review/resolution_review.ipynb
+    <run_dir>/deliverables/checkpoints/resolution_review/resolution_review.html
 
 The HTML is rendered statically from the resolution_summary.md + sweep table +
 adjacency report — no notebook execution required, so it's safe to call from the
@@ -120,11 +120,11 @@ for fig in rna_report.get("figures", []) + atac_report.get("figures", []):
 
 _CELL_APPROVAL = """\
 # To approve the recommended resolutions:
-#   Processing-MuAgent approve s7_clustering --config <run_dir>/deliverables/pre_run/config/run.yaml
+#   Processing-MuAgent approve s7_clustering --config <run_dir>/deliverables/plan/config/run.yaml
 #
 # To revise one (example: bump RNA to 1.2):
 #   Processing-MuAgent revise s7_clustering s7_clustering.rna.resolution=1.2 \\
-#                              --config <run_dir>/deliverables/pre_run/config/run.yaml
+#                              --config <run_dir>/deliverables/plan/config/run.yaml
 #
 # After approval, resubmit:
 #   Processing-MuAgent submit --executor pbs   # or local / slurm
@@ -170,7 +170,7 @@ def _build_cells(run_dir: str) -> list[dict[str, Any]]:
         _md("## Setup"),
         _code(bake(_CELL_SETUP)),
         _md("## Recommendation summary\n\nRendered from the canonical "
-            "`deliverables/checkpoint/resolution_review/resolution_summary.md`."),
+            "`deliverables/checkpoints/resolution_review/resolution_summary.md`."),
         _code(_CELL_SHOW_SUMMARY),
         _md("## Sweep tables\n\nFull per-resolution results from `sweep.parquet`."),
         _code(_CELL_SWEEP_TABLE),
@@ -258,11 +258,11 @@ _HTML_TEMPLATE = """\
 <h2>How to approve or revise</h2>
 <pre>
 # Approve as recommended:
-Processing-MuAgent approve s7_clustering --config &lt;run_dir&gt;/deliverables/pre_run/config/run.yaml
+Processing-MuAgent approve s7_clustering --config &lt;run_dir&gt;/deliverables/plan/config/run.yaml
 
 # Revise (example — change RNA resolution to 1.2):
 Processing-MuAgent revise s7_clustering s7_clustering.rna.resolution=1.2 \\
-    --config &lt;run_dir&gt;/deliverables/pre_run/config/run.yaml
+    --config &lt;run_dir&gt;/deliverables/plan/config/run.yaml
 
 # Then resume:
 Processing-MuAgent submit --executor pbs   # or 'local' / 'slurm'
@@ -371,7 +371,7 @@ def build_html(run_dir: Path | str) -> str:
 # ---------------------------------------------------------------------------
 
 def build_and_render(run_dir: Path | str) -> tuple[Path, Path]:
-    """Write resolution_review.{ipynb,html} into deliverables/checkpoint/resolution_review/.
+    """Write resolution_review.{ipynb,html} into deliverables/checkpoints/resolution_review/.
 
     Returns (ipynb_path, html_path). Safe to call from a local rule on a login
     node — the HTML is rendered statically (no notebook execution required).
