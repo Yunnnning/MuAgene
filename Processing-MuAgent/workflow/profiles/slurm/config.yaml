@@ -38,6 +38,16 @@ restart-times: 1
 rerun-incomplete: true
 keep-going: false
 
+# Rerun a job only when its output is missing or older than an input (mtime), NOT
+# on params/code/input-set/software-env changes. This pipeline forces reruns by
+# EXPLICIT artifact deletion (executor revise -> _invalidate_qc_downstream), so the
+# default content/input-set triggers only produce spurious reruns — e.g. editing a
+# rule's input list would re-run an already-approved stage. mtime-only keeps
+# Snakemake consistent with the explicit-invalidation model. Mirrored locally in
+# executor.cli._snakemake.
+rerun-triggers:
+  - mtime
+
 # Fallback resources for rules without their own (per-rule values are declared
 # in resources.smk and inherited via the rule's resources: directive).
 # runtime is in MINUTES (snakemake-standard; slurm-submit.sh passes it to sbatch).

@@ -1388,6 +1388,11 @@ def _snakemake(args: list[str], run_dir: Path) -> None:
         sys.executable, "-m", "snakemake",
         "-s", str(SNAKEFILE),
         "--directory", str(paths.snakemake_workdir),
+        # Rerun only on mtime/missing-output, not params/code/input-set/software-env.
+        # This pipeline forces reruns by explicit artifact deletion (executor revise
+        # -> _invalidate_qc_downstream), so content/input-set triggers only cause
+        # spurious reruns. Mirrors `rerun-triggers: [mtime]` in the cluster profiles.
+        "--rerun-triggers", "mtime",
         "--rerun-incomplete", *targets, *rest,
         "--cores", "1",
     ]
