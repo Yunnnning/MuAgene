@@ -6,7 +6,7 @@ def _s1a_inputs(wildcards):
         "rna":   str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
         "plan":  str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         "plan_review_done": str(INTERNAL / "checkpoints" / "plan_review.approved"),
-        "plan_review_md":   str(PLAN / "summary" / "plan_review.md"),
+        "plan_review_md":   str(PLAN / "summary" / f"plan_review_{RUN_DIR.name}.md"),
     }
 
 

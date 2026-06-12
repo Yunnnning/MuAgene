@@ -196,7 +196,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
      `atac_only`, or `separate` branches.
 
 3. Invoke `executor plan-review --intro "<paragraph>" --config $CFG`.
-   - This re-renders (and writes) BOTH `plan_review.md` and `plan_summary.html`
+   - This re-renders (and writes) BOTH `plan_review_<run>.md` and `plan_summary_<run>.html`
      (the two plan-review deliverables listed in `system_prompt.md`) with the intro
      paragraph prepended before the Summary section.
    - The intro is **persisted**, so the `plan_review_propose` rule and any later
@@ -228,12 +228,12 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 
 5. On user decision:
    - **Approve** → `executor approve plan_review --config $CFG --note "approved after review"`, adding `--defer-marker-genes` or `--skip-marker-genes` to match the user's marker-gene choice when no genes were provided. **The executor refuses to approve while the marker-gene decision is unresolved** — if you see that error, you skipped the mandatory question above; go ask it. (On HPC, the same decision is carried as `--marker-genes defer|skip` on `submit --auto-approve`.)
-   - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. Stage is re-set to awaiting_approval; ask if more revisions are needed before re-approving.
+   - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. While `plan_review` is unapproved, `revise` **automatically regenerates** `plan_review_<run>.md` / `plan_summary_<run>.html` (and re-derives the cheap QC preview from persisted metrics) so the overlay shows the new value — you do not refresh them by hand. The override wins over the frozen plan when the stage runs. Stage is re-set to awaiting_approval; re-surface the updated deliverable and ask if more revisions are needed before re-approving. (Revise the input knobs, not the MAD-derived bounds — see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) "Common revise keys".)
    - **Abort** → stop. Tell the user the run dir is intact; they can resume later by re-invoking you on the same config.
 
 ### WHAT_TO_SURFACE_BACK
 
-The **Summary** section of `plan_review.md`, verbatim (the appendix is reference detail — surface decision points and any `?` flags from the summary). Do not paraphrase values. Also point the user at `deliverables/plan/summary/plan_summary.html` (the download-friendly web version — described in the path list in `system_prompt.md`).
+The **Summary** section of `plan_review.md`, verbatim (the appendix is reference detail — surface decision points and any `?` flags from the summary). Do not paraphrase values. Also point the user at `deliverables/plan/summary/plan_summary_<run>.html` (the download-friendly web version — described in the path list in `system_prompt.md`).
 
 If marker genes were stored at this step, confirm the stored gene list in one line (e.g. "Marker genes `Cd3e Cd20 Epcam` stored — the check will run automatically during ambient correction.").
 

@@ -14,7 +14,7 @@ Direct-write layout:
     DELIVERABLES = <run_dir>/deliverables           — user-facing, split by phase:
       PLAN       = deliverables/plan                — config + approval-support materials
                                                       (run.yaml, biological_context.md,
-                                                       context_summary.md, plan_review.md)
+                                                       context_summary.md, plan_review_<run>.md)
       FIGURES    = deliverables/figures             — all pipeline figures (PNG + PDF)
       CHECKPOINTS = deliverables/checkpoints        — intermediate review reports
                                                       (qc_review/, resolution_review/)

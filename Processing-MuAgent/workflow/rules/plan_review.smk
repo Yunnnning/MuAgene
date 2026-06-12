@@ -8,9 +8,9 @@ rule plan_review_propose:
         ctx         = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
         qc_explore  = str(INTERNAL / "artifacts" / "qc_explore" / "qc_explore.json"),
     output:
-        # plan_review.md is a pre-run deliverable (reviewed before plan approval).
-        summary      = str(PLAN / "summary" / "plan_review.md"),
-        summary_html = str(PLAN / "summary" / "plan_summary.html"),
+        # Run-scoped plan review deliverables (reviewed before plan approval).
+        summary      = str(PLAN / "summary" / f"plan_review_{RUN_DIR.name}.md"),
+        summary_html = str(PLAN / "summary" / f"plan_summary_{RUN_DIR.name}.html"),
         awaiting     = str(INTERNAL / "proposals" / "plan_review.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),

@@ -141,15 +141,16 @@ def _pval(params: dict[str, Any], key: str, default: Any) -> Any:
     return default
 
 
-def _yaml_stage_entries(params_path: Path | str, stage: str) -> dict[str, dict[str, Any] | None]:
-    """Load parameters.yaml entries for ``<stage>.<param>`` keys (may be empty)."""
-    params = _prov.load(params_path)
-    prefix = f"{stage}."
-    out: dict[str, dict[str, Any] | None] = {}
-    for key, entry in params.items():
-        if key.startswith(prefix) and isinstance(entry, dict):
-            out[key[len(prefix):]] = entry
-    return out
+def _effective_stage_params(run_dir: Path | str, plan: dict[str, Any], stage: str) -> dict[str, Any]:
+    """Plan params for ``stage`` overlaid with parameters.yaml overrides.
+
+    So the QC-exploration preview honours a ``revise`` at the plan-review
+    checkpoint (the override wins over the frozen plan), matching what the real
+    S1/S2 stages apply via ``provenance.effective_value``.
+    """
+    params_path = Path(run_dir) / "internal" / "parameters.yaml"
+    plan_params = plan.get("stages", {}).get(stage, {}).get("parameters", {})
+    return _prov.effective_params(params_path, plan_params, stage)
 
 
 def _col_to_numpy(adata, key: str) -> np.ndarray:
@@ -191,12 +192,11 @@ def _rna_qc_from_metrics(
     obs,
     params: dict[str, Any],
     figs_dir: Path,
-    *,
-    yaml_entries: dict[str, dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Derive RNA thresholds, count marginal removals, and draw histograms from a
     per-cell metrics frame (columns: RNA_METRIC_COLS). Pure compute + plotting —
-    shared by the heavy explore path and the cheap re-derive path."""
+    shared by the heavy explore path and the cheap re-derive path. ``params`` is
+    the effective (override-overlaid) parameter set."""
     k_mad = _pval(params, "k_mad", 5.0)
     pct_mt_k = _pval(params, "pct_mt_k", 3.0)
     pct_mt_ceil = _pval(params, "pct_mt_ceiling", 20.0)
@@ -274,7 +274,7 @@ def _explore_rna(run_dir: Path, plan: dict[str, Any], figs_dir: Path,
     metrics = pd.DataFrame({c: np.asarray(a.obs[c], dtype=float) for c in RNA_METRIC_COLS})
     _io.write_parquet_safe(metrics, art / RNA_METRICS_PARQUET)
 
-    params = plan.get("stages", {}).get("s1_rna_qc", {}).get("parameters", {})
+    params = _effective_stage_params(run_dir, plan, "s1_rna_qc")
     return _rna_qc_from_metrics(metrics, params, figs_dir)
 
 
@@ -468,7 +468,7 @@ def _explore_atac(run_dir: Path, plan: dict[str, Any], figs_dir: Path,
         "frag_size_distr_npy": fsd_artifact,
     }, indent=2))
 
-    params = plan.get("stages", {}).get("s2_atac_qc", {}).get("parameters", {})
+    params = _effective_stage_params(run_dir, plan, "s2_atac_qc")
     return _atac_qc_from_metrics(n_frag_values, tss_values, ns_values, n_pre,
                                  params, figs_dir, frag_size_distr=frag_size_distr)
 
@@ -498,7 +498,7 @@ def rederive_from_metrics(run_dir: Path | str) -> Path:
     if "s1_rna_qc" in stages and rna_parquet.exists():
         try:
             metrics = pd.read_parquet(rna_parquet)
-            params = plan.get("stages", {}).get("s1_rna_qc", {}).get("parameters", {})
+            params = _effective_stage_params(run_dir, plan, "s1_rna_qc")
             out["s1_rna_qc"] = _rna_qc_from_metrics(metrics, params, figs_dir)
         except Exception as e:
             log_event(run_dir, {"stage": "qc_explore", "event": "rna_rederive_failed",
@@ -508,7 +508,7 @@ def rederive_from_metrics(run_dir: Path | str) -> Path:
     if "s2_atac_qc" in stages and atac_parquet.exists():
         try:
             metrics = pd.read_parquet(atac_parquet)
-            params = plan.get("stages", {}).get("s2_atac_qc", {}).get("parameters", {})
+            params = _effective_stage_params(run_dir, plan, "s2_atac_qc")
             # Reload the persisted pre-filtering fragment-size distribution so the
             # 4th grid panel re-renders without re-importing fragments. Absent on
             # runs predating this artifact → panel falls back to "(no data)".

@@ -17,6 +17,11 @@ from .. import provenance as _prov
 from ..log import log_event
 
 
+def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any = None) -> Any:
+    """parameters.yaml wins over plan (so `executor revise` takes effect on re-run)."""
+    return _prov.effective_value(params_path, plan_params, "s1_rna_qc", name, default)
+
+
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     run_dir = Path(run_dir)
     art = run_dir / "internal" / "artifacts" / "s1_rna_qc"
@@ -49,18 +54,19 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         log_event(run_dir, {"stage": "s1_rna_qc", "event": "no_mt_genes_detected",
                              "note": "var_names may be Ensembl IDs; pct_counts_mt will be 0 and the MT filter is effectively disabled"})
 
-    # Parameters from plan
+    # Parameters from plan, overlaid with any parameters.yaml override (a user
+    # `revise` of a recipe knob wins over the frozen plan — same rule as S2/S3).
     params = plan["stages"]["s1_rna_qc"]["parameters"]
-    k_mad = params["k_mad"]["value"]
-    pct_mt_k = params["pct_mt_k"]["value"]
-    pct_mt_ceil = params["pct_mt_ceiling"]["value"]
-    pct_mt_floor = params["pct_mt_floor"]["value"]
-    min_cells = int(params["min_cells_per_gene"]["value"])
-    min_counts_floor = params["min_counts_floor"]["value"]
-    min_genes_floor = float(params.get("min_genes_floor", {}).get("value", 250))
+    k_mad = _resolve_param(params_path, params, "k_mad", 5.0)
+    pct_mt_k = _resolve_param(params_path, params, "pct_mt_k", 3.0)
+    pct_mt_ceil = _resolve_param(params_path, params, "pct_mt_ceiling", 20.0)
+    pct_mt_floor = _resolve_param(params_path, params, "pct_mt_floor", 5.0)
+    min_cells = int(_resolve_param(params_path, params, "min_cells_per_gene", 3))
+    min_counts_floor = _resolve_param(params_path, params, "min_counts_floor", 500)
+    min_genes_floor = float(_resolve_param(params_path, params, "min_genes_floor", 250))
     # Ribosomal upper-bound is recommended (not enforced strictly): some
     # tissues legitimately have very high ribo-protein expression.
-    pct_ribo_max = float(params.get("pct_ribo_max", {}).get("value", 50.0))
+    pct_ribo_max = float(_resolve_param(params_path, params, "pct_ribo_max", 50.0))
 
     # Derive thresholds (shared with the pre-plan QC exploration); absolute
     # floors win when MAD lower bounds fall below them.

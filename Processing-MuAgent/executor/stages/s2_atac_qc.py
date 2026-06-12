@@ -39,13 +39,7 @@ from ..log import log_event
 
 def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any = None) -> Any:
     """parameters.yaml wins over plan (so `executor revise` takes effect on re-run)."""
-    v = _prov.get_value(params_path, f"s2_atac_qc.{name}", None)
-    if v is not None:
-        return v
-    entry = plan_params.get(name, {})
-    if isinstance(entry, dict) and "value" in entry:
-        return entry["value"]
-    return default
+    return _prov.effective_value(params_path, plan_params, "s2_atac_qc", name, default)
 
 
 def _subset_tss_profile(

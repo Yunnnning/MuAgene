@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import hashing as _h
+from . import provenance
 from .hpc import load_execution_settings
 
 
@@ -314,6 +315,32 @@ def write_plan(run_dir: Path | str, plan: dict[str, Any]) -> tuple[Path, str]:
     out.write_text(payload)
     phash = _h.sha256_bytes(payload.encode())
     return out, phash
+
+
+def overlay_plan(plan: dict[str, Any], params_path: Path | str) -> dict[str, Any]:
+    """Return a deep copy of ``plan`` with each parameter's value overlaid by the
+    parameters.yaml override (a user ``revise``) when present.
+
+    The frozen plan is the *default* layer; parameters.yaml is the *effective*
+    layer — so the plan the user reviews equals what the stages will apply
+    (see ``provenance.effective_value``). A user override also carries its
+    source/rationale through to the appendix; a stage's echoed-back value (after
+    it runs) only syncs the displayed value, keeping the plan's explanatory text.
+    """
+    import copy
+
+    params = provenance.load(params_path)
+    eff = copy.deepcopy(plan)
+    for stage, body in (eff.get("stages") or {}).items():
+        for name, entry in (body.get("parameters") or {}).items():
+            ov = params.get(f"{stage}.{name}")
+            if not (isinstance(ov, dict) and "value" in ov and isinstance(entry, dict)):
+                continue
+            entry["value"] = ov["value"]
+            if ov.get("source") == "user":
+                entry["source"] = "user"
+                entry["rationale"] = ov.get("rationale") or entry.get("rationale", "")
+    return eff
 
 
 def render_plan_appendix(

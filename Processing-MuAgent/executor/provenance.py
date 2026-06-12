@@ -111,3 +111,44 @@ def get_value(path: Path | str, key: str, default: Any = None) -> Any:
     if key in params:
         return params[key]["value"]
     return default
+
+
+def effective_value(
+    path: Path | str,
+    plan_params: dict[str, Any],
+    stage: str,
+    name: str,
+    default: Any = None,
+) -> Any:
+    """Effective value for ``<stage>.<name>``.
+
+    The single overlay rule shared by the QC stages and the plan-review
+    renderer: a user ``revise`` recorded in parameters.yaml wins over the frozen
+    plan default. Falls back to the plan entry's value, then ``default``.
+    """
+    v = get_value(path, f"{stage}.{name}", None)
+    if v is not None:
+        return v
+    entry = plan_params.get(name)
+    if isinstance(entry, dict) and "value" in entry:
+        return entry["value"]
+    return default
+
+
+def effective_params(
+    path: Path | str, plan_params: dict[str, Any], stage: str
+) -> dict[str, Any]:
+    """``plan_params`` overlaid with parameters.yaml overrides → ``{name: entry}``.
+
+    Each parameter's entry is replaced by the parameters.yaml entry when one
+    exists for ``<stage>.<name>`` (so a ``revise`` is reflected). Keys present
+    only in parameters.yaml are included too — harmless, since consumers look up
+    by the plan's parameter names. Use when a whole stage's parameter set is
+    consumed (e.g. the QC-exploration preview).
+    """
+    eff = dict(plan_params)
+    prefix = f"{stage}."
+    for key, entry in load(path).items():
+        if key.startswith(prefix) and isinstance(entry, dict) and "value" in entry:
+            eff[key[len(prefix):]] = entry
+    return eff

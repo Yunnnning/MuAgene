@@ -10,7 +10,8 @@ Top-level layout (direct-write; external inputs referenced via symlinks):
             biological_context.md       ← canonical Biological Context Report
           summary/
             context_summary.md          ← P1 output
-            plan_review.md              ← plan review gate (summary + parameter appendix)
+            plan_review_<run>.md        ← plan review gate (summary + parameter appendix)
+            plan_summary_<run>.html     ← self-contained web version (figures embedded)
         figures/                    all pipeline figures (PNG + PDF), any stage
         checkpoints/                intermediate review reports (no figure files)
           qc_review/                  QC review checkpoint (summaries only)
@@ -193,12 +194,12 @@ class RunPaths:
 
     @property
     def plan_review_md(self) -> Path:
-        return self.deliv_plan_summary / "plan_review.md"
+        return self.deliv_plan_summary / f"plan_review_{self.run_dir.name}.md"
 
     @property
     def plan_summary_html(self) -> Path:
         """Self-contained HTML plan review (figures embedded as data URIs)."""
-        return self.deliv_plan_summary / "plan_summary.html"
+        return self.deliv_plan_summary / f"plan_summary_{self.run_dir.name}.html"
 
     @property
     def preprocessing_plan(self) -> Path:
@@ -219,8 +220,8 @@ class RunPaths:
 
         Stored so that every render path — the ``executor plan-review --intro``
         call, the ``plan_review_propose`` Snakemake rule, and any later
-        re-render — reproduces the same intro in ``plan_review.md`` and
-        ``plan_summary.html``. Without this, a propose re-render would silently
+        re-render — reproduces the same intro in the run-scoped plan review
+        markdown/HTML. Without this, a propose re-render would silently
         drop the intro because it is otherwise only a transient CLI argument.
         Co-located with the plan it introduces.
         """

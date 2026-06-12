@@ -192,6 +192,36 @@ def _invalidate_qc_downstream(run_dir: Path, stage: str) -> list[str]:
     return deleted
 
 
+def _regenerate_plan_deliverables(run_dir: Path) -> list[str]:
+    """Re-render the plan-review deliverables after a `revise` at the (still
+    unapproved) plan_review gate, so the overlay reflects the change.
+
+    Cheap: the QC-exploration preview re-derives from the persisted per-cell
+    metrics parquets (no h5ad reload, no fragment re-import), then the markdown
+    and HTML re-render with the effective (override-overlaid) plan. No-op-safe
+    when the metrics or plan are absent. Returns what was regenerated.
+    """
+    from executor import plan_review as _plan_review
+    from executor import qc_explore
+
+    paths = RunPaths(run_dir)
+    regenerated: list[str] = []
+    try:
+        qc_explore.rederive_from_metrics(run_dir)
+        regenerated.append("qc_explore preview")
+    except Exception as exc:  # preview is best-effort; rendering proceeds either way
+        log_event(run_dir, {"stage": "plan_review", "event": "qc_rederive_failed",
+                            "error": str(exc)})
+    try:
+        _plan_review.write_summary(run_dir)
+        _plan_review.write_plan_summary_html(run_dir)
+        regenerated += [paths.plan_review_md.name, paths.plan_summary_html.name]
+    except Exception as exc:
+        log_event(run_dir, {"stage": "plan_review", "event": "plan_rerender_failed",
+                            "error": str(exc)})
+    return regenerated
+
+
 _MARKER_GENE_GATE_MSG = (
     "Ambient RNA correction is planned but no marker genes are set and no explicit "
     "decision was recorded. Ask the user whether to check marker-gene expression "
@@ -439,10 +469,26 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
     log_event(run_dir, {"stage": stage, "event": "revised", "param": key, "value": value_parsed})
     click.echo(f"Revised {key} = {value_parsed!r}; {_display_stage(stage)} is awaiting_approval.")
 
-    # Re-running a QC stage requires clearing its stale downstream artifacts AND
-    # the post_qc_review gate outputs, or Snakemake reports "Nothing to be done"
-    # and silently skips the re-run. Do this deterministically here so the agent
-    # never has to hand-delete the right files. No-op before QC has run.
+    # A revise behaves differently depending on which checkpoint is active.
+    if not approval.is_approved(run_dir, "plan_review"):
+        # Plan-review checkpoint: the plan is not locked yet. The override only
+        # tunes a proposed value, so re-render the plan deliverables (overlay) so
+        # what the user reviews equals what will run. No QC stage has executed,
+        # so there is nothing downstream to invalidate.
+        regenerated = _regenerate_plan_deliverables(run_dir)
+        if regenerated:
+            log_event(run_dir, {"stage": "plan_review", "event": "plan_deliverables_regenerated",
+                                "regenerated": regenerated})
+            click.echo(
+                "Regenerated plan deliverables so the review reflects this revise "
+                f"(overlay): {', '.join(regenerated)}. plan_review stays awaiting_approval."
+            )
+        return
+
+    # Post-approval (QC-review checkpoint): re-running a QC stage requires
+    # clearing its stale downstream artifacts AND the post_qc_review gate
+    # outputs, or Snakemake reports "Nothing to be done" and silently skips the
+    # re-run. Do this deterministically here so the agent never hand-deletes.
     invalidated = _invalidate_qc_downstream(run_dir, stage)
     if invalidated:
         log_event(run_dir, {"stage": stage, "event": "qc_downstream_invalidated",

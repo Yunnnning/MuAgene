@@ -9,9 +9,9 @@ def _s2_propose_inputs(wildcards):
         # Use qc_summary.json (not rna_qc.h5ad) — it survives post_qc_review cleanup.
         paths["rna_done"] = str(INTERNAL / "artifacts" / "s1_rna_qc" / "qc_summary.json")
     # For atac_only, S2 is the first modality stage after plan_review — demand
-    # plan_review.md here so plan_review_propose is always pulled into the DAG.
+    # the run-scoped plan review md so plan_review_propose is always pulled into the DAG.
     if branch == "atac_only":
-        paths["plan_review_md"] = str(PLAN / "summary" / "plan_review.md")
+        paths["plan_review_md"] = str(PLAN / "summary" / f"plan_review_{RUN_DIR.name}.md")
     return paths
 
 

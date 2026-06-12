@@ -157,9 +157,12 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     from .run_paths import RunPaths
     paths = RunPaths(Path(run_dir))
     run_dir = paths.run_dir
+    from .plan_assembler import overlay_plan
     ctx = _load_json(paths.artifact("p1_context", "context_extraction.json"))
     ingest = _load_json(paths.validation_report)
-    plan = _load_json(paths.preprocessing_plan)
+    # Effective plan: frozen plan overlaid with any parameters.yaml `revise`, so
+    # the review shows what stages will actually apply.
+    plan = overlay_plan(_load_json(paths.preprocessing_plan), paths.parameters_yaml)
     pairing = ingest.get("pairing", {})
 
     def field(name: str) -> dict[str, Any]:
@@ -579,14 +582,16 @@ def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str
     When ``intro`` is None, falls back to the persisted intro paragraph (written
     by ``executor plan-review --intro``) so propose re-renders keep it.
     """
-    from .plan_assembler import render_plan_appendix
+    from .plan_assembler import overlay_plan, render_plan_appendix
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     paths = RunPaths(run_dir)
     if intro is None:
         intro = _load_persisted_intro(paths)
     items = build_summary(run_dir)
-    plan = _load_json(paths.preprocessing_plan)
+    # Effective plan: frozen plan overlaid with any parameters.yaml `revise`, so
+    # the appendix matches what stages will apply (the QC blocks reflect it too).
+    plan = overlay_plan(_load_json(paths.preprocessing_plan), paths.parameters_yaml)
     parts = [f"# {plan_review_heading(run_dir)}", ""]
     if intro:
         parts += [intro.strip(), ""]
@@ -619,6 +624,16 @@ def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str
     return "\n".join(parts)
 
 
+def _remove_legacy_plan_review_paths(paths) -> None:
+    """Drop pre-run-scoped filenames (plan_review.md / plan_summary.html)."""
+    for legacy in (
+        paths.deliv_plan_summary / "plan_review.md",
+        paths.deliv_plan_summary / "plan_summary.html",
+    ):
+        if legacy.exists():
+            legacy.unlink()
+
+
 def write_summary(run_dir: Path | str, intro: str | None = None) -> Path:
     """Write merged plan-review markdown (summary + parameter appendix)."""
     from .run_paths import RunPaths
@@ -628,6 +643,7 @@ def write_summary(run_dir: Path | str, intro: str | None = None) -> Path:
         _persist_intro(paths, intro)
     merged = render_merged_markdown(run_dir, intro=intro)
     paths.plan_review_md.parent.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_plan_review_paths(paths)
     paths.plan_review_md.write_text(merged)
     return paths.plan_review_md
 
@@ -665,5 +681,6 @@ def write_plan_summary_html(run_dir: Path | str, intro: str | None = None) -> Pa
         _persist_intro(paths, intro)
     html = render_plan_summary_html(run_dir, intro=intro)
     paths.plan_summary_html.parent.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_plan_review_paths(paths)
     paths.plan_summary_html.write_text(html)
     return paths.plan_summary_html

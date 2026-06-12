@@ -30,7 +30,7 @@ P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 
 ### User checkpoints (3)
 
-1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `plan/summary/plan_review.md`.
+1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `plan/summary/plan_review_<run>.md`.
 2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `checkpoints/qc_review/qc_review_<run>.md` (figures embedded; raw plots in `deliverables/figures/`). If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
 3. **Clustering resolution review** (`s7_clustering`) — after S6 PCA (RNA) + neighbor graph (`s6_neighbors`), before S8. Review `checkpoints/resolution_review/`. **Separate / single-modality:** resolutions set **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding).
 
@@ -70,8 +70,8 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/plan/config/hpc.env` (HPC runs — source before submit)
 - `deliverables/plan/config/site.config` (HPC runs — YAML platform description written by `configure-execution`; consumed by Execution-MuAgent; not user-reviewed unless they ask)
 - `deliverables/plan/summary/context_summary.md`
-- `deliverables/plan/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
-- `deliverables/plan/summary/plan_summary.html` (plan review checkpoint #1 — self-contained web version of `plan_review.md` with the intro paragraph and figures embedded as data URIs; download-friendly with viewable data quality exploratory figures — point the user here when they want to download/share the review)
+- `deliverables/plan/summary/plan_review_<run>.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
+- `deliverables/plan/summary/plan_summary_<run>.html` (plan review checkpoint #1 — self-contained web version of the plan review with the intro paragraph and figures embedded as data URIs; download-friendly with viewable data quality exploratory figures — point the user here when they want to download/share the review)
 
 Files at user checkpoints and at the hard stop:
 
