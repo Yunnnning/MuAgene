@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from .monitor import (
+    DEFAULT_CHECK_INTERVAL_S,
     MonitorFinding,
     Submission,
     append_execution_manifest,
@@ -38,7 +39,7 @@ def main() -> None:
               help="Snakemake target to pass as PMA_TARGET (e.g. 'all', 'post_qc_review_propose'). "
                    "Defaults to '<spec.stage>_execute' when omitted.")
 @click.option("--watch", is_flag=True, help="Monitor the job until it exits after submission.")
-@click.option("--interval", default=270.0, show_default=True, type=float,
+@click.option("--interval", default=DEFAULT_CHECK_INTERVAL_S, show_default=True, type=float,
               help="Check interval in seconds when --watch is used.")
 @click.option("--kill-on-hang/--no-kill-on-hang", default=True, show_default=True)
 def execute_spec(
@@ -161,7 +162,7 @@ def execute_spec(
 
 @main.command(name="resume-monitor")
 @click.option("--run-dir", required=True, type=click.Path())
-@click.option("--interval", default=270.0, show_default=True, type=float,
+@click.option("--interval", default=DEFAULT_CHECK_INTERVAL_S, show_default=True, type=float,
               help="Check interval in seconds.")
 @click.option("--kill-on-hang/--no-kill-on-hang", default=True, show_default=True)
 def resume_monitor(run_dir: str, interval: float, kill_on_hang: bool) -> None:

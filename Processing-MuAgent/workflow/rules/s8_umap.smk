@@ -16,8 +16,7 @@ rule s8_umap_propose:
 
 def _s8_outputs(wildcards):
     from executor import provenance
-    branch = provenance.get_value(str(INTERNAL / "parameters.yaml"),
-                                  "plan.workflow_branch", "paired")
+    branch = provenance.current_branch(str(INTERNAL / "parameters.yaml"))
     if branch == "paired":
         return [str(RESULTS / "processed.h5mu")]
     return [
@@ -47,8 +46,7 @@ rule s8_umap_execute:
         from executor import provenance, io as _io
         from executor.cluster_exit import finalize_cluster_exit
         plan = json.loads(Path(input.plan).read_text())
-        branch = provenance.get_value(str(INTERNAL / "parameters.yaml"),
-                                      "plan.workflow_branch", "paired")
+        branch = provenance.current_branch(str(INTERNAL / "parameters.yaml"))
         result = s8_umap.run(params.run_dir, plan, workflow_branch=branch)
         _io.write_text_safe(output.sentinel, str(result))
         finalize_cluster_exit()

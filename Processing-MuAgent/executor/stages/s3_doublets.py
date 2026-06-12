@@ -130,7 +130,17 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     _SCRUBLET_HVG_CAP = 3000  # max genes passed to Scrublet; HVG-filter above this
     s3_plan_params = plan["stages"]["s3_doublets"]["parameters"]
     if has_rna:
-        rna = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad")
+        rna_qc_path = run_dir / "internal" / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad"
+        if not rna_qc_path.exists():
+            # rna_qc.h5ad is an untracked working file (its DAG edge is the durable
+            # qc_summary.json); post_qc_review cleanup removes it. If S3 needs it,
+            # S1 must regenerate it first — fail clearly instead of an opaque read error.
+            raise FileNotFoundError(
+                f"S3 requires the S1 QC matrix but it is missing: {rna_qc_path}. "
+                "Re-run s1_rna_qc before S3 (e.g. revise an S1 threshold, which clears "
+                "qc_summary.json and forces S1 to regenerate the matrix)."
+            )
+        rna = ad.read_h5ad(rna_qc_path)
         raw_counts = rna.layers["counts"] if "counts" in rna.layers else rna.X
         counts = _as_sparse(raw_counts)
         # Scrublet doubles the matrix for simulated doublets: limit gene count to avoid
@@ -188,6 +198,13 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     if has_atac:
         import snapatac2 as snap
         atac_h5 = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
+        if not atac_h5.exists():
+            # Untracked working file (DAG edge is qc_summary.json); removed by
+            # post_qc_review cleanup. Fail clearly if S3 needs a regenerated matrix.
+            raise FileNotFoundError(
+                f"S3 requires the S2 QC matrix but it is missing: {atac_h5}. "
+                "Re-run s2_atac_qc before S3 (revise an S2 threshold to force regeneration)."
+            )
         atac = snap.read(str(atac_h5))
         atac_method = "snapatac2.pp.scrublet+probability_threshold"
         atac_threshold = _resolve_atac_probability_threshold(params_path, s3_plan_params)

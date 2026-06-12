@@ -86,6 +86,15 @@ SCHEDULER_RUNNING_STATES = {
 
 SCHEDULER_TERMINAL_STATES = SCHEDULER_FAILED_STATES | {"COMPLETED"}
 
+# Daemon poll cadence — single source of truth (consumed by the CLI --interval
+# defaults and recorded into latest_snapshot.json so Processing-MuAgent can derive
+# its re-poll delay instead of hardcoding a magic number). REPOLL_BUFFER_S is the
+# slack Processing waits beyond one daemon check so it re-polls just AFTER a fresh
+# snapshot lands rather than racing it.
+DEFAULT_CHECK_INTERVAL_S = 270.0   # 4.5 min
+REPOLL_BUFFER_S = 25.0
+
+
 class JobHealth(str, Enum):
     """Monitor state machine states for a single HPC submission."""
     HEALTHY       = "healthy"        # No stall signal; normal operation
@@ -307,16 +316,17 @@ def verify_output_file(path: Path | str) -> tuple[bool, str]:
 def verify_stage_outputs(submission: Submission) -> dict[str, dict[str, tuple[bool, str]]]:
     """Verify declared outputs for every per-stage spec under internal/stage_meta/.
 
-    Returns {stage: {output_name: (ok, reason)}}. Only declared outputs are
-    checked; the head_job spec (no outputs) is skipped.
+    Returns {stage: {output_name: (ok, reason)}}. Only specs that declare outputs
+    are checked; a spec with no declared outputs is skipped. The head_job spec is
+    verified like any other when Processing-MuAgent has populated it with the
+    target stage's outputs (e.g. a planning ``s0_ingest_execute`` submission), so a
+    clean head-job exit still emits ``stage_output_verified``.
     """
     stage_meta_dir = Path(submission.run_dir) / "internal" / "stage_meta"
     results: dict[str, dict[str, tuple[bool, str]]] = {}
     if not stage_meta_dir.exists():
         return results
     for meta_path in sorted(stage_meta_dir.glob("*.yaml")):
-        if meta_path.stem == "head_job":
-            continue
         try:
             spec = load_stage_spec(meta_path)
         except Exception:
@@ -799,7 +809,12 @@ def _child_storage_hang_ids(
     return hung
 
 
-def collect_snapshot(submission: Submission, scheduler_timeout_s: int = 5) -> dict[str, Any]:
+def collect_snapshot(
+    submission: Submission,
+    scheduler_timeout_s: int = 5,
+    *,
+    interval_s: float = DEFAULT_CHECK_INTERVAL_S,
+) -> dict[str, Any]:
     scheduler = query_scheduler(submission.executor, submission.job_id, scheduler_timeout_s)
     progress_files = discover_progress_files(submission)
     newest = _newest_file(progress_files)
@@ -818,6 +833,8 @@ def collect_snapshot(submission: Submission, scheduler_timeout_s: int = 5) -> di
     return {
         "submission": asdict(submission),
         "checked_at": utc_now(),
+        "interval_s": interval_s,
+        "next_recheck_after_s": interval_s + REPOLL_BUFFER_S,
         "scheduler": scheduler,
         "head_log": _path_status(head_log),
         "latest_progress_file": _path_status(newest) if newest else None,
@@ -1312,6 +1329,7 @@ def monitor_once(
     *,
     scheduler_timeout_s: int = 5,
     kill_on_hang: bool = True,
+    interval_s: float = DEFAULT_CHECK_INTERVAL_S,
 ) -> tuple[dict[str, Any], list[MonitorFinding], dict[str, Any] | None, Path | None, MonitorState]:
     """Single monitoring check driving the state machine.
 
@@ -1324,7 +1342,7 @@ def monitor_once(
     one-time ``stage_output_verified`` progress finding, so Processing sees both
     normal progress and unhealthy flags.
     """
-    snapshot = collect_snapshot(submission, scheduler_timeout_s)
+    snapshot = collect_snapshot(submission, scheduler_timeout_s, interval_s=interval_s)
     findings: list[MonitorFinding] = []
     cancel_result: dict[str, Any] | None = None
 
@@ -1459,7 +1477,7 @@ def validate_terminal_outputs(submission: Submission) -> list[MonitorFinding]:
 def monitor_watch(
     submission: Submission,
     *,
-    interval_s: float = 270.0,
+    interval_s: float = DEFAULT_CHECK_INTERVAL_S,
     stale_minutes: float = 90.0,
     scheduler_timeout_s: int = 5,
     kill_on_hang: bool = True,
@@ -1478,6 +1496,7 @@ def monitor_watch(
             state,
             scheduler_timeout_s=scheduler_timeout_s,
             kill_on_hang=kill_on_hang,
+            interval_s=interval_s,
         )
         if report_path is not None:
             last_report = report_path

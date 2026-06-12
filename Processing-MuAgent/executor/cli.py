@@ -99,13 +99,22 @@ def propose(stage: str, config_path: str) -> None:
 
 
 def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
-    """Delete large QC-only h5ad objects after post_qc_review is approved.
+    """Remove large QC-only working files after post_qc_review is approved.
 
-    Removes rna_qc.h5ad, atac_qc.h5ad, the pre-filter atac_snap.h5ad, and the
-    qc_explore ATAC import (atac_snap_explore.h5ad — reused by S2 during QC, no
-    longer needed once QC is approved). Keeps qc_summary.json, qc_metrics
-    parquets, CBF fragment caches, S1a output, and all S3+ artifacts so
-    threshold revision and downstream stages are unaffected.
+    This is the single authority that deletes the QC intermediate matrices. None
+    of these files are declared Snakemake outputs — the QC stages declare only
+    qc_summary.json (the durable stage-done marker that carries the S1/S2 -> S3
+    dependency edge), so removing the matrices here does NOT make any rule's
+    declared outputs "missing" and therefore never triggers a re-run of S1/S2/S3
+    on a later submit. Removed:
+      - rna_qc.h5ad / atac_qc.h5ad — untracked QC matrices, consumed only by S3.
+      - atac_snap.h5ad — the pre-filter SnapATAC2 import.
+      - atac_snap_explore.h5ad — the qc_explore ATAC import (reused by S2 during
+        QC, no longer needed once QC is approved).
+
+    Keeps qc_summary.json, qc_metrics parquets, CBF fragment caches, S1a output,
+    and all S3+ artifacts so threshold revision and downstream stages are
+    unaffected. Deleting an already-absent file is a no-op.
     """
     rp = RunPaths(run_dir)
     targets = [
@@ -565,12 +574,17 @@ def hpc_status(config_path: str) -> None:
     (latest_snapshot.json + latest_submission.json) — health, silence/tolerance,
     findings, kill_action, and supervisor liveness — and prints once, then exits.
 
-    There is no poll loop: the daemon does the monitoring. After `submit`, report this
-    status, then wait (non-blocking) for the daemon's completion signal — monitor.pid
-    removed or a review gate awaiting approval — and report again.
+    There is no poll loop here: the daemon does the monitoring. This command drives
+    the report-and-repoll rule — after `submit`, report this status, then (while the
+    job is still running) re-poll on a non-blocking scheduled wakeup after the seconds
+    printed on the `Next check:` line, until monitor.pid is removed or a review gate is
+    awaiting approval (`Gate signal present`). Report to the user only when the `State:`
+    fingerprint changes.
     """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
+    submission = _sp.load_latest_hpc_submission(paths)
+    snapshot = _sp.load_hpc_monitor_state(paths) or {}
 
     def _supervisor_status() -> str:
         pid_path = paths.run_dir / "internal" / "hpc_monitor" / "monitor.pid"
@@ -584,8 +598,6 @@ def hpc_status(config_path: str) -> None:
             return "not running"
 
     def _print_hpc_header() -> None:
-        submission = _sp.load_latest_hpc_submission(paths)
-        snapshot = _sp.load_hpc_monitor_state(paths)
         if submission is None:
             click.echo("  (no HPC submission registered)")
             return
@@ -642,19 +654,50 @@ def hpc_status(config_path: str) -> None:
     states = _stage_states(paths)
     _print(states)
 
-    # One-shot guidance toward the next action (no poll loop — the daemon monitors).
-    if any(st == "cancelled" for _, _, st in states):
+    # --- report-and-repoll: deterministic fingerprint + the single next-action ---
+    state_set = {st for _, _, st in states}
+    gate = "awaiting_approval" in state_set
+    cancelled = "cancelled" in state_set
+    failed = "failed" in state_set
+    complete = paths.run_manifest_json.exists()
+    pid_present = (paths.run_dir / "internal" / "hpc_monitor" / "monitor.pid").exists()
+    sup_alive = pid_present and "alive" in _supervisor_status()
+
+    sched_state = ((snapshot.get("scheduler") or {}).get("state")) or "unknown"
+    health = (snapshot.get("monitor_state") or {}).get("health", "unknown")
+    n_findings = len(_sp.load_hpc_findings(paths) or [])
+    # Stable single line the report-and-repoll rule diffs to decide whether to re-report.
+    click.echo("")
+    click.echo(f"State: {sched_state}/{health}/sup={'alive' if sup_alive else 'offline'}/"
+               f"gate={'awaiting_approval' if gate else 'none'}/findings={n_findings}")
+
+    # Informative guidance for terminal / gate states.
+    if cancelled:
         click.echo("\n→ a step was cancelled by the HPC monitor (see the kill_action / "
                    "confirmed-dead reason above). Fix the cause and re-`submit` to resume.")
-    elif any(st == "failed" for _, _, st in states):
+    elif failed:
         click.echo("\n→ a step failed; inspect logs under "
                    f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
                    "then fix and `submit` again (resume target is inferred).")
-    elif any(st == "awaiting_approval" for _, _, st in states):
+    elif gate:
         click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
                    "`Processing-MuAgent approve <stage>` (e.g. qc_review, resolution_review).")
-    elif paths.run_manifest_json.exists():
+    elif complete:
         click.echo("\n→ run_manifest.json present; pipeline complete.")
+
+    # The single next-action token the report-and-repoll rule keys on.
+    if gate or complete:
+        click.echo("→ Gate signal present — drive the next checkpoint now (no re-poll).")
+    elif cancelled or failed:
+        click.echo("→ Run halted — no re-poll; resolve the above, then `submit` again.")
+    elif sup_alive:
+        repoll_s = int(snapshot.get("next_recheck_after_s") or hpc.DEFAULT_REPOLL_AFTER_S)
+        interval_s = int(snapshot.get("interval_s") or 270)
+        click.echo(f"Next check: re-poll via scheduled wakeup in ~{repoll_s}s "
+                   f"(daemon interval {interval_s}s + {repoll_s - interval_s}s buffer)")
+    else:
+        click.echo("→ Supervisor offline with no gate armed — re-check pipeline state / logs "
+                   "before re-polling, or `supervisor-restart` if the cluster job is still active.")
 
 
 @main.command(name="supervisor-restart")
@@ -1002,8 +1045,18 @@ def _seed_approvals(
 ) -> list[str]:
     kept = kept or set()
     seeded: list[str] = []
+    protected = False  # any gate left in the approved state (freshly seeded OR already)
     for stage in stages:
         if stage in kept:
+            continue
+        if approval.is_approved(run_dir, stage):
+            # Already approved on a prior call — do NOT re-stamp. approval.approve
+            # rewrites the sentinel and bumps its mtime; since every QC/downstream
+            # execute rule declares <gate>.approved as an input, a fresh mtime is an
+            # "Updated input files" trigger that needlessly re-runs the whole approved
+            # upstream chain on the next submit. The gate is already honoured; leave
+            # the original sentinel (and its mtime) untouched.
+            protected = True
             continue
         if stage == "plan_review" and _pr.marker_gene_decision_pending(run_dir):
             raise click.ClickException(
@@ -1011,12 +1064,16 @@ def _seed_approvals(
                 + "\nFor an unattended batch, pass --marker-genes defer|skip.")
         approval.approve(run_dir, stage, note=note)
         seeded.append(stage)
+        protected = True
         if stage == "post_qc_review":
             deleted = _cleanup_qc_intermediates(run_dir)
             if deleted:
                 log_event(run_dir, {"stage": "post_qc_review", "event": "qc_cleanup",
                                      "deleted": deleted})
-    if seeded:
+    # Set the revoke-protection flag whenever a gate is in the approved state, not
+    # only when one was freshly seeded — otherwise a submit that re-enters an
+    # already-approved phase would let the propose rules revoke those approvals.
+    if protected:
         os.environ["PMA_AUTO_APPROVE"] = "1"
     return seeded
 
@@ -1226,7 +1283,10 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
     if watch:
         pid = ea_result.get("pid", "?")
         mon_log = ea_result.get("log", "")
-        job_id = ea_result.get("job_id") or hpc.last_manifest_job_id(run_dir)
+        # ea_result["job_id"] is the entry the supervisor appended for THIS
+        # submission (or None on timeout). Do NOT fall back to the last manifest
+        # entry — that can be a stale job_id from a previous head-job.
+        job_id = ea_result.get("job_id")
         if not job_id:
             click.echo(
                 "Warning: job ID not yet in execution_manifest.jsonl "

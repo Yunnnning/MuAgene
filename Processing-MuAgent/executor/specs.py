@@ -235,6 +235,16 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
     paths = RunPaths(run_dir_path)
     paths.stage_meta_dir.mkdir(parents=True, exist_ok=True)
 
+    # Populate the head-job's declared outputs from the target stage so the monitor
+    # can verify a clean exit (emit stage_output_verified) even during the planning
+    # S0 submission, when per-stage specs do not exist yet. Only single-stage
+    # `*_execute` targets resolve to a known output set; `*_propose` / `all`
+    # (multi-stage phases) leave outputs empty — those phases already have per-stage
+    # specs that cover verification, so the head-job stays a pure orchestrator there.
+    stage_stem = target.removesuffix("_execute")
+    io = _STAGE_IO.get(stage_stem) if stage_stem != target else None
+    outputs = _resolve_io(io["outputs"], str(run_dir_path)) if io else {}
+
     spec: dict[str, Any] = {
         "schema_version": "1",
         "stage": "head_job",
@@ -247,7 +257,7 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
         "inputs": {
             "config": str(run_dir_path / "deliverables" / "plan" / "config" / "run.yaml"),
         },
-        "outputs": {},
+        "outputs": outputs,
         "progress_timeout_hint": 120,  # 2 h silence on a Snakemake orchestrator is suspicious
         "snakemake_target": target,
     }

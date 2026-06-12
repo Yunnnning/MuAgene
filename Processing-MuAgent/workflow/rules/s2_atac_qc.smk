@@ -36,7 +36,14 @@ rule s2_atac_qc_execute:
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
     output:
-        h5ad       = str(INTERNAL / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"),
+        # qc_summary.json is the SOLE declared output and the durable stage-done
+        # marker (status, reports, and the s3 dependency edge all key off it; the
+        # h5ad read in qc_summary._atac_stat_rows is a guarded fallback).
+        # atac_qc.h5ad is written by the stage as an UNTRACKED working file:
+        # consumed only by s3_doublets (read by path) and removed by
+        # _cleanup_qc_intermediates at post_qc_review approval. Keeping it out of
+        # the declared DAG means deleting it never triggers a "Missing output
+        # files" re-run of S2/S3.
         qc_summary = str(INTERNAL / "artifacts" / "s2_atac_qc" / "qc_summary.json"),
     params:
         run_dir = str(RUN_DIR),

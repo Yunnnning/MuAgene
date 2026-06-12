@@ -897,13 +897,10 @@ def _atac_section(
     )
 
 
-def _workflow_branch(run_dir: Path, params: dict[str, Any]) -> str:
+def _workflow_branch(run_dir: Path) -> str:
     from . import provenance as _prov
     from .run_paths import RunPaths
-    branch = _prov.get_value(str(RunPaths(run_dir).parameters_yaml), "plan.workflow_branch")
-    if branch:
-        return str(branch)
-    return str(params.get("plan.workflow_branch", "paired"))
+    return _prov.current_branch(str(RunPaths(run_dir).parameters_yaml))
 
 
 def _plan_dataset_assay_line(run_dir: Path) -> str:
@@ -1047,7 +1044,7 @@ def _doublet_section(
               or overlap_summary.get("recommended_policy")
               or overlap_summary.get("chosen_policy")
               or overlap_summary.get("policy") or "unspecified")
-    branch = _workflow_branch(run_dir, params)
+    branch = _workflow_branch(run_dir)
 
     policy_note = ""
 
@@ -1247,7 +1244,7 @@ def build_qc_review(run_dir: Path | str) -> str:
     params_path = rp.parameters_yaml
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
-    branch = _workflow_branch(run_dir, params)
+    branch = _workflow_branch(run_dir)
     render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=True)
 
     sections = [
@@ -1267,7 +1264,7 @@ def build_qc_review_report(run_dir: Path | str) -> str:
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
     render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=True)
-    branch = _workflow_branch(run_dir, params)
+    branch = _workflow_branch(run_dir)
     title = f"# QC review — {run_dir.name}\n"
     context = _plan_dataset_assay_line(run_dir)
     header = title + (f"\n{context}\n" if context else "")
@@ -1519,7 +1516,7 @@ def build_qc_review_html_body(run_dir: Path | str) -> str:
     params_path = rp.parameters_yaml
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
-    branch = _workflow_branch(run_dir, params)
+    branch = _workflow_branch(run_dir)
 
     title = f"<h1>QC summary — {html_module.escape(run_dir.name)}</h1>"
     context = _plan_dataset_assay_line(run_dir)
@@ -1584,7 +1581,7 @@ def build(run_dir: Path | str) -> str:
     counts = _stage_counts(run_dir)
     render = _FigRender(md_parent=rp.deliv_results)
 
-    branch = _workflow_branch(run_dir, params)
+    branch = _workflow_branch(run_dir)
     sections = [
         "# QC Summary",
         "",

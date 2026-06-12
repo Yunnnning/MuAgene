@@ -136,8 +136,7 @@ def _resolution_checkpoint_note(run_dir: Path | str) -> str:
     from .. import provenance as _prov
     from ..run_paths import RunPaths
     run_dir = Path(run_dir)
-    branch = _prov.get_value(str(RunPaths(run_dir).parameters_yaml),
-                             "plan.workflow_branch", "paired") or "paired"
+    branch = _prov.current_branch(str(RunPaths(run_dir).parameters_yaml))
     if branch == "paired":
         return (
             "**Paired multiome:** resolutions are **diagnostic** per-modality Leiden "

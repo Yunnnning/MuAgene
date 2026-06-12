@@ -23,7 +23,13 @@ rule s1_rna_qc_execute:
         plan_review_done  = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         rna_decontaminated = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
     output:
-        h5ad       = str(INTERNAL / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad"),
+        # qc_summary.json is the SOLE declared output and the durable stage-done
+        # marker (status, reports, and the s3 dependency edge all key off it).
+        # rna_qc.h5ad is written by the stage as an UNTRACKED working file: it is
+        # consumed only by s3_doublets (read by path) and removed by
+        # _cleanup_qc_intermediates at post_qc_review approval. Keeping it out of
+        # the declared DAG means deleting it never triggers a "Missing output
+        # files" re-run of S1/S3.
         qc_summary = str(INTERNAL / "artifacts" / "s1_rna_qc" / "qc_summary.json"),
     params:
         run_dir = str(RUN_DIR),

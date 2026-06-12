@@ -193,7 +193,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 
 **S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, S0 runs in the foreground on this machine via `run`.
 
-Each heavy stage runs as its own scheduler job, and only the three checkpoints above need `approve`. After `submit`, a background monitor is the sole watcher of your job — report its status at any time with one-shot `hpc-status`.
+Each heavy stage runs as its own scheduler job, and only the three checkpoints above need `approve`. After `submit`, a background monitor is the sole watcher of your job; Processing-MuAgent follows **report-and-repoll** — it reports one-shot `hpc-status`, then re-polls on a non-blocking scheduled wakeup (~295s, the cadence printed on the `Next check:` line) and re-reports only when the state changes, until the job finishes or a review gate arms. You never have to ask for status by hand.
 
 ### Submit workflow
 
@@ -401,7 +401,7 @@ After checkpoint **#1**, use `submit` instead of foreground `run`. See **Running
 source <run_dir>/deliverables/plan/config/hpc.env
 Processing-MuAgent submit --config $CFG --executor slurm
 # submit returns within ~90 s; the supervision daemon keeps running in the background as the sole monitor.
-Processing-MuAgent hpc-status --config $CFG   # one-shot: job health, supervisor liveness, findings, per-step state — then yield
+Processing-MuAgent hpc-status --config $CFG   # one-shot: job health, supervisor liveness, findings, per-step state, and a `Next check:` re-poll cadence (report-and-repoll)
 
 # If the daemon dies mid-run (SSH drop, site reboot) but the cluster job is still running:
 Processing-MuAgent supervisor-restart --config $CFG

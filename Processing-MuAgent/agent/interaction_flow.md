@@ -126,15 +126,15 @@ Once the user answers, in order:
    artifacts the plan review consumes.
    S0 execution location follows the configured mode (the execution model and
    monitoring mechanics are defined once under *Running on HPC* — don't restate them).
-   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, submit S0 as a cluster head-job, then report-and-yield:
+   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, submit S0 as a cluster head-job, then report-and-repoll:
      ```
      source deliverables/plan/config/hpc.env
      executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
      executor hpc-status --config $CFG             # one-shot: report the daemon's snapshot, then yield
      ```
      The Execution-MuAgent daemon runs S0 on a compute node and is the sole monitor;
-     follow the **report-and-yield** rule under *Running on HPC* (report one-shot
-     `hpc-status`, then wait non-blocking for the gate signal — never block or tail logs).
+     follow the **report-and-repoll** rule under *Running on HPC* (report one-shot
+     `hpc-status`, then re-poll on a non-blocking scheduled wakeup until the gate signal — never block or tail logs).
    - **Local mode (`execution.mode` is `local`):** `executor run --config $CFG --target s0_ingest_execute` (runs P1 → S0 + plan assembly; ~30s on small inputs).
      - **If S0 OOMs locally:** this means the machine is too small. Switch to HPC (a mode change, so re-confirm): `executor configure-execution --config $CFG --mode slurm|pbs ... --confirmed-by-user` then submit S0 as above. There is no automatic local→cluster retry.
    - **Do not** retry logic errors (pairing ambiguous, declared-vs-detected mismatch, missing index). Relay the message; user fixes inputs or branch declaration.
@@ -346,15 +346,22 @@ After plan review approval, `source deliverables/plan/config/hpc.env`, then:
 
 Each compute phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC, `s7_clustering_propose` for the resolution sweep), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. That is why `monitor.pid` removal coincides with `<stage>` becoming `awaiting_approval` — the two completion signals you wait for arrive together. You never need to run `propose` by hand to surface a gate.
 
-**Monitoring rule — the daemon monitors; Processing reports (report-and-yield).**
-After `submit`, the Execution-MuAgent daemon is the sole monitor and writes only structured state. Processing-MuAgent reads `latest_snapshot.json` via one-shot `hpc-status`, reports the status to the user in chat, then waits **NON-BLOCKING** for the daemon's completion signal — `monitor.pid` removed, or a review-gate sentinel (`<stage>` becomes `awaiting_approval`) — and reports again before driving the next gate. Never run a blocking watch loop, never substitute `tail -f | grep`, never go silent: the user's only status surface is Processing-MuAgent's chat report via one-shot `hpc-status`.
+**Monitoring rule — the daemon monitors; Processing reports and re-polls (report-and-repoll).**
+After `submit`, the Execution-MuAgent daemon is the sole monitor and writes only structured state. Processing-MuAgent drives this loop:
+
+1. Run one-shot `hpc-status` and report the status to the user in chat.
+2. If the job is still running (daemon alive, no gate), **arm a scheduled wakeup for the seconds `hpc-status` printed on its `Next check:` line** — data-driven, typically ~295s (the daemon's 270s heartbeat + a 25s buffer), read from the snapshot's `next_recheck_after_s`. The wakeup's action is to re-run one-shot `hpc-status`.
+3. On wake, re-run `hpc-status`. **Report to the user only when the `State:` fingerprint line changed** (scheduler state, health, gate, or findings count); if it is unchanged, stay silent and re-arm. This keeps long jobs quiet while still catching every transition within one heartbeat.
+4. **Stop re-arming and drive the next gate** the moment `monitor.pid` is gone or a gate is `awaiting_approval` — `hpc-status` prints `Gate signal present — drive the next checkpoint now`.
+
+A scheduled wakeup is **NON-BLOCKING**: it yields the turn and the runtime re-invokes Processing-MuAgent later (in Claude Code, via `ScheduleWakeup` / `/loop` at the reported cadence). It is **not** a watch loop and **not** `tail -f`. The prohibition on blocking watch loops and `tail -f | grep` remains in force — re-polling via a scheduled wakeup is the *only* sanctioned self-trigger. Never go silent on a state change: the user's only status surface is Processing-MuAgent's chat report via one-shot `hpc-status`.
 
 ### How Claude surfaces things during the HPC flow
 
-Behaviour matches local mode until plan review is approved. Beyond the report-and-yield
+Behaviour matches local mode until plan review is approved. Beyond the report-and-repoll
 rule above, the HPC-specific surfacing is:
 
-- **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path, then follow the report-and-yield rule.
+- **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path, then follow the report-and-repoll rule.
 - **When `s7_clustering` becomes `awaiting_approval`**, surface the path to `resolution_review.html` (the primary review artifact) and `resolution_review.ipynb` (for power users who want to re-cluster at custom resolutions interactively), and paste `resolution_summary.md` verbatim plus the proposal's `review_artifacts` block.
 - **On approve/revise**, run the appropriate CLI, then `submit` again.
 
@@ -393,5 +400,5 @@ These are written to `deliverables/plan/config/hpc.env` by `configure-execution`
 - **`hpc-status` shows "Supervisor: not running" alongside a RUNNING or PENDING scheduler state** — the supervision daemon has died but the cluster job is still active. Without the daemon, stalled jobs will not be auto-cancelled. Restart the daemon: `executor supervisor-restart --config $CFG`. This resumes the full watch loop (stall detection, kill-on-hang) against the already-running job without resubmitting. Tell the user what happened and what you did.
 - **Supervision daemon crashes on a site with KillUserProcesses=yes** — when the user's SSH session ends, systemd kills all their processes including the daemon. The cluster job keeps running, but protection is gone. For the current run, tell them to use `supervisor-restart` as soon as they reconnect. Going forward, suggest running `submit` inside a `tmux` or `screen` session on that cluster.
 - **One-shot `hpc-status` shows "review gate awaiting approval" before the pipeline has made any progress** — a stale `awaiting_approval` sentinel from a prior run (or an old head job still writing to it) is blocking progress. It now shows up directly in one-shot status before any real progress. Fix: (1) `squeue -u $USER | grep pma_head` → `scancel <JOBID>` for each result; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) re-run `executor submit` and report the next one-shot `hpc-status`.
-- **Tempted to monitor a long-running job yourself** — don't. Rely on the daemon (the sole monitor) and read one-shot `executor hpc-status --config $CFG`; never run a blocking loop or `tail -f | grep`.
+- **Tempted to monitor a long-running job yourself** — don't. Rely on the daemon (the sole monitor) and read one-shot `executor hpc-status --config $CFG`; never run a blocking loop or `tail -f | grep`. (Re-polling via a non-blocking scheduled wakeup per the report-and-repoll rule is not a blocking loop and is the sanctioned way to re-check.)
 - **Blank ATAC QC figures ("(no data)") / `qc_explore` log shows `chrom_bound_filter_failed: bgzip not found on PATH`** — an *execution-environment* error, not a scientific one. The cluster child job did not have the project conda env's tools (`bgzip`/`tabix`, which live in `$PMA_CONDA_ENV/bin`) on PATH, so the ATAC fragment chr-renaming + chromosome-bound filter was skipped, the SnapATAC2 import matched zero fragments (Ensembl-named fragments vs UCSC-named reference), and `atac_qc_metrics.parquet` came back empty. **This is fixed structurally:** each generated Snakemake child jobscript is sanitized to self-activate `$PMA_CONDA_ENV` (`executor.hpc.sanitize_snakemake_jobscript` → `inject_conda_activation_text`, invoked by `slurm-submit.sh` / `pbs-submit.sh`), and `htslib` is pinned in `workflow/envs/processing.yaml` for `--use-conda` runs. **Note the default cluster profiles set `use-conda: false`**, so per-rule conda envs are *not* built — protection then depends entirely on the `--conda-env` you configured actually containing `bgzip`/`tabix`. Reading gzipped fragments uses Python's `gzip` (no `bgzip` needed for reads); the BED4→fragments conversion (`executor/io.py`) *requires* `bgzip`/`tabix` and **raises a clear, actionable error** if they are absent — and an empty ATAC import now raises rather than silently emitting a blank figure (it does **not** silently fall back). If you hit it: confirm `configure-execution --conda-env <name>` was set (recorded in `hpc.env` / `site.config`) and that `bgzip`/`tabix` exist in that env (`conda run -n <env> bgzip --version`).

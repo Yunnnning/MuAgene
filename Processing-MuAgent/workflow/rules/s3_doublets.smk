@@ -2,10 +2,15 @@ def _s3_inputs(wildcards):
     from executor import provenance
     branch = provenance.current_branch(str(INTERNAL / "parameters.yaml"))
     paths: dict = {}
+    # Depend on the durable qc_summary.json marker, NOT the rna_qc.h5ad/atac_qc.h5ad
+    # working files (same pattern as s2_atac_qc's _s2_propose_inputs). The marker is
+    # co-written with the h5ad at stage completion and survives post_qc_review
+    # cleanup, so it carries the S1/S2 -> S3 ordering edge without making the
+    # deletable h5ads part of the declared DAG. S3 reads the h5ads by path.
     if branch in ("paired", "separate", "rna_only"):
-        paths["rna_qc"] = str(INTERNAL / "artifacts" / "s1_rna_qc" / "rna_qc.h5ad")
+        paths["rna_done"] = str(INTERNAL / "artifacts" / "s1_rna_qc" / "qc_summary.json")
     if branch in ("paired", "separate", "atac_only"):
-        paths["atac_qc"] = str(INTERNAL / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad")
+        paths["atac_done"] = str(INTERNAL / "artifacts" / "s2_atac_qc" / "qc_summary.json")
     return paths
 
 

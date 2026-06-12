@@ -9,14 +9,19 @@ import inspect
 
 import yaml
 
+from unittest import mock
+
 from execution_muagent.monitor import (
+    DEFAULT_CHECK_INTERVAL_S,
     MonitorState,
+    REPOLL_BUFFER_S,
     SiteConfig,
     StageSpec,
     Submission,
     _is_run_scoped_progress_path,
     _looks_like_hdf5,
     _looks_like_parquet,
+    collect_snapshot,
     discover_child_job_ids,
     monitor_watch,
     parse_job_ids_from_log,
@@ -328,8 +333,76 @@ class DefaultsTests(unittest.TestCase):
             inspect.signature(monitor_watch).parameters["interval_s"].default, 270.0
         )
 
+    def test_check_interval_constant_is_270(self):
+        # The CLI --interval defaults reference this constant; keep it 270.0.
+        self.assertEqual(DEFAULT_CHECK_INTERVAL_S, 270.0)
+
     def test_monitor_state_tolerance_default(self):
         self.assertEqual(MonitorState().tolerance_n, 20)
+
+
+class RepollCadenceTests(unittest.TestCase):
+    def test_collect_snapshot_records_repoll_cadence(self):
+        # The snapshot carries interval_s + next_recheck_after_s so Processing-MuAgent
+        # derives its re-poll wakeup delay instead of hardcoding a magic number.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            (run_dir / "internal" / "artifacts").mkdir(parents=True)
+            sub = _make_submission(run_dir)
+            with mock.patch(
+                "execution_muagent.monitor.query_scheduler",
+                return_value={"scheduler": "slurm", "state": "RUNNING"},
+            ):
+                snap = collect_snapshot(sub, interval_s=DEFAULT_CHECK_INTERVAL_S)
+        self.assertEqual(snap["interval_s"], DEFAULT_CHECK_INTERVAL_S)
+        self.assertEqual(
+            snap["next_recheck_after_s"], DEFAULT_CHECK_INTERVAL_S + REPOLL_BUFFER_S
+        )
+        self.assertEqual(snap["next_recheck_after_s"], 295.0)
+
+
+class HeadJobVerificationTests(unittest.TestCase):
+    def test_head_job_with_populated_outputs_is_verified(self):
+        # When Processing populates the head_job spec's outputs (planning S0 submit),
+        # the monitor verifies them like any stage and emits stage_output_verified.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            art = run_dir / "internal" / "artifacts" / "s0_ingest"
+            art.mkdir(parents=True)
+            good = art / "validation_report.json"
+            good.write_text('{"ok": true}', encoding="utf-8")
+            meta = run_dir / "internal" / "stage_meta"
+            meta.mkdir(parents=True, exist_ok=True)
+            (meta / "head_job.yaml").write_text(yaml.safe_dump({
+                "schema_version": "1",
+                "stage": "head_job",
+                "science_description": "orchestrator",
+                "resources": {"cpus": 1, "mem_mb": 1000, "walltime_min": 60},
+                "inputs": {},
+                "outputs": {"validation_report": str(good)},
+                "progress_timeout_hint": 120,
+            }), encoding="utf-8")
+            results = verify_stage_outputs(_make_submission(run_dir))
+        self.assertIn("head_job", results)
+        self.assertTrue(results["head_job"]["validation_report"][0])
+
+    def test_head_job_without_outputs_is_skipped(self):
+        # Multi-stage targets leave outputs empty → still skipped (no spurious finding).
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            meta = run_dir / "internal" / "stage_meta"
+            meta.mkdir(parents=True, exist_ok=True)
+            (meta / "head_job.yaml").write_text(yaml.safe_dump({
+                "schema_version": "1",
+                "stage": "head_job",
+                "science_description": "orchestrator",
+                "resources": {"cpus": 1, "mem_mb": 1000, "walltime_min": 60},
+                "inputs": {},
+                "outputs": {},
+                "progress_timeout_hint": 120,
+            }), encoding="utf-8")
+            results = verify_stage_outputs(_make_submission(run_dir))
+        self.assertNotIn("head_job", results)
 
 
 if __name__ == "__main__":

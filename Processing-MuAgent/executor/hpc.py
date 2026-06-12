@@ -34,6 +34,12 @@ LAUNCHER = REPO_ROOT / "scripts" / "launch_runner.sh"
 # Default directory for head-job and PBS child-job stdout/stderr (see pbs-submit.sh).
 DEFAULT_LOG_DIR = REPO_ROOT / "logs"
 
+# Fallback re-poll delay (seconds) used by `hpc-status` when latest_snapshot.json
+# predates the next_recheck_after_s key. Mirrors Execution-MuAgent's
+# DEFAULT_CHECK_INTERVAL_S (270) + REPOLL_BUFFER_S (25); the two repos cannot import
+# each other, so the snapshot value is authoritative whenever present.
+DEFAULT_REPOLL_AFTER_S = 295
+
 # Snakemake 9 defaults --shared-fs-usage to ALL, including storage-local-copies.
 # On shared NFS (runs/... under /home/.../mnt/storage/...) that makes cluster
 # child jobs run in --mode remote and enter a post-job "Storing output in
@@ -236,18 +242,33 @@ def kill_existing_supervisor(run_dir: Path | str) -> bool:
         return False
 
 
-def _wait_for_manifest(run_dir: Path | str, timeout_s: float = 90.0) -> str | None:
-    """Poll execution_manifest.jsonl until a job_id appears or timeout_s elapses.
+def _manifest_entry_count(run_dir: Path | str) -> int:
+    """Number of non-empty entries currently in execution_manifest.jsonl."""
+    p = Path(run_dir) / "internal" / "hpc_monitor" / "execution_manifest.jsonl"
+    if not p.exists():
+        return 0
+    return sum(1 for line in p.read_text().splitlines() if line.strip())
 
-    Returns the job_id string, or None on timeout. The caller must warn explicitly
-    on None — do NOT silently log "unknown".
+
+def _wait_for_manifest(run_dir: Path | str, baseline_count: int = 0,
+                       timeout_s: float = 90.0) -> str | None:
+    """Poll execution_manifest.jsonl until a NEW entry appears (count exceeds
+    `baseline_count` captured just before this submission), or timeout elapses.
+
+    Returns the newest job_id string, or None on timeout. Waiting on the entry
+    COUNT — not merely "a job_id exists" — is essential: a prior submission's
+    entry is already present, so reading the last line immediately would return a
+    stale job_id from the previous head-job (the daemon appends the new entry
+    asynchronously). The caller must warn explicitly on None — do NOT silently
+    log "unknown".
     """
     import time as _time
     deadline = _time.monotonic() + timeout_s
     while _time.monotonic() < deadline:
-        job_id = last_manifest_job_id(run_dir)
-        if job_id:
-            return job_id
+        if _manifest_entry_count(run_dir) > baseline_count:
+            job_id = last_manifest_job_id(run_dir)
+            if job_id:
+                return job_id
         _time.sleep(0.5)
     return None
 
@@ -366,10 +387,13 @@ def submit_via_execution_muagent(
             killed = kill_existing_supervisor(run_dir)
             if killed:
                 sys.stderr.write("[submit] Stopped previous supervisor before starting new one.\n")
+            # Snapshot the manifest size BEFORE the daemon runs so we wait for the
+            # entry IT appends, not a stale entry from a previous submission.
+            baseline = _manifest_entry_count(run_dir)
             result = start_supervisor_daemon(run_dir, cmd, env)
             if result is None:
                 return None
-            job_id = _wait_for_manifest(run_dir, timeout_s=90.0)
+            job_id = _wait_for_manifest(run_dir, baseline_count=baseline, timeout_s=90.0)
             return {
                 "watch": True,
                 "pid": result["pid"],

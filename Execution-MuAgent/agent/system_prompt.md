@@ -40,7 +40,7 @@ Record the submission in `internal/hpc_monitor/submissions.jsonl` with spec_path
 Detection and decision are separate. The watcher is cheap and never kills.
 
 **Two clocks:**
-- **Check interval** — how often you wake and look. A sampling rate, same for every stage. Default 270 s (4.5 min). Keep it short; finer sampling only helps.
+- **Check interval** — how often you wake and look. A sampling rate, same for every stage. Default 270 s (4.5 min) — the single source of truth is `monitor.DEFAULT_CHECK_INTERVAL_S`; the snapshot records it (and `next_recheck_after_s = interval + REPOLL_BUFFER_S`) so Processing-MuAgent re-polls ~25 s after each daemon check instead of hardcoding a cadence. Keep it short; finer sampling only helps.
 - **tolerance_n** — how many consecutive quiet intervals are allowed before suspicion. Derived from `progress_timeout_hint / interval`. Silence is counted in missed heartbeats, not wall-clock minutes. A heartbeat fires when any run-scoped file mtime advances OR the head log grows.
 
 **Per-step verification (normal-progress reporting):** on every check, verify each per-stage spec's declared outputs that have appeared via `verify_output_file` — a proper integrity check (HDF5/parquet/JSON open or, without those libs, structural signature checks), not merely non-empty. Emit a one-time `stage_output_verified` finding per stage. `latest_snapshot.json` is refreshed every check (healthy or not) so Processing's `hpc-status` is never stale.

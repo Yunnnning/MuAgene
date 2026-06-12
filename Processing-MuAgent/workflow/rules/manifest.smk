@@ -11,8 +11,7 @@ rule manifest:
     run:
         from executor import manifest, provenance, layout, notebook_builder, qc_summary
         from pathlib import Path
-        branch = provenance.get_value(str(INTERNAL / "parameters.yaml"),
-                                      "plan.workflow_branch", "paired")
+        branch = provenance.current_branch(str(INTERNAL / "parameters.yaml"))
         cfg = dict(config)
         cfg["workflow_branch"] = branch
         cfg["run_id"] = cfg.get("run_id", Path(params.run_dir).name)

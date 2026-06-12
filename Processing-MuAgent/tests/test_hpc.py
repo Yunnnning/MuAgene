@@ -65,5 +65,42 @@ class HpcTests(unittest.TestCase):
         self.assertEqual(once.count(hpc.PMA_ACTIVATION_MARKER), 1)
 
 
+class ManifestJobIdTests(unittest.TestCase):
+    """A resumed submit must report the NEW head-job's id, never a stale entry
+    left in execution_manifest.jsonl by a previous submission."""
+
+    def _write_manifest(self, run_dir: Path, job_ids: list[str]) -> None:
+        import json
+        mp = run_dir / "internal" / "hpc_monitor" / "execution_manifest.jsonl"
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.write_text("".join(json.dumps({"job_id": j}) + "\n" for j in job_ids))
+
+    def test_entry_count_counts_nonempty_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self.assertEqual(hpc._manifest_entry_count(run_dir), 0)
+            self._write_manifest(run_dir, ["1001", "1002"])
+            self.assertEqual(hpc._manifest_entry_count(run_dir), 2)
+
+    def test_wait_ignores_stale_entry_and_times_out(self):
+        # Manifest already holds a prior submission's entry; no new entry is
+        # appended, so the wait must NOT return that stale id — it must time out.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self._write_manifest(run_dir, ["1015641"])
+            baseline = hpc._manifest_entry_count(run_dir)
+            got = hpc._wait_for_manifest(run_dir, baseline_count=baseline, timeout_s=0.2)
+            self.assertIsNone(got)
+
+    def test_wait_returns_new_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self._write_manifest(run_dir, ["1015641"])
+            baseline = hpc._manifest_entry_count(run_dir)
+            self._write_manifest(run_dir, ["1015641", "1015843"])
+            got = hpc._wait_for_manifest(run_dir, baseline_count=baseline, timeout_s=0.2)
+            self.assertEqual(got, "1015843")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -123,5 +123,60 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
             self.assertEqual(deleted, [])
 
 
+class QCMatrixUntrackedTests(unittest.TestCase):
+    """The QC matrices (rna_qc.h5ad / atac_qc.h5ad) must NOT be declared Snakemake
+    rule outputs, and S3 must depend on the durable qc_summary.json marker instead.
+    This is the structural fix that lets _cleanup_qc_intermediates delete the
+    matrices without making any rule's declared output "missing" — so a
+    post-approval `submit` does not re-run S1/S2/S3. (Replaces the earlier temp()
+    approach.)
+    """
+
+    _RULES = Path(__file__).resolve().parents[1] / "workflow" / "rules"
+
+    @staticmethod
+    def _code(text: str) -> str:
+        """Drop comment lines so assertions test declarations, not prose."""
+        return "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+
+    def _output_block(self, rule_file: str, rule_name: str) -> str:
+        """Return the code (comments stripped) of `rule_name`'s `output:` block."""
+        import re
+        text = (self._RULES / rule_file).read_text()
+        sub = text[text.index(f"rule {rule_name}:"):]
+        m = re.search(r"\n    output:\n(.*?)\n    (?:params|threads|resources):",
+                      sub, re.DOTALL)
+        return self._code(m.group(1) if m else "")
+
+    def test_s1_rna_qc_h5ad_not_declared_output(self):
+        block = self._output_block("s1_rna_qc.smk", "s1_rna_qc_execute")
+        self.assertNotIn("rna_qc.h5ad", block,
+                         "s1_rna_qc must NOT declare rna_qc.h5ad as an output")
+        self.assertIn("qc_summary.json", block,
+                      "s1_rna_qc must declare qc_summary.json as its output")
+
+    def test_s2_atac_qc_h5ad_not_declared_output(self):
+        block = self._output_block("s2_atac_qc.smk", "s2_atac_qc_execute")
+        self.assertNotIn("atac_qc.h5ad", block,
+                         "s2_atac_qc must NOT declare atac_qc.h5ad as an output")
+        self.assertIn("qc_summary.json", block,
+                      "s2_atac_qc must declare qc_summary.json as its output")
+
+    def test_no_temp_wrappers_remain(self):
+        for rule in ("s1_rna_qc.smk", "s2_atac_qc.smk"):
+            text = self._code((self._RULES / rule).read_text())
+            self.assertNotIn("temp(", text, f"{rule}: temp() approach is superseded")
+
+    def test_s3_depends_on_qc_summary_not_h5ad(self):
+        code = self._code((self._RULES / "s3_doublets.smk").read_text())
+        # The s3 input function must reference the durable markers, not the matrices.
+        self.assertIn("s1_rna_qc\" / \"qc_summary.json", code)
+        self.assertIn("s2_atac_qc\" / \"qc_summary.json", code)
+        self.assertNotIn("rna_qc.h5ad", code,
+                         "s3 must not declare rna_qc.h5ad as an input edge")
+        self.assertNotIn("atac_qc.h5ad", code,
+                         "s3 must not declare atac_qc.h5ad as an input edge")
+
+
 if __name__ == "__main__":
     unittest.main()

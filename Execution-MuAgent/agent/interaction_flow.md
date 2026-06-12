@@ -57,7 +57,7 @@ Write to `internal/hpc_monitor/submissions.jsonl` with `spec_path` and `progress
 
 ### Step 6 — Monitor (if `--watch`)
 
-Poll loop at `interval_s` (default 270 s / 4.5 min). The monitor drives a state machine; detection and decision are always separate.
+Poll loop at `interval_s` (default 270 s / 4.5 min; the constant lives in `monitor.DEFAULT_CHECK_INTERVAL_S`). The monitor drives a state machine; detection and decision are always separate.
 
 **Two clocks:**
 - `interval_s` — sampling rate (how often the watcher wakes). Same for every stage.
@@ -67,7 +67,7 @@ Poll loop at `interval_s` (default 270 s / 4.5 min). The monitor drives a state 
 
 1. **Collect** — `collect_snapshot()`: scheduler state (sacct/squeue/qstat, ≤5 s), filesystem progress files, log tails, child job IDs, error markers.
 
-1a. **Verify outputs (normal progress)** — `verify_stage_outputs()` properly verifies each per-stage spec's declared outputs that have appeared (HDF5/parquet/JSON open, or structural signature checks without those libs — not merely non-empty). The first time a stage's outputs all verify, emit a `stage_output_verified` finding. `latest_snapshot.json` is refreshed every iteration (healthy or not) so Processing's `hpc-status` never reads stale state.
+1a. **Verify outputs (normal progress)** — `verify_stage_outputs()` properly verifies each per-stage spec's declared outputs that have appeared (HDF5/parquet/JSON open, or structural signature checks without those libs — not merely non-empty). The first time a stage's outputs all verify, emit a `stage_output_verified` finding. (The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage — e.g. a planning `s0_ingest_execute` submission — so a clean head-job exit still emits this finding.) `latest_snapshot.json` is refreshed every iteration (healthy or not) and now also carries `interval_s` + `next_recheck_after_s`, so Processing's `hpc-status` never reads stale state and its re-poll cadence is data-driven.
 
 2. **Definitive signals** (always checked, bypass silence machine):
    - `scheduler_failed` → CONFIRMED_DEAD immediately.
@@ -105,7 +105,7 @@ Read `internal/hpc_monitor/latest_submission.json` and reconstruct the `Submissi
 
 ### Step 2 — Resume watch loop
 
-Call `monitor_watch()` with the reconstructed `Submission` object and the same parameters that would have been used by the original `execute-spec --watch` invocation (`progress_timeout_hint` from the submission record, default `interval_s=270`). The watch loop is identical — same state machine, same file writes, same kill logic.
+Call `monitor_watch()` with the reconstructed `Submission` object and the same parameters that would have been used by the original `execute-spec --watch` invocation (`progress_timeout_hint` from the submission record, default `interval_s=DEFAULT_CHECK_INTERVAL_S` (270)). The watch loop is identical — same state machine, same file writes, same kill logic.
 
 ### Step 3 — PID cleanup
 

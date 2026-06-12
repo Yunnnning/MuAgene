@@ -74,7 +74,7 @@ Detection and decision are always separate. A stall signal is a suspicion, never
 
 ### Two clocks
 
-**Check interval** (`--interval`, default 270 s / 4.5 min) — how often the watcher wakes. A sampling rate, the same for every stage. A coarse interval only delays noticing a stall by up to one interval — it never causes a bad kill.
+**Check interval** (`--interval`, default 270 s / 4.5 min — the constant `monitor.DEFAULT_CHECK_INTERVAL_S`) — how often the watcher wakes. A sampling rate, the same for every stage. A coarse interval only delays noticing a stall by up to one interval — it never causes a bad kill. Every snapshot records `interval_s` and `next_recheck_after_s` (= interval + `REPOLL_BUFFER_S`, ~25 s) so Processing-MuAgent re-polls just after each check rather than hardcoding a cadence.
 
 **tolerance_n** — how many consecutive quiet intervals are allowed before raising a stall flag. Derived from the stage's `progress_timeout_hint`: `tolerance_n = ceil(progress_timeout_hint_min × 60 / interval_s)`. The stage declares its tolerance; the interval is just how it is counted.
 
@@ -131,7 +131,7 @@ Output verification is proper — not a folder/size check. `verify_output_file` 
 
 Because stages write outputs atomically (`/tmp` stage + fsync + `os.rename`), a file present at its final path is complete, so a valid signature plus non-zero size is a strong correctness signal.
 
-**Per step (normal progress):** on every check the monitor verifies each per-stage spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
+**Per step (normal progress):** on every check the monitor verifies each spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage (e.g. a planning `s0_ingest_execute` submission), so a clean head-job exit still emits this finding instead of leaving `verified_stages` empty. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
 
 **Terminal:** when the head-job reaches COMPLETED, `validate_terminal_outputs` runs the same verifier over every `internal/stage_meta/<stage>.yaml` (excluding `head_job.yaml`). Any missing, empty, or corrupt output is reported as `output_missing` — a COMPLETED scheduler state with an unverifiable output is treated as a failure.
 
@@ -176,7 +176,7 @@ internal/hpc_monitor/
     └── <job_id>_<timestamp>.md  ← historical problem reports
 ```
 
-`latest_snapshot.json` includes a `"monitor_state"` key with `health`, `silence_intervals`, `tolerance_n`, `investigation`, `confirmed_dead_reason`, and `verified_stages` — readable by `Processing-MuAgent hpc-status`. It is refreshed on every check, including healthy ones.
+`latest_snapshot.json` includes a `"monitor_state"` key with `health`, `silence_intervals`, `tolerance_n`, `investigation`, `confirmed_dead_reason`, and `verified_stages` — readable by `Processing-MuAgent hpc-status`. It also carries `interval_s` and `next_recheck_after_s` (the daemon's poll cadence + re-poll buffer) so Processing's re-poll delay is data-driven. It is refreshed on every check, including healthy ones.
 
 ## Head-job spec format
 

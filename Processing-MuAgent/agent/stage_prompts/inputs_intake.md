@@ -208,16 +208,16 @@ reach this step before the user has chosen local vs HPC.
 ```
 source deliverables/plan/config/hpc.env
 executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
-executor hpc-status --config $CFG             # one-shot: report the daemon's snapshot, then yield
+executor hpc-status --config $CFG             # one-shot: report, then re-poll on a scheduled wakeup
 ```
 
 S0's QC exploration needs 100+ GB, so it must run on a compute node (never the login
 node). `submit` routes through Execution-MuAgent (kill-on-hang, survives SSH disconnect)
-and returns in ≤90 s. After `submit`, the daemon is the sole monitor: read its
-`latest_snapshot.json` with one-shot `hpc-status`, report the status to the user, then
-wait NON-BLOCKING for the daemon's completion signal (`monitor.pid` removed, or
-`plan_review` becomes `awaiting_approval`) and report again before the next gate
-(report-and-yield).
+and returns in ≤90 s. After `submit`, follow **report-and-repoll** (see
+`interaction_flow.md`): report one-shot `hpc-status`, then re-poll on a non-blocking
+scheduled wakeup (~295s, per the `Next check:` line) — reporting only when the `State:`
+fingerprint changes — until `monitor.pid` is removed or `plan_review` becomes
+`awaiting_approval`.
 
 **Local mode (`execution.mode` is `local`) — run everything locally:**
 
