@@ -285,6 +285,7 @@ After `init`, only `deliverables/plan/` exists under deliverables. The `figures/
       summary/
         context_summary.md        ← P1 output
         plan_review.md            ← plan review gate (summary + parameter appendix)
+        plan_summary.html         ← download-friendly web version of plan_review.md (figures embedded)
     figures/                      ← all pipeline figures (created at first plot)
     checkpoints/                  ← review reports (created at first checkpoint)
       qc_review/                    ← QC review (#2): qc_review_<run>.md + qc_summary_<run>.html

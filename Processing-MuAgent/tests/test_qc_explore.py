@@ -93,13 +93,14 @@ class PctMtPanelRefsTests(unittest.TestCase):
         self.assertIn("3.4% (MAD)", labels)
         self.assertIn("5%", labels)
         self.assertIn("10%", labels)
+        self.assertIn("20%", labels)
 
     def test_omits_mad_when_it_matches_applied(self):
         th = {"pct_counts_mt_max": 8.2, "pct_counts_mt_mad_raw": 8.2}
         refs = qc_explore._pct_mt_panel_refs(th)
         labels = [r[1] for r in refs]
         self.assertNotIn("8.2% (MAD)", labels)
-        self.assertEqual(labels, ["5%", "10%"])
+        self.assertEqual(labels, ["5%", "10%", "20%"])
 
 
 class NGenesPanelRefsTests(unittest.TestCase):

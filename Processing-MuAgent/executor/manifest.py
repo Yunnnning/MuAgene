@@ -26,7 +26,7 @@ def build_manifest(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any
         return _h.sha256_file(p) if p.exists() else None
 
     params_path = paths.parameters_yaml
-    plan_path = paths.artifact("p2_plan", "preprocessing_plan.json")
+    plan_path = paths.preprocessing_plan
     context_path = paths.artifact("p1_context", "context_extraction.json")
 
     # Outputs vary by branch — canonical locations are under deliverables/

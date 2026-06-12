@@ -201,6 +201,37 @@ class RunPaths:
         return self.deliv_plan_summary / "plan_summary.html"
 
     @property
+    def preprocessing_plan(self) -> Path:
+        """The assembled preprocessing plan JSON — single source of truth.
+
+        Lives under the ``p2_plan`` artifact namespace for historical reasons:
+        the standalone ``p2_plan`` rule was merged into ``s0_ingest`` (which now
+        assembles the plan in-process), but the plan's artifact location was kept
+        stable so existing runs and resume sessions keep working. Always go
+        through this property rather than re-deriving ``artifact("p2_plan", ...)``
+        so the location has exactly one definition.
+        """
+        return self.artifact("p2_plan", "preprocessing_plan.json")
+
+    @property
+    def plan_intro(self) -> Path:
+        """Persisted plan-review intro paragraph (agent-authored prose).
+
+        Stored so that every render path — the ``executor plan-review --intro``
+        call, the ``plan_review_propose`` Snakemake rule, and any later
+        re-render — reproduces the same intro in ``plan_review.md`` and
+        ``plan_summary.html``. Without this, a propose re-render would silently
+        drop the intro because it is otherwise only a transient CLI argument.
+        Co-located with the plan it introduces.
+        """
+        return self.artifact("p2_plan", "plan_intro.md")
+
+    @property
+    def validation_report(self) -> Path:
+        """S0 ingest validation report JSON (pairing, counts, genome check)."""
+        return self.artifact("s0_ingest", "validation_report.json")
+
+    @property
     def qc_review_summary_md(self) -> Path:
         return self.deliv_qc_review / f"qc_review_{self.run_dir.name}.md"
 

@@ -173,7 +173,7 @@ def _planning_done(paths: RunPaths) -> bool:
     than the stage id.
     """
     return (
-        paths.artifact("s0_ingest", "validation_report.json").exists()
+        paths.validation_report.exists()
         and paths.artifact("qc_explore", "qc_explore.json").exists()
     )
 

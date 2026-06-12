@@ -122,6 +122,76 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
     return deleted
 
 
+# Per-stage QC artifacts that become stale when that stage is re-run, listed as
+# (artifact_stage, filename). Revising a QC stage invalidates its own outputs and
+# everything strictly downstream of it through S3 (the DAG is
+# s1a_ambient -> s1_rna_qc -> s3_doublets and s2_atac_qc -> s3_doublets). The
+# expensive chr-normalized fragment cache (atac_fragments_cbf_chrnorm.tsv.gz*) is
+# intentionally NOT listed — it is reused across re-runs.
+_S1A_QC_ARTIFACTS = [
+    ("s1a_ambient", "rna_decontaminated.h5ad"),
+    ("s1a_ambient", "tsne_coords_cache.parquet"),
+    ("s1a_ambient", "cell_totals.parquet"),
+]
+_S1_QC_ARTIFACTS = [
+    ("s1_rna_qc", "rna_qc.h5ad"),
+    ("s1_rna_qc", "qc_summary.json"),  # stage-done marker
+]
+_S2_QC_ARTIFACTS = [
+    ("s2_atac_qc", "atac_qc.h5ad"),
+    ("s2_atac_qc", "atac_snap.h5ad"),
+    ("s2_atac_qc", "qc_summary.json"),  # stage-done marker
+]
+_S3_QC_ARTIFACTS = [
+    ("s3_doublets", "rna_post_doublet.h5ad"),
+    ("s3_doublets", "atac_post_doublet.h5ad"),
+    ("s3_doublets", "calls.parquet"),
+    ("s3_doublets", "joint_barcodes.txt"),
+    ("s3_doublets", "overlap_summary.json"),
+]
+# stage -> stage-and-downstream artifact list (gate outputs always added on top).
+_QC_INVALIDATION: dict[str, list[tuple[str, str]]] = {
+    "s1a_ambient": _S1A_QC_ARTIFACTS + _S1_QC_ARTIFACTS + _S3_QC_ARTIFACTS,
+    "s1_rna_qc":   _S1_QC_ARTIFACTS + _S3_QC_ARTIFACTS,
+    "s2_atac_qc":  _S2_QC_ARTIFACTS + _S3_QC_ARTIFACTS,
+    "s3_doublets": _S3_QC_ARTIFACTS,
+}
+
+
+def _invalidate_qc_downstream(run_dir: Path, stage: str) -> list[str]:
+    """Delete stale artifacts so a re-run from `stage` actually re-executes.
+
+    Removes the revised QC stage's own outputs, every strictly-downstream QC
+    stage's outputs, AND the `post_qc_review_propose` gate outputs (proposal,
+    awaiting_approval sentinel, qc_review_<run>.md, qc_summary_<run>.html).
+
+    The gate deletion is essential: while those outputs exist, Snakemake reports
+    "Nothing to be done" and silently skips the re-run even though upstream inputs
+    were invalidated (the terminal target looks satisfied). Deleting non-existent
+    files is a no-op, so this is safe to call before QC has ever run (e.g. a
+    marker-gene revise at plan review).
+
+    Returns the list of paths actually deleted (for transparent logging).
+    """
+    if stage not in _QC_INVALIDATION:
+        return []
+    rp = RunPaths(run_dir)
+    targets = [rp.artifact(s, f) for (s, f) in _QC_INVALIDATION[stage]]
+    # Gate outputs — always invalidated so post_qc_review_propose re-runs.
+    targets += [
+        rp.proposal("post_qc_review"),
+        rp.awaiting_sentinel("post_qc_review"),
+        rp.qc_review_summary_md,
+        rp.qc_summary_html,
+    ]
+    deleted: list[str] = []
+    for p in targets:
+        if p.exists():
+            p.unlink()
+            deleted.append(str(p))
+    return deleted
+
+
 _MARKER_GENE_GATE_MSG = (
     "Ambient RNA correction is planned but no marker genes are set and no explicit "
     "decision was recorded. Ask the user whether to check marker-gene expression "
@@ -369,6 +439,20 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
     log_event(run_dir, {"stage": stage, "event": "revised", "param": key, "value": value_parsed})
     click.echo(f"Revised {key} = {value_parsed!r}; {_display_stage(stage)} is awaiting_approval.")
 
+    # Re-running a QC stage requires clearing its stale downstream artifacts AND
+    # the post_qc_review gate outputs, or Snakemake reports "Nothing to be done"
+    # and silently skips the re-run. Do this deterministically here so the agent
+    # never has to hand-delete the right files. No-op before QC has run.
+    invalidated = _invalidate_qc_downstream(run_dir, stage)
+    if invalidated:
+        log_event(run_dir, {"stage": stage, "event": "qc_downstream_invalidated",
+                            "deleted": invalidated})
+        click.echo(
+            f"Invalidated {len(invalidated)} stale downstream/gate artifact(s) so the "
+            f"re-run regenerates them (incl. the post_qc_review gate). "
+            f"Approve {_display_stage(stage)} (and s3_doublets if S1/S2 changed), then submit."
+        )
+
 
 def _stage_states(paths: RunPaths) -> list[tuple[str, str]]:
     return _sp.stage_states(paths)
@@ -600,7 +684,7 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
     # Write per-stage specs; read workflow_branch from plan if available.
     try:
         import json
-        plan_path = RunPaths(run_dir).artifact("p2_plan", "preprocessing_plan.json")
+        plan_path = RunPaths(run_dir).preprocessing_plan
         branch = "paired"
         if plan_path.exists():
             branch = json.loads(plan_path.read_text()).get("workflow_branch", "paired")

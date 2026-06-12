@@ -71,6 +71,7 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/plan/config/site.config` (HPC runs — YAML platform description written by `configure-execution`; consumed by Execution-MuAgent; not user-reviewed unless they ask)
 - `deliverables/plan/summary/context_summary.md`
 - `deliverables/plan/summary/plan_review.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
+- `deliverables/plan/summary/plan_summary.html` (plan review checkpoint #1 — self-contained web version of `plan_review.md` with the intro paragraph and figures embedded as data URIs; download-friendly with viewable data quality exploratory figures — point the user here when they want to download/share the review)
 
 Files at user checkpoints and at the hard stop:
 

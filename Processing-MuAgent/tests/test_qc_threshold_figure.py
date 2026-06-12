@@ -27,7 +27,7 @@ class CutoffLabelTests(unittest.TestCase):
         )
         self.assertEqual(
             figures._cutoff_label(5.0, pct=True, log_axis=False, mad=False),
-            "5.0%",
+            "5%",
         )
         self.assertEqual(
             figures._cutoff_label(35790.0, pct=False, log_axis=True, mad=True),
@@ -92,11 +92,15 @@ class FragmentSizePanelTests(unittest.TestCase):
         fig2, ax = plt.subplots()
         figures._draw_threshold_markers(
             ax,
-            [(3.4, "3.4% (MAD)", False), (5.0, "5.0%", True), (10.0, "10%", False)],
+            [(3.4, "3.4% (MAD)", False), (5.0, "5%", True), (10.0, "10%", False)],
             x_range=20.0,
             pct=True,
         )
         self.assertEqual(len(ax.lines), 3)
+        ys = figures._stagger_threshold_label_ys(
+            [3.4, 5.0, 10.0], 20.0, active=[False, True, False],
+        )
+        self.assertEqual(ys[1], figures.THRESHOLD_LABEL_Y_TOP)
         plt.close(fig2)
 
 

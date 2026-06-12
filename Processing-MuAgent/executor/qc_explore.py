@@ -47,16 +47,16 @@ from .methods import qc_thresholds as _qct
 from .methods.qc_filter_stats import marginal_removals
 from .run_paths import RunPaths
 
-S1_FIGURE_STEM = "s1_rna_qc_explore_hist"
-S2_FIGURE_STEM = "s2_atac_qc_explore_hist"
+S1_FIGURE_STEM = "s0_rna_data_explore"
+S2_FIGURE_STEM = "s0_atac_data_explore"
 
 
 def _pct_mt_panel_refs(th: dict[str, float]) -> list[tuple[float, str]]:
     """Reference lines for the pct_counts_mt QC-explore histogram.
 
     When floor clamping moves the applied cutoff above the raw MAD bound, the
-    unclamped MAD value is drawn as an extra reference marker. Fixed 5% / 10%
-    references match the standard plan defaults shown at plan review.
+    unclamped MAD value is drawn as an extra reference marker. Fixed 5% / 10% /
+    20% references match the standard plan defaults shown at plan review.
     """
     from .figures import _cutoff_label, _thresholds_coincide
 
@@ -70,6 +70,7 @@ def _pct_mt_panel_refs(th: dict[str, float]) -> list[tuple[float, str]]:
         ))
     refs.append((5.0, "5%"))
     refs.append((10.0, "10%"))
+    refs.append((20.0, "20%"))
     return refs
 
 
@@ -488,7 +489,7 @@ def rederive_from_metrics(run_dir: Path | str) -> Path:
     figs_dir = paths.deliv_figures
     figs_dir.mkdir(parents=True, exist_ok=True)
 
-    plan_path = paths.artifact("p2_plan", "preprocessing_plan.json")
+    plan_path = paths.preprocessing_plan
     plan = json.loads(plan_path.read_text()) if plan_path.exists() else {}
     stages = plan.get("stages", {})
 
@@ -544,7 +545,7 @@ def run(run_dir: Path | str, *, rna_adata=None) -> Path:
     figs_dir = paths.deliv_figures
     figs_dir.mkdir(parents=True, exist_ok=True)
 
-    plan_path = paths.artifact("p2_plan", "preprocessing_plan.json")
+    plan_path = paths.preprocessing_plan
     plan = json.loads(plan_path.read_text()) if plan_path.exists() else {}
     stages = plan.get("stages", {})
 

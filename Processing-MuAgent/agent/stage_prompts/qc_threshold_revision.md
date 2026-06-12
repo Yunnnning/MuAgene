@@ -21,11 +21,11 @@ Do **not** re-run `plan-review` or tell the user the plan file was updated unles
 
 ---
 
-## Allowed side effects beyond CLI
+## Rule: invalidation is automatic — never hand-delete artifacts
 
-Do not edit `parameters.yaml`, `state.yaml`, biological-context files, or checkpoint sentinels by hand.
+Do not edit `parameters.yaml`, `state.yaml`, biological-context files, or checkpoint sentinels by hand, and **do not hand-delete artifacts.** `executor revise <qc_stage> ...` deterministically clears everything a re-run must regenerate — the revised stage's outputs, all strictly-downstream QC artifacts, and the `post_qc_review` gate outputs — and prints what it removed. (The exact file set lives in the executor; the expensive chr-norm fragment cache is always preserved.)
 
-Exception for this procedure only: you may delete the stale artifact files listed below under `internal/artifacts/` so Snakemake re-executes affected stages. Do not delete `atac_fragments_cbf_chrnorm.tsv.gz*`; it is expensive to regenerate and is intentionally preserved.
+**Why this matters:** the gate outputs must be cleared or Snakemake sees the terminal target as satisfied, reports "Nothing to be done", and silently skips the re-run. `revise` owns that; you just run it.
 
 ---
 
@@ -33,21 +33,19 @@ Exception for this procedure only: you may delete the stale artifact files liste
 
 Use this when `execution.mode` is `pbs` or `slurm`.
 
-1. **Update parameters.** For each changed value, run:
+1. **Update parameters (this also invalidates stale artifacts + gate automatically).** For each changed value, run:
 
    ```bash
    executor revise <stage> <stage>.<param>=<value> --config $CFG --rationale "<user's reason>"
    ```
 
-   Valid QC revision stages here are `s1_rna_qc`, `s2_atac_qc`, and `s3_doublets`.
+   Valid QC revision stages here are `s1_rna_qc`, `s2_atac_qc`, and `s3_doublets`. `revise` prints the invalidated files — no manual deletion needed.
 
-2. **Delete stale artifacts** so Snakemake re-runs the affected stages:
+2. **(Optional) verify the DAG** before spending cluster time. A dry-run must list the QC execute stages and `post_qc_review_propose`, not "Nothing to be done":
 
-   - **S1 revised:** delete `internal/artifacts/s1_rna_qc/rna_qc.h5ad` and `internal/artifacts/s1_rna_qc/qc_summary.json` (the JSON is the stage-done marker — deleting it causes stage_progress to show S1 as incomplete while it re-runs), plus all S3 artifacts below.
-   - **S2 revised:** delete `internal/artifacts/s2_atac_qc/atac_qc.h5ad`, `internal/artifacts/s2_atac_qc/atac_snap.h5ad`, and `internal/artifacts/s2_atac_qc/qc_summary.json`; keep `internal/artifacts/s2_atac_qc/atac_fragments_cbf_chrnorm.tsv.gz*`, plus delete all S3 artifacts below. **Note:** `atac_snap.h5ad` may already be absent if `post_qc_review` was previously approved — the approval cleanup deletes it. The deletion step is safe if the file is missing.
-   - **S3 revised:** delete `internal/artifacts/s3_doublets/rna_post_doublet.h5ad`, `internal/artifacts/s3_doublets/atac_post_doublet.h5ad`, `internal/artifacts/s3_doublets/calls.parquet`, `internal/artifacts/s3_doublets/joint_barcodes.txt`, and `internal/artifacts/s3_doublets/overlap_summary.json`.
-   - Any S1 or S2 revision invalidates S3. Always delete all five S3 artifacts when S1 or S2 changes.
-   - **S1a ambient re-run:** delete `internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` and `internal/artifacts/s1a_ambient/cell_totals.parquet` alongside other S1a outputs so marker-gene t-SNE and normalization totals are recomputed from updated counts (same barcodes with changed correction would otherwise reuse stale artifacts).
+   ```bash
+   snakemake -s workflow/Snakefile --configfile $CFG -d <run_dir>/internal/snakemake -n post_qc_review_propose
+   ```
 
 3. **Approve stages that must re-run.**
 
@@ -104,10 +102,9 @@ Do not surface `internal/proposals/post_qc_review.yaml` in place of the QC revie
 
 Use this when `execution.mode` is `local`.
 
-1. Run the same parameter update step as the HPC procedure.
-2. Delete the same stale artifacts as the HPC procedure.
-3. Approve every revised stage, and also approve `s3_doublets` when S1 or S2 changed.
-4. Re-run execute steps through S3:
+1. Run the same `executor revise` step as the HPC procedure — it auto-invalidates the stale downstream artifacts + gate outputs (no manual deletion).
+2. Approve every revised stage, and also approve `s3_doublets` when S1 or S2 changed.
+3. Re-run execute steps through S3:
 
    ```bash
    executor run --config $CFG --target s3_doublets_execute
@@ -115,13 +112,13 @@ Use this when `execution.mode` is `local`.
 
    Do not use `--auto-approve`.
 
-5. Regenerate QC reports:
+4. Regenerate QC reports:
 
    ```bash
    executor propose post_qc_review --config $CFG
    ```
 
-6. Read `deliverables/checkpoints/qc_review/qc_review_<run_name>.md` and relay it **verbatim**. Ask whether to approve QC or revise again.
+5. Read `deliverables/checkpoints/qc_review/qc_review_<run_name>.md` and relay it **verbatim**. Ask whether to approve QC or revise again.
 
 ---
 
@@ -169,7 +166,7 @@ On paired runs, union doublet removal policy is confirmed at `post_qc_review`. I
 
 ## Stage-done sentinels
 
-`internal/artifacts/s1_rna_qc/qc_summary.json` and `internal/artifacts/s2_atac_qc/qc_summary.json` are the stage-done markers used by `stage_progress.py` and by Execution-MuAgent for output verification. Both files are written by the respective stage and persist after the `post_qc_review` approval cleanup (which only removes the large h5ads). When revising S1 or S2, delete these JSON files alongside the h5ads so the pipeline correctly reflects that those stages need to re-run.
+Each QC stage's `qc_summary.json` is its stage-done marker (used by `stage_progress.py` and by Execution-MuAgent for output verification) and persists through the `post_qc_review` approval cleanup. `revise` clears it as part of invalidation, so a re-run correctly shows the stage as incomplete — you do not manage these files yourself.
 
 ## QC report cell-count columns
 

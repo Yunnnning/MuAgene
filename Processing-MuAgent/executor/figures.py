@@ -125,6 +125,9 @@ def _thresholds_coincide(a: float, b: float | None, *, pct: bool) -> bool:
 
 def _format_cutoff_value(x: float, *, pct: bool, log_axis: bool) -> str:
     if pct:
+        rounded = round(x)
+        if abs(x - rounded) < 0.05:
+            return f"{int(rounded)}%"
         return f"{x:.1f}%"
     if log_axis:
         return f"{x:,.0f}" if x >= 100 else f"{x:.2g}"
@@ -138,14 +141,30 @@ def _cutoff_label(
     return f"{text} (MAD)" if mad else text
 
 
-def _stagger_threshold_label_ys(xs: list[float], x_range: float) -> list[float]:
-    """Assign axes-fraction y anchors so rotated labels on nearby cutoffs don't overlap."""
+def _stagger_threshold_label_ys(
+    xs: list[float],
+    x_range: float,
+    *,
+    active: list[bool] | None = None,
+) -> list[float]:
+    """Assign axes-fraction y anchors so rotated labels on nearby cutoffs don't overlap.
+
+    Chosen (active) thresholds always anchor at the top; only reference markers
+    are staggered when their x positions cluster.
+    """
     n = len(xs)
     if n == 0:
         return []
-    min_sep = max(x_range * THRESHOLD_LABEL_X_SEP_FRAC, 1e-12)
-    order = sorted(range(n), key=lambda i: xs[i])
+    if active is None:
+        active = [False] * n
+
     ys = [THRESHOLD_LABEL_Y_TOP] * n
+    inactive = [i for i, is_active in enumerate(active) if not is_active]
+    if not inactive:
+        return ys
+
+    min_sep = max(x_range * THRESHOLD_LABEL_X_SEP_FRAC, 1e-12)
+    order = sorted(inactive, key=lambda i: xs[i])
     cluster_slot = 0
     for rank, idx in enumerate(order):
         if rank > 0 and abs(xs[idx] - xs[order[rank - 1]]) < min_sep:
@@ -184,7 +203,8 @@ def _draw_threshold_markers(
     if not markers:
         return
     xs = [m[0] for m in markers]
-    ys = _stagger_threshold_label_ys(xs, x_range)
+    actives = [m[2] for m in markers]
+    ys = _stagger_threshold_label_ys(xs, x_range, active=actives)
     for (x, label, is_active), y_frac in zip(markers, ys):
         color = QC_ANNOTATION_COLOR if is_active else QC_REF_LINE_COLOR
         linestyle = "--" if is_active else ":"

@@ -39,7 +39,7 @@ def marker_gene_decision_pending(run_dir: Path | str) -> bool:
     from .stages.s1a_ambient import resolve_marker_genes
 
     paths = RunPaths(Path(run_dir))
-    plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+    plan = _load_json(paths.preprocessing_plan)
     if _planned_ambient_method(paths.parameters_yaml, plan).lower() in ("none", "skipped_empty"):
         return False
     plan_s1a = plan.get("stages", {}).get("s1a_ambient", {}).get("parameters", {})
@@ -112,8 +112,8 @@ def build_intro_context(run_dir: Path | str) -> dict[str, Any]:
     from .run_paths import RunPaths
     paths = RunPaths(Path(run_dir))
     ctx = _load_json(paths.artifact("p1_context", "context_extraction.json"))
-    ingest = _load_json(paths.artifact("s0_ingest", "validation_report.json"))
-    plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+    ingest = _load_json(paths.validation_report)
+    plan = _load_json(paths.preprocessing_plan)
 
     def field(name: str) -> dict[str, Any]:
         return ctx.get("fields", {}).get(name, {})
@@ -158,8 +158,8 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     paths = RunPaths(Path(run_dir))
     run_dir = paths.run_dir
     ctx = _load_json(paths.artifact("p1_context", "context_extraction.json"))
-    ingest = _load_json(paths.artifact("s0_ingest", "validation_report.json"))
-    plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+    ingest = _load_json(paths.validation_report)
+    plan = _load_json(paths.preprocessing_plan)
     pairing = ingest.get("pairing", {})
 
     def field(name: str) -> dict[str, Any]:
@@ -294,7 +294,6 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     })
 
     # 6. Key QC strategy
-    sample_type = field("sample_type").get("value", "unknown")
     pct_mt_ceil = param("s1_rna_qc", "pct_mt_ceiling")
     pct_ribo_max = param("s1_rna_qc", "pct_ribo_max")
     tss_min = param("s2_atac_qc", "tss_enrichment_min")
@@ -321,7 +320,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             f"ATAC: TSS in ({tss_min.get('value', '?')}, {tss_max.get('value', '?')}), "
             f"MAD on log(n_fragments), nucleosome_signal<{nuc_max.get('value', '?')}{frip_note}"
         ),
-        "reason": f"Sample type = {sample_type}; MAD thresholds adapt to the observed distribution.",
+        "reason": "MAD thresholds adapt to the observed distribution; pct_mt is bounded to a fixed [5%, 20%] range.",
         "certainty": "certain",
     })
 
@@ -551,14 +550,43 @@ def plan_review_heading(run_dir: Path | str) -> str:
     return f"Preprocessing plan review — {Path(run_dir).name}"
 
 
+def _persist_intro(paths, intro: str) -> None:
+    """Persist the agent-authored intro paragraph next to the plan.
+
+    Lets every later render (the propose rule, HTML regeneration, resume) reuse
+    the same intro instead of dropping it — it is otherwise only a transient
+    ``--intro`` CLI argument.
+    """
+    text = (intro or "").strip()
+    if not text:
+        return
+    paths.plan_intro.parent.mkdir(parents=True, exist_ok=True)
+    paths.plan_intro.write_text(text + "\n")
+
+
+def _load_persisted_intro(paths) -> str | None:
+    """Return the persisted intro paragraph, or None if none was stored."""
+    p = paths.plan_intro
+    if p.exists():
+        text = p.read_text().strip()
+        return text or None
+    return None
+
+
 def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str:
-    """Full plan-review deliverable: concise summary + parameter appendix."""
+    """Full plan-review deliverable: concise summary + parameter appendix.
+
+    When ``intro`` is None, falls back to the persisted intro paragraph (written
+    by ``executor plan-review --intro``) so propose re-renders keep it.
+    """
     from .plan_assembler import render_plan_appendix
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     paths = RunPaths(run_dir)
+    if intro is None:
+        intro = _load_persisted_intro(paths)
     items = build_summary(run_dir)
-    plan = _load_json(paths.artifact("p2_plan", "preprocessing_plan.json"))
+    plan = _load_json(paths.preprocessing_plan)
     parts = [f"# {plan_review_heading(run_dir)}", ""]
     if intro:
         parts += [intro.strip(), ""]
@@ -596,6 +624,8 @@ def write_summary(run_dir: Path | str, intro: str | None = None) -> Path:
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     paths = RunPaths(run_dir)
+    if intro is not None:
+        _persist_intro(paths, intro)
     merged = render_merged_markdown(run_dir, intro=intro)
     paths.plan_review_md.parent.mkdir(parents=True, exist_ok=True)
     paths.plan_review_md.write_text(merged)
@@ -631,6 +661,8 @@ def write_plan_summary_html(run_dir: Path | str, intro: str | None = None) -> Pa
     """Write the self-contained HTML plan review next to plan_review.md."""
     from .run_paths import RunPaths
     paths = RunPaths(Path(run_dir))
+    if intro is not None:
+        _persist_intro(paths, intro)
     html = render_plan_summary_html(run_dir, intro=intro)
     paths.plan_summary_html.parent.mkdir(parents=True, exist_ok=True)
     paths.plan_summary_html.write_text(html)

@@ -139,13 +139,12 @@ def assemble_plan(
         user_method=s1a_ambient_method,
     )
 
-    # Sample-type-aware ceilings for RNA QC
-    if sample_type == "nuclei":
-        pct_mt_ceil = 10.0
-        pct_mt_rat = "Nuclei sample: cytoplasmic mRNA largely absent, mito content expected low."
-    else:
-        pct_mt_ceil = 20.0
-        pct_mt_rat = "Whole-cell / unknown sample: standard ceiling."
+    # RNA QC mitochondrial ceiling: a single fixed cap (20%). Together with
+    # pct_mt_floor (5%), this bounds the MAD-derived pct_mt threshold to a
+    # standard filtering range.
+    pct_mt_ceil = 20.0
+    pct_mt_rat = ("Fixed standard cap bounding the MAD-derived mito threshold to a "
+                  "sensible range (with pct_mt_floor); not sample-type-specific.")
 
     stages: dict[str, Any] = {
         "s1a_ambient": {
@@ -167,7 +166,7 @@ def assemble_plan(
             "parameters": {
                 "k_mad": p(5.0, "default", "Project convention for symmetric MAD on log1p counts.", "high"),
                 "pct_mt_k": p(3.0, "default", "MAD multiplier for mito upper bound.", "high"),
-                "pct_mt_ceiling": p(pct_mt_ceil, "inferred", pct_mt_rat, "medium"),
+                "pct_mt_ceiling": p(pct_mt_ceil, "default", pct_mt_rat, "high"),
                 "pct_mt_floor": p(5.0, "default", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),
                 "pct_ribo_max": p(50.0, "default",
                                     "Soft ceiling on pct_counts_ribo (Rps/Rpl/Mrps/Mrpl). "
@@ -309,7 +308,7 @@ def assemble_plan(
 
 def write_plan(run_dir: Path | str, plan: dict[str, Any]) -> tuple[Path, str]:
     from .run_paths import RunPaths
-    out = RunPaths(Path(run_dir)).artifact("p2_plan", "preprocessing_plan.json")
+    out = RunPaths(Path(run_dir)).preprocessing_plan
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(plan, indent=2, sort_keys=True, default=str)
     out.write_text(payload)
