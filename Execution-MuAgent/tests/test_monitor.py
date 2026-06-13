@@ -21,8 +21,11 @@ from execution_muagent.monitor import (
     _is_run_scoped_progress_path,
     _looks_like_hdf5,
     _looks_like_parquet,
+    _persist_snapshot,
     collect_snapshot,
     discover_child_job_ids,
+    evaluate_snapshot_definitive,
+    extract_error_context,
     monitor_watch,
     parse_job_ids_from_log,
     render_submission_script,
@@ -403,6 +406,109 @@ class HeadJobVerificationTests(unittest.TestCase):
             }), encoding="utf-8")
             results = verify_stage_outputs(_make_submission(run_dir))
         self.assertNotIn("head_job", results)
+
+
+class ErrorContextTests(unittest.TestCase):
+    """The monitor must surface the real child-log exception, not just the generic
+    Snakemake envelope, so Processing-MuAgent can root-cause from `hpc-status`."""
+
+    def _run_with_child_log(self, tmp: str, child_text: str, head_text: str):
+        run_dir = Path(tmp) / "run"
+        slurm_logs = (
+            run_dir / "internal" / "snakemake" / ".snakemake" / "slurm_logs"
+            / "rule_s5_atac_spectral_execute"
+        )
+        slurm_logs.mkdir(parents=True)
+        (slurm_logs / "1015981.log").write_text(child_text, encoding="utf-8")
+        head = run_dir / "head.out"
+        head.write_text(head_text, encoding="utf-8")
+        sub = Submission(
+            agent="Processing-MuAgent", executor="slurm", job_id="1015843",
+            run_dir=str(run_dir), config=str(run_dir / "cfg.yaml"),
+            target="s7_clustering_propose", repo_root=str(run_dir / "repo"),
+            log_path=str(head), submitted_at="2026-06-12T13:46:00Z",
+        )
+        return sub
+
+    def test_extract_error_context_prefers_child_traceback(self) -> None:
+        child = (
+            "RuleException:\n"
+            'UnboundLocalError in file ".../s5_atac_spectral.smk", line 38:\n'
+            "cannot access local variable '_io' where it is not associated with a value\n"
+            "2026-06-12 15:09:56 - ERROR - RuleException:\n"
+            "WorkflowError:\n"
+        )
+        head = "Error in rule s5_atac_spectral_execute:\nWorkflowError:\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = self._run_with_child_log(tmp, child, head)
+            ctx = extract_error_context(sub)
+        # Names the real exception + the file:line — not just the generic envelope.
+        self.assertIn("UnboundLocalError", ctx)
+        self.assertIn("s5_atac_spectral.smk", ctx)
+        self.assertIn("1015981.log", ctx)
+
+    def test_workflow_error_marker_finding_carries_root_cause(self) -> None:
+        child = (
+            "RuleException:\n"
+            'UnboundLocalError in file ".../s5_atac_spectral.smk", line 38:\n'
+        )
+        head = "Error in rule s5_atac_spectral_execute:\nWorkflowError:\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = self._run_with_child_log(tmp, child, head)
+            snapshot = collect_snapshot(sub)
+            findings = evaluate_snapshot_definitive(snapshot)
+        marker = next(f for f in findings if f.code == "workflow_error_marker")
+        self.assertIn("Root cause", marker.message)
+        self.assertIn("UnboundLocalError", marker.message)
+
+    def test_no_error_context_when_no_markers(self) -> None:
+        head = "rule s4_rna_norm_execute:\nFinished jobid: 2\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = self._run_with_child_log(tmp, "all good\nFinished jobid: 9\n", head)
+            snapshot = collect_snapshot(sub)
+        self.assertEqual(snapshot.get("error_context"), "")
+
+
+class KillActionOwnershipTests(unittest.TestCase):
+    """kill_action is owned by the in-memory monitor loop, never inherited from a
+    prior snapshot file — so a resubmit (fresh MonitorState) cannot show a phantom
+    cancelled step from a dead run."""
+
+    def _snapshot_path(self, run_dir: Path) -> Path:
+        return run_dir / "internal" / "hpc_monitor" / "latest_snapshot.json"
+
+    def test_fresh_loop_does_not_inherit_prior_kill_action(self) -> None:
+        import json as _json
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            sub = _make_submission(run_dir)
+            path = self._snapshot_path(run_dir)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Simulate a dead prior run's snapshot carrying a kill_action.
+            path.write_text(_json.dumps({
+                "submission": {"job_id": "OLD-1015843"},
+                "kill_action": {"attempted": True, "head_job_id": "OLD-1015843"},
+            }), encoding="utf-8")
+            # A fresh loop (killed nothing) persists a finding-free snapshot.
+            _persist_snapshot(sub, {"checked_at": "now"}, MonitorState(), findings=[], cancel_result=None)
+            written = _json.loads(path.read_text())
+            self.assertIsNone(written["kill_action"])
+
+    def test_kill_action_persists_within_loop_via_state(self) -> None:
+        import json as _json
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            sub = _make_submission(run_dir)
+            path = self._snapshot_path(run_dir)
+            kill = {"attempted": True, "head_job_id": sub.job_id}
+            # First: the check that kills records kill_action via cancel_result.
+            _persist_snapshot(sub, {"checked_at": "t1"},
+                              MonitorState(kill_action=kill), findings=[], cancel_result=kill)
+            self.assertEqual(_json.loads(path.read_text())["kill_action"], kill)
+            # Next finding-free check (cancel_result=None) keeps it via threaded state.
+            _persist_snapshot(sub, {"checked_at": "t2"},
+                              MonitorState(kill_action=kill), findings=[], cancel_result=None)
+            self.assertEqual(_json.loads(path.read_text())["kill_action"], kill)
 
 
 if __name__ == "__main__":

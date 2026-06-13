@@ -145,7 +145,7 @@ When a run is unhealthy (`CONFIRMED_DEAD` or `FS_HANG`), Execution-MuAgent kills
 |---|---|---|
 | `submit_rejected_policy` | error | Scheduler policy rejection (partition/account/walltime) |
 | `scheduler_failed` | error | Scheduler state in terminal failure set |
-| `workflow_error_marker` | error | Error keywords in logs |
+| `workflow_error_marker` | error | Error keywords in logs; message appends `Root cause — <child_log>: <exception>` scraped from the failing child rule log |
 | `output_missing` | error | Stage output missing, empty, or corrupt after COMPLETED |
 | `stage_output_verified` | info | A stage's declared outputs verified complete and loadable |
 | `stall_suspected` | warning | silence_intervals ≥ tolerance_n; entering investigation |
@@ -176,7 +176,7 @@ internal/hpc_monitor/
     └── <job_id>_<timestamp>.md  ← historical problem reports
 ```
 
-`latest_snapshot.json` includes a `"monitor_state"` key with `health`, `silence_intervals`, `tolerance_n`, `investigation`, `confirmed_dead_reason`, and `verified_stages` — readable by `Processing-MuAgent hpc-status`. It also carries `interval_s` and `next_recheck_after_s` (the daemon's poll cadence + re-poll buffer) so Processing's re-poll delay is data-driven. It is refreshed on every check, including healthy ones.
+`latest_snapshot.json` includes a `"monitor_state"` key with `health`, `silence_intervals`, `tolerance_n`, `investigation`, `confirmed_dead_reason`, and `verified_stages` — readable by `Processing-MuAgent hpc-status`. It also carries `interval_s` and `next_recheck_after_s` (the daemon's poll cadence + re-poll buffer) so Processing's re-poll delay is data-driven, and — when error markers are present — `error_context`, the real exception + file:line scraped from the failing child rule log (mirrored into the `workflow_error_marker` finding's message). It is refreshed on every check, including healthy ones.
 
 ## Head-job spec format
 

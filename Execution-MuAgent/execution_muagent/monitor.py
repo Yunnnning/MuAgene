@@ -141,6 +141,7 @@ class MonitorState:
     confirmed_dead_reason: str | None = None
     previous_finding_codes: frozenset[str] | None = None
     verified_stages: frozenset[str] = field(default_factory=frozenset)  # stages whose outputs verified
+    kill_action: dict | None = None     # set once THIS loop kills; never inherited across daemons
 
 
 @dataclass
@@ -751,6 +752,76 @@ def _extract_markers(text: str) -> list[str]:
     return found
 
 
+# Lines worth surfacing verbatim from a failing child log — the actual root cause
+# (exception type + message + the file:line it was raised from), as opposed to the
+# generic Snakemake "Error in rule / WorkflowError" envelope.
+_ERROR_CONTEXT_PATTERNS = (
+    "RuleException",
+    "Error in file",
+    "Traceback (most recent call last)",
+    "UnboundLocalError",
+    "OOM",
+    "out of memory",
+    "DUE TO TIME LIMIT",
+)
+# Exception lines look like "SomeError: message" — match a CamelCase *Error/*Exception
+# token followed by a colon, anywhere in the line.
+_EXCEPTION_LINE_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*(Error|Exception)\b\s*:")
+# Leading "2026-06-12 15:09:56 - ERROR - " style log prefix, stripped before dedup.
+_LOG_PREFIX_RE = re.compile(r"^\d{4}-\d\d-\d\d[ T][\d:]+\s*-\s*\w+\s*-\s*")
+
+
+def _salient_error_lines(text: str, max_lines: int = 6) -> list[str]:
+    """Pull the most diagnostic lines from a failing log tail.
+
+    Prefers explicit exception lines (``SomeError: ...``) and the file/line frames
+    that locate them, so Processing-MuAgent can root-cause from ``hpc-status`` alone
+    instead of opening the raw child slurm log.
+    """
+    out: list[str] = []
+    for raw in text.splitlines():
+        # Drop a leading "2026-06-12 15:09:56 - ERROR - " log prefix so identical
+        # messages logged at different timestamps collapse to one entry.
+        line = _LOG_PREFIX_RE.sub("", raw.strip()).strip()
+        if not line:
+            continue
+        if _EXCEPTION_LINE_RE.search(line) or any(p in line for p in _ERROR_CONTEXT_PATTERNS):
+            if line not in out:
+                out.append(line)
+        if len(out) >= max_lines:
+            break
+    return out
+
+
+def extract_error_context(submission: "Submission", max_lines: int = 6) -> str:
+    """Best-effort root-cause snippet from the newest child log that shows an error.
+
+    Snakemake's head log only reports the generic ``Error in rule`` / ``WorkflowError``
+    envelope; the real exception (and the file:line it came from) lives in the per-rule
+    child slurm log. Scan child logs newest-first for one carrying an error marker and
+    return its salient lines. Returns "" when nothing diagnostic is found.
+    """
+    # Child rule logs carry the real exception + file:line; the head log only has
+    # the generic "Error in rule / WorkflowError" envelope. Scan children newest-first
+    # and fall back to the head log only if no child log yields a diagnostic line.
+    child_logs = [
+        log for cid in discover_child_job_ids(submission)
+        if (log := _child_slurm_log(submission, cid)) is not None and log.exists()
+    ]
+    child_logs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    for p in [*child_logs, Path(submission.log_path)]:
+        if p.exists() and str(p) not in seen:
+            seen.add(str(p))
+            ordered.append(p)
+    for log in ordered:
+        lines = _salient_error_lines(_read_tail(log, 8000), max_lines)
+        if lines:
+            return f"{log.name}: " + " | ".join(lines)
+    return ""
+
+
 def discover_child_job_ids(submission: Submission) -> list[str]:
     """Extract child scheduler ids from all known head/Snakemake logs."""
     head_id = _normalize_job_id(submission.job_id)
@@ -826,6 +897,7 @@ def collect_snapshot(
     latest_snakemake_tail = _read_tail(latest_snakemake_log) if latest_snakemake_log else ""
     markers = sorted(set(_extract_markers(head_tail) + _extract_markers(latest_snakemake_tail)))
     child_job_ids = discover_child_job_ids(submission)
+    error_context = extract_error_context(submission) if markers else ""
     writing_files = [
         _path_status(p)
         for p in (Path(submission.run_dir) / "internal" / "artifacts").rglob("*.writing")
@@ -841,6 +913,7 @@ def collect_snapshot(
         "latest_snakemake_log": _path_status(latest_snakemake_log) if latest_snakemake_log else None,
         "child_job_ids": child_job_ids,
         "error_markers": markers,
+        "error_context": error_context,
         "writing_files": writing_files,
         "head_log_tail": head_tail,
         "latest_snakemake_tail": latest_snakemake_tail,
@@ -866,13 +939,11 @@ def evaluate_snapshot_definitive(
     if state in SCHEDULER_FAILED_STATES:
         findings.append(MonitorFinding("error", "scheduler_failed", f"Scheduler state is {state}."))
     if snapshot.get("error_markers"):
-        findings.append(
-            MonitorFinding(
-                "error",
-                "workflow_error_marker",
-                "Workflow log contains: " + ", ".join(snapshot["error_markers"]),
-            )
-        )
+        msg = "Workflow log contains: " + ", ".join(snapshot["error_markers"])
+        context = snapshot.get("error_context")
+        if context:
+            msg += f". Root cause — {context}"
+        findings.append(MonitorFinding("error", "workflow_error_marker", msg))
     if not (snapshot.get("latest_progress_file") or {}).get("exists") and state in SCHEDULER_RUNNING_STATES:
         findings.append(MonitorFinding("warning", "no_progress_files", "No run-scoped progress files found yet."))
     if state == "COMPLETING":
@@ -1064,25 +1135,23 @@ def _persist_snapshot(
     and the ``kill_action``. Processing must never parse ``latest_report.md`` prose —
     that file is a daemon-internal debug/audit log only.
 
-    ``kill_action`` is sticky: once a kill is recorded it is preserved on subsequent
-    finding-free checks, so a cancelled-step verdict survives until the monitor loop
-    exits.
+    ``kill_action`` is owned by the in-memory monitor loop (``MonitorState.kill_action``),
+    not re-read from the previous snapshot file. A loop that has killed nothing yet
+    persists ``kill_action=None``; once it kills, the verdict is carried in the threaded
+    state and survives every subsequent check until the loop exits. This makes it
+    impossible for a *new* daemon (a resubmit — fresh ``MonitorState``) to inherit a dead
+    run's kill_action, which would otherwise make Processing's ``hpc-status`` report a
+    phantom cancelled step and refuse to re-poll the freshly submitted job.
     """
     full_state: dict[str, Any] = dict(snapshot)
     if monitor_state is not None:
         full_state["monitor_state"] = _monitor_state_dict(monitor_state)
     full_state["findings"] = _findings_dicts(findings)
     state_path = run_monitor_dir(submission.run_dir) / "latest_snapshot.json"
-    if cancel_result is not None:
-        full_state["kill_action"] = cancel_result
-    else:
-        prior_kill: dict[str, Any] | None = None
-        if state_path.is_file():
-            try:
-                prior_kill = json.loads(state_path.read_text(errors="replace")).get("kill_action")
-            except (json.JSONDecodeError, OSError):
-                prior_kill = None
-        full_state["kill_action"] = prior_kill
+    full_state["kill_action"] = (
+        cancel_result if cancel_result is not None
+        else (monitor_state.kill_action if monitor_state is not None else None)
+    )
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(full_state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return state_path
@@ -1422,7 +1491,7 @@ def monitor_once(
         cancel_result["confirmed_dead_reason"] = (
             state.confirmed_dead_reason if state.health == JobHealth.CONFIRMED_DEAD else "filesystem_hang"
         )
-        state = replace(state, health=JobHealth.KILLED)
+        state = replace(state, health=JobHealth.KILLED, kill_action=cancel_result)
 
     # --- Report ---
     # latest_snapshot.json is always refreshed (normal + unhealthy) so Processing's

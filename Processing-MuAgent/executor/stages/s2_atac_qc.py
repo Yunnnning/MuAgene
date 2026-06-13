@@ -367,6 +367,14 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     adata, n_frag_values, tss_values, ns_values, genome_ref, add_chr_prefix = _acquire_atac(
         run_dir, art, params_path,
     )
+    # Persist the fragment naming decision so downstream stages (S5 peak export)
+    # apply the IDENTICAL Ensembl→UCSC convention to their peak BEDs.
+    _prov.set_param(params_path, "s2_atac_qc.add_chr_prefix", bool(add_chr_prefix),
+                    source="derived", confidence="high",
+                    rationale=("True when ATAC fragments were renamed Ensembl→UCSC to match "
+                               "the SnapATAC2 reference; peaks must use the same convention."),
+                    method={"name": "io.prepare_fragments_for_snapatac",
+                            "code_ref": "executor/io.py::prepare_fragments_for_snapatac"})
 
     # Dataset-level fragment-size distribution (cheap; for a sanity figure).
     # Captured here before adata is closed; used later in the figure block.
@@ -503,24 +511,16 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
 
     if peaks_bed is not None and frip_min > 0.0:
         frip_h5 = art / "_frip_tmp.h5ad"
-        # SnapATAC2 make_peak_matrix panics on comment lines (e.g. Cell Ranger ARC
-        # BED headers starting with '#'). Strip them into a temp file so any peak
-        # source — user-supplied, ARC h5 export, or MACS3 — is safe to pass.
+        # Strip comment lines and apply the fragment naming convention to the peak
+        # BED via the shared helper, so any peak source (user-supplied, ARC h5
+        # export, or MACS3) is safe and chrom-consistent for make_peak_matrix.
         frip_bed_tmp = art / "_peaks_stripped_tmp.bed"
         try:
             frip_h5.unlink(missing_ok=True)
-            with open(peaks_bed) as _src, open(frip_bed_tmp, "w") as _dst:
-                for _line in _src:
-                    if _line.startswith("#"):
-                        continue
-                    if add_chr_prefix:
-                        # Match the chr-prefix added to fragments; BED chrom is
-                        # the first whitespace-delimited field.
-                        sep = "\t" if "\t" in _line else " "
-                        chrom = _line.split(sep, 1)[0]
-                        if chrom and not chrom.startswith("chr"):
-                            _line = "chr" + _line
-                    _dst.write(_line)
+            _io.prepare_peaks_for_snapatac(
+                peaks_bed, frip_bed_tmp, add_chr_prefix=add_chr_prefix,
+                log=lambda d: log_event(run_dir, {"stage": "s2_atac_qc", **d}),
+            )
             pm_out = snap.pp.make_peak_matrix(
                 adata_3m, peak_file=str(frip_bed_tmp), inplace=False, file=str(frip_h5),
             )

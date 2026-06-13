@@ -121,7 +121,7 @@ All state — including structured `findings` (list of `{severity, code, message
 |---|---|---|
 | `submit_rejected_policy` | Scheduler rejected submission (partition/account/walltime) | Relay as adjustable hint; ask user to fix site.config |
 | `scheduler_failed` | Scheduler reports terminal failure state | Report to human; fix; resubmit |
-| `workflow_error_marker` | Error keywords in logs (Traceback, OOM, …) | Report to human; fix; resubmit |
+| `workflow_error_marker` | Error keywords in logs (Traceback, OOM, …); `message` appends `Root cause — <child_log>: <exception> \| …` scraped from the failing child rule log | Relay the root-cause line to the human; fix; resubmit |
 | `stage_output_verified` | A stage's outputs verified complete and loadable | Informational progress; continue |
 | `stall_suspected` | N quiet intervals; investigation starting | Informational; no action needed |
 | `stall_confirmed` | Investigation concluded confirmed dead (job killed) | Report to human; fix; resubmit |

@@ -40,6 +40,21 @@ from ..atac_latent import ATAC_LATENT_ALIAS, ATAC_LATENT_KEY
 from ..log import log_event
 
 
+def _resolve_add_chr_prefix(params_path: Path | str) -> bool:
+    """Whether S2 renamed ATAC fragments Ensembl→UCSC — peaks must match it.
+
+    Prefers the explicit ``s2_atac_qc.add_chr_prefix`` param. For runs whose S2
+    predates that param, derive it from the recorded prepared-fragments filename:
+    ``io.prepare_fragments_for_snapatac`` writes the ``_chrnorm.tsv.gz`` suffix iff
+    the Ensembl→UCSC rename was applied, so the suffix is an authoritative signal.
+    """
+    val = _prov.get_value(params_path, "s2_atac_qc.add_chr_prefix", None)
+    if val is not None:
+        return bool(val)
+    cbf = str(_prov.get_value(params_path, "s2_atac_qc.chrom_bound_filter", "") or "")
+    return cbf.endswith("_chrnorm.tsv.gz")
+
+
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     import snapatac2 as snap
     import json
@@ -48,6 +63,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     art.mkdir(parents=True, exist_ok=True)
     params_path = run_dir / "internal" / "parameters.yaml"
     branch = _prov.current_branch(str(params_path))
+    # Peaks must use the SAME chrom convention S2 applied to the fragments
+    # (Ensembl→UCSC), else every peak silently fails to overlap.
+    add_chr_prefix = _resolve_add_chr_prefix(params_path)
 
     if branch == "rna_only":
         _io.write_text_safe(art / "spectral_summary.json", json.dumps({
@@ -148,8 +166,14 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             peak_h5 = art / "peak_matrix_user.h5ad"
             if peak_h5.exists():
                 peak_h5.unlink()
+            # Strip comment lines + apply the fragment chrom convention (shared with S2).
+            prepared_peaks = _io.prepare_peaks_for_snapatac(
+                user_peaks_path, art / "_user_peaks_prepared.bed",
+                add_chr_prefix=add_chr_prefix,
+                log=lambda d: log_event(run_dir, {"stage": "s5_atac_spectral", **d}),
+            )
             pm_out = snap.pp.make_peak_matrix(
-                adata, peak_file=str(user_peaks_path), inplace=False, file=str(peak_h5),
+                adata, peak_file=str(prepared_peaks), inplace=False, file=str(peak_h5),
             )
             peak_ad = pm_out if pm_out is not None else snap.read(str(peak_h5))
 
@@ -188,7 +212,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 peak_ad.close()
             except Exception:
                 pass
-    except Exception as e:
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:  # incl. SnapATAC2 Rust PanicException (BaseException)
         log_event(run_dir, {"stage": "s5_atac_spectral",
                              "event": "user_peaks_path_skipped", "reason": str(e)})
 
@@ -205,7 +231,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 cfg = _yaml.safe_load(_RunPaths(run_dir).run_yaml.read_text()) or {}
                 rna_path = cfg.get("rna_path")
                 if rna_path:
-                    from .. import io as _io
                     peak_ad = _io.load_atac_from_10x_h5(rna_path)
                     peak_bc_set = set(peak_ad.obs_names)
                     missing = [bc for bc in s5_barcodes if bc not in peak_bc_set]
@@ -251,8 +276,16 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 peak_h5 = art / "peak_matrix_s2peaks.h5ad"
                 if peak_h5.exists():
                     peak_h5.unlink()
+                # Strip comments + match fragment chrom convention (shared helper).
+                # The 'not chrom.startswith("chr")' guard makes this safe for both
+                # Ensembl ARC peaks and already-UCSC MACS3 peaks (no double-prefix).
+                prepared_s2_peaks = _io.prepare_peaks_for_snapatac(
+                    s2_candidate, art / "_s2_peaks_prepared.bed",
+                    add_chr_prefix=add_chr_prefix,
+                    log=lambda d: log_event(run_dir, {"stage": "s5_atac_spectral", **d}),
+                )
                 pm_out = snap.pp.make_peak_matrix(
-                    adata, peak_file=str(s2_candidate), inplace=False, file=str(peak_h5),
+                    adata, peak_file=str(prepared_s2_peaks), inplace=False, file=str(peak_h5),
                 )
                 peak_ad = pm_out if pm_out is not None else snap.read(str(peak_h5))
 
@@ -294,7 +327,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 except Exception:
                     pass
                 break
-            except Exception as e:
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:  # incl. SnapATAC2 Rust PanicException
                 log_event(run_dir, {"stage": "s5_atac_spectral",
                                      "event": "s2_peaks_reuse_skipped",
                                      "candidate": s2_candidate.name, "reason": str(e)})

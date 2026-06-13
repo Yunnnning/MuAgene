@@ -660,6 +660,69 @@ def prepare_fragments_for_snapatac(
     return prepared, add_chr_prefix
 
 
+def prepare_peaks_for_snapatac(
+    peaks_path: Path | str,
+    out_path: Path | str,
+    *,
+    add_chr_prefix: bool = False,
+    log=None,
+) -> Path:
+    """Sanitise a peak BED so it is safe and correct for SnapATAC2 ``make_peak_matrix``.
+
+    Two problems this fixes, in one place, for every peak source (user-supplied,
+    Cell Ranger ARC export, or MACS3):
+
+    1. **Comment/header lines.** SnapATAC2's Rust BED reader panics
+       (``MissingStartPosition``, a ``BaseException`` that bypasses ``except
+       Exception``) on lines it cannot parse — e.g. Cell Ranger ARC's ``#``-prefixed
+       banner. We drop comment/track/browser/blank lines and any row without three
+       valid columns.
+    2. **Chromosome naming.** ARC writes Ensembl names (``1``, ``X``, ``MT``,
+       scaffolds) while SnapATAC2's built-in genomes are UCSC (``chr1``, ``chrM``).
+       Fragments are renamed Ensembl→UCSC by :func:`prepare_fragments_for_snapatac`;
+       peaks MUST use the identical convention or every peak silently fails to
+       overlap. When ``add_chr_prefix`` is set we apply the SAME mapping used for
+       fragments (``MT``/``M`` → ``chrM``; canonical ``1..``/``X``/``Y`` → ``chr``-
+       prefixed; unplaced scaffolds passed through unchanged) so peaks and fragments
+       always share one naming convention.
+
+    This is the single shared entry point for peak preparation; S2 (FRiP) and S5
+    (peak-matrix export) both call it rather than re-implementing stripping/renaming.
+
+    Returns the cleaned BED path (3-column, tab-delimited). Raises ``ValueError``
+    if no valid interval remains.
+    """
+    canonical = {str(i) for i in range(1, 100)} | {"X", "Y"}
+    out_path = Path(out_path)
+    n_out = 0
+    with open(peaks_path) as src, open(out_path, "w") as dst:
+        for line in src:
+            s = line.strip()
+            if not s or s.startswith(("#", "track", "browser")):
+                continue
+            parts = s.split("\t") if "\t" in s else s.split()
+            if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+                continue
+            chrom = parts[0]
+            if add_chr_prefix and not chrom.startswith("chr"):
+                if chrom in ("MT", "M"):
+                    chrom = "chrM"
+                elif chrom in canonical:
+                    chrom = "chr" + chrom
+                # else: unplaced scaffold → pass through unchanged (matches fragments)
+            dst.write(f"{chrom}\t{parts[1]}\t{parts[2]}\n")
+            n_out += 1
+    if n_out == 0:
+        raise ValueError(
+            f"prepare_peaks_for_snapatac: no valid BED intervals parsed from {peaks_path}"
+        )
+    if log is not None:
+        log({"event": "peaks_prepared_for_snapatac", "n_intervals": n_out,
+             "add_chr_prefix": bool(add_chr_prefix), "source": str(peaks_path),
+             "out": str(out_path)})
+    return out_path
+
+
 def validate_fragments(path: Path | str, peek_lines: int = 2000) -> dict[str, Any]:
     """Validate structure of fragments.tsv.gz. Returns diagnostics + chromosome set.
 
