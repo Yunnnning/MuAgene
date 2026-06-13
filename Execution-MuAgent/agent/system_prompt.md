@@ -47,8 +47,9 @@ Detection and decision are separate. The watcher is cheap and never kills.
 
 **States:**
 - `HEALTHY` / `RECOVERED` — watcher runs each interval; on heartbeat, silence resets to 0; on `silence_intervals >= tolerance_n`, transition to SUSPECT.
+- `DONE` (workflow-complete cleanup) — checked after definitive signals, before the watcher: if the head log shows a clean finish with no errors but the scheduler still shows the head RUNNING, the orchestrator is lingering. Cancel the **head only** (no `kill_action` — not a failure), emit `workflow_complete`, and exit. Frees the allocation in one check instead of burning it to walltime.
 - `SUSPECT` — stall signal raised. Immediately enter INVESTIGATING: gather `sstat` CPU/memory, filesystem probe (D-state detection), child job states + storage-hang sentinel, error markers.
-- Classify evidence by rules (first match wins): scheduler failed → confirmed_dead; error markers → confirmed_dead; child storage hang → fs_hang; filesystem probe timed out → fs_hang; CPU active → recovered; memory active → recovered; all-silent + responsive filesystem + RUNNING → confirmed_dead; inconclusive → recovered.
+- Classify evidence by rules (first match wins): scheduler failed → confirmed_dead; error markers → confirmed_dead; child storage hang → fs_hang; filesystem probe timed out → fs_hang; CPU time advanced **since the last investigation** → recovered; responsive filesystem + RUNNING + a measured-flat CPU sample → confirmed_dead; no prior sample / no sstat reading → recovered. (Liveness is CPU activity between checks, not mere presence — a lingering/deadlocked process still holds CPU+memory; MaxRSS is monotonic so memory is diagnostic-only.)
 - `CONFIRMED_DEAD` — kill (children first, then head), record confirmed_dead_reason in kill action, write report.
 - `FS_HANG` — filesystem-related hang. Killed (children first, then head) and reported exactly like CONFIRMED_DEAD. You never hold for a human and never resubmit — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
 - `RECOVERED` — investigation found evidence of life; silence reset; continue monitoring.

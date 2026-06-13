@@ -62,6 +62,25 @@ TERMINAL_ERROR_MARKERS = (
     "Killed",
 )
 
+# Positive end-of-workflow markers Snakemake prints on a SUCCESSFUL run. Used to
+# detect a head job whose workflow has logically finished but whose process is
+# lingering (e.g. numba/UMAP worker threads in an in-process localrule block the
+# interpreter from exiting), so the monitor can cancel it instead of letting the
+# allocation burn to walltime. Only meaningful together with an empty error-marker
+# set — a failed run prints "Exiting because a job execution failed", never these.
+WORKFLOW_COMPLETE_MARKERS = (
+    "steps (100%) done",
+    "Complete log(s):",
+    "Nothing to be done",
+)
+
+# CPU-activity threshold for delta-based liveness (see classify_investigation). A
+# process is "alive and working" only if CPU time advanced since the previous
+# investigation — mere presence of cumulative CPU time / held memory is not proof of
+# life. (MaxRSS is monotonic and a poor liveness signal, so memory is collected for
+# diagnostics only and is not used to judge life.)
+CPU_ACTIVE_DELTA_S = 1.0      # CPU-seconds accumulated between checks
+
 SCHEDULER_FAILED_STATES = {
     "BOOT_FAIL",
     "CANCELLED",
@@ -137,6 +156,7 @@ class MonitorState:
     tolerance_n: int = 20               # flag after this many quiet intervals (default: 20×270s=90min)
     last_progress_mtime: float | None = None  # newest progress file mtime at last check
     last_log_size: int | None = None    # head log byte-size at last check
+    last_cpu_s: float | None = None     # sstat CPU-seconds at last investigation (for delta liveness)
     investigation: dict | None = None   # evidence gathered at last SUSPECT→INVESTIGATING transition
     confirmed_dead_reason: str | None = None
     previous_finding_codes: frozenset[str] | None = None
@@ -752,6 +772,20 @@ def _extract_markers(text: str) -> list[str]:
     return found
 
 
+def _workflow_complete(snapshot: dict[str, Any]) -> bool:
+    """True when the head log shows the workflow finished cleanly (no errors).
+
+    A positive completion marker (Snakemake's end-of-run prints) in the head or
+    Snakemake log tail, with no terminal error markers, means this submission's
+    work is done. If the scheduler still shows the head RUNNING at that point, the
+    process is lingering and the monitor cleans it up (see monitor_once).
+    """
+    if snapshot.get("error_markers"):
+        return False
+    tails = (snapshot.get("head_log_tail") or "") + "\n" + (snapshot.get("latest_snakemake_tail") or "")
+    return any(marker in tails for marker in WORKFLOW_COMPLETE_MARKERS)
+
+
 # Lines worth surfacing verbatim from a failing child log — the actual root cause
 # (exception type + message + the file:line it was raised from), as opposed to the
 # generic Snakemake "Error in rule / WorkflowError" envelope.
@@ -1348,16 +1382,26 @@ def classify_investigation(evidence: dict[str, Any]) -> tuple[str, str]:
     verdict is one of: "confirmed_dead", "recovered", "fs_hang".
 
     Rules applied in order; first match wins. Asymmetry is intentional:
-    positive evidence of life (CPU active, memory large) overrides silence;
-    confirmed_dead requires all-silent signals plus a responsive filesystem
-    (ruling out D-state). When evidence is incomplete, recover rather than kill.
+    positive evidence of life overrides silence; confirmed_dead requires all-silent
+    signals plus a responsive filesystem (ruling out D-state). When evidence is
+    incomplete, recover rather than kill.
+
+    Liveness is judged by CPU *activity* between investigations (CPU time advancing),
+    NOT mere presence: a finished-but-lingering or deadlocked process still holds
+    memory and cumulative CPU, so an absolute threshold would mis-read it as alive and
+    make the no-activity rule unreachable. ``cpu_delta`` (injected by the caller from
+    the prior investigation's sstat sample) is None on the first investigation — then
+    no activity can be asserted and we recover (establish a baseline); a truly idle
+    process is caught on the next investigation when the CPU delta is ~0 and the dead
+    rule fires. Two samples before a kill — conservative against false positives.
+    (MaxRSS is monotonic and a poor liveness signal, so memory is collected for the
+    diagnostic report only, not used here.)
     """
     scheduler_state = str(evidence.get("scheduler_state") or "")
     error_markers = list(evidence.get("error_markers") or [])
     hung_children = list(evidence.get("child_storage_hang_ids") or [])
     fs_responsive = evidence.get("filesystem_responsive")
-    cpu_s = evidence.get("compute_cpu_s")
-    rss_mb = evidence.get("memory_rss_mb")
+    cpu_delta = evidence.get("cpu_delta")
 
     # 1. Scheduler reports definitive failure
     if scheduler_state in SCHEDULER_FAILED_STATES:
@@ -1375,20 +1419,20 @@ def classify_investigation(evidence: dict[str, Any]) -> tuple[str, str]:
     if fs_responsive is False:
         return "fs_hang", "filesystem_probe_timed_out"
 
-    # 5. CPU activity reported by sstat — job is computing
-    if cpu_s is not None and cpu_s > 1.0:
-        return "recovered", f"compute_active cpu_s={cpu_s:.1f}"
+    # 5. CPU time advanced since last investigation — job is actively computing
+    if cpu_delta is not None and cpu_delta > CPU_ACTIVE_DELTA_S:
+        return "recovered", f"compute_active cpu_delta_s={cpu_delta:.1f}"
 
-    # 6. Memory still large — live process proxy
-    if rss_mb is not None and rss_mb > 100.0:
-        return "recovered", f"memory_active rss_mb={rss_mb:.0f}"
-
-    # 7. Filesystem responsive + scheduler RUNNING + no CPU/memory evidence
-    # All silence signals confirmed with a working filesystem → dead
-    if fs_responsive is True and scheduler_state in SCHEDULER_RUNNING_STATES:
+    # 6. Filesystem responsive + scheduler RUNNING + a CPU sample that did NOT advance
+    # (rule 5 already ruled out activity). Silence confirmed against a working
+    # filesystem and a measured-flat CPU → dead. Reachable for a finished-but-lingering
+    # / deadlocked process. Requires `cpu_delta is not None` so we never kill on the
+    # first investigation (no prior sample) or when sstat gave no reading.
+    if (fs_responsive is True and scheduler_state in SCHEDULER_RUNNING_STATES
+            and cpu_delta is not None):
         return "confirmed_dead", "no_activity_with_responsive_filesystem"
 
-    # 8. Inconclusive evidence — conservative: assume alive
+    # 7. Inconclusive evidence (no measurable activity baseline) — conservative: alive
     return "recovered", "insufficient_evidence_assume_alive"
 
 
@@ -1443,6 +1487,27 @@ def monitor_once(
                                 confirmed_dead_reason=f"{f.code}: {f.message}")
     findings.extend(definitive)
 
+    # --- Workflow-complete cleanup (positive terminal signal) ---
+    # The head log shows the workflow finished cleanly but the scheduler still has the
+    # head RUNNING — the orchestrator process is lingering (e.g. in-process leiden/UMAP
+    # worker threads in a localrule block interpreter exit). Treat the work as DONE,
+    # cancel the lingering HEAD ONLY (children already finished; pass [] and discard the
+    # result so no kill_action is recorded and Processing never mis-reads a completed
+    # stage as cancelled), and let the loop exit instead of burning the allocation to
+    # walltime. Skipped if a definitive failure already fired (those imply error markers
+    # or a FAILED scheduler state, so _workflow_complete would be False anyway).
+    if (state.health not in (JobHealth.CONFIRMED_DEAD, JobHealth.FS_HANG,
+                             JobHealth.KILLED, JobHealth.DONE)
+            and sched_state in SCHEDULER_RUNNING_STATES
+            and _workflow_complete(snapshot)):
+        findings.append(MonitorFinding(
+            "info", "workflow_complete",
+            f"Workflow finished cleanly but the head job is still {sched_state}; "
+            "cancelling the lingering head job and exiting."))
+        if kill_on_hang:
+            cancel_submission_jobs(submission, [], scheduler_timeout_s)  # head only; ignore result
+        state = replace(state, health=JobHealth.DONE)
+
     # --- State machine ---
     if state.health in (JobHealth.HEALTHY, JobHealth.RECOVERED):
         # Only run watcher when there is at least one progress file to track
@@ -1460,7 +1525,20 @@ def monitor_once(
     elif state.health == JobHealth.SUSPECT:
         state = replace(state, health=JobHealth.INVESTIGATING)
         evidence = investigate_suspect(submission, snapshot, scheduler_timeout_s=scheduler_timeout_s)
-        state = replace(state, investigation=evidence)
+        # Delta-based liveness: compare this sstat CPU sample to the previous
+        # investigation (None on the first sample → no activity asserted, recover +
+        # set baseline). Memory (memory_rss_mb) stays in evidence for the diagnostic
+        # report but is not used to judge life (MaxRSS is monotonic).
+        cur_cpu = evidence.get("compute_cpu_s")
+        evidence["cpu_delta"] = (
+            cur_cpu - state.last_cpu_s
+            if cur_cpu is not None and state.last_cpu_s is not None else None
+        )
+        # Preserve the last known reading across sstat hiccups (don't overwrite with None).
+        state = replace(
+            state, investigation=evidence,
+            last_cpu_s=cur_cpu if cur_cpu is not None else state.last_cpu_s,
+        )
         verdict, reason = classify_investigation(evidence)
 
         if verdict == "confirmed_dead":
@@ -1569,6 +1647,11 @@ def monitor_watch(
         )
         if report_path is not None:
             last_report = report_path
+
+        # Terminal verdict this iteration (kill, or workflow-complete cleanup) — exit
+        # promptly rather than sleeping another interval before the scheduler re-poll.
+        if state.health in (JobHealth.DONE, JobHealth.KILLED):
+            break
 
         if not submission_jobs_active(submission, snapshot, scheduler_timeout_s):
             break

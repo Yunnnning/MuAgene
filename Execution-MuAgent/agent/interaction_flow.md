@@ -73,14 +73,16 @@ Poll loop at `interval_s` (default 270 s / 4.5 min; the constant lives in `monit
    - `scheduler_failed` → CONFIRMED_DEAD immediately.
    - `workflow_error_marker` (Traceback, OOM, WorkflowError, …) → CONFIRMED_DEAD immediately.
 
+2a. **Workflow-complete cleanup** (positive terminal signal, checked after definitive signals, before the watcher): if the head log shows a clean finish (a `WORKFLOW_COMPLETE_MARKER` — `steps (100%) done` / `Complete log(s):` / `Nothing to be done`) **and** there are no error markers, but the scheduler still shows the head RUNNING, the orchestrator process is **lingering** (e.g. in-process leiden/UMAP worker threads block interpreter exit). Emit a `workflow_complete` finding, cancel the **head job only** (`cancel_submission_jobs(submission, [])` — children already finished; the result is discarded so **no `kill_action` is recorded** and Processing never mis-reads a completed stage as cancelled), set health `DONE`, and let the loop exit. This frees the allocation in one check instead of burning it to walltime.
+
 3. **Watcher** (HEALTHY / RECOVERED state): if latest_progress_file mtime or head_log size grew since last check → heartbeat, silence resets to 0. Otherwise `silence_intervals += 1`. When `silence_intervals >= tolerance_n` → SUSPECT, emit `stall_suspected` (warning only).
 
-4. **Investigation** (SUSPECT state): gather independent evidence — `sstat` CPU/memory (SLURM), filesystem responsiveness probe (D-state detection), child storage-hang sentinel ("Storing output in storage."). Classify by rules:
+4. **Investigation** (SUSPECT state): gather independent evidence — `sstat` CPU/memory (SLURM), filesystem responsiveness probe (D-state detection), child storage-hang sentinel ("Storing output in storage."). Liveness is judged by **CPU activity since the last investigation** (`cpu_delta`), not absolute presence — a finished-but-lingering or deadlocked process still holds memory and cumulative CPU, so an absolute threshold would mis-read it as alive. (`sstat` MaxRSS is collected for the diagnostic report only — it is monotonic, so it can't signal idleness.) Classify by rules:
    - Scheduler failed / error markers → `confirmed_dead`
    - Child storage hang / filesystem probe timeout → `fs_hang`
-   - CPU active / memory active → `recovered`
-   - All silent + responsive filesystem + RUNNING → `confirmed_dead`
-   - Inconclusive → `recovered` (conservative default)
+   - CPU time advanced (`cpu_delta > CPU_ACTIVE_DELTA_S`, ≈1 s) → `recovered`
+   - Responsive filesystem + RUNNING + a CPU sample that did **not** advance → `confirmed_dead` (now reachable for a lingering/deadlocked process)
+   - No prior sample yet (`cpu_delta` `None`, first investigation) or no sstat reading → `recovered` (conservative default; establishes the baseline, so a kill needs two samples)
 
 5. **Kill** (unhealthy verdict — CONFIRMED_DEAD or FS_HANG):
    - `cancel_submission_jobs()` — children first, then head (cleanup so Processing can resubmit).
@@ -89,7 +91,7 @@ Poll loop at `interval_s` (default 270 s / 4.5 min; the constant lives in `monit
    - Also write a debug/audit copy to `latest_report.md` and `reports/<job_id>_<timestamp>.md` — daemon-internal only; Processing never parses these and they are never shown to the user.
    - Execution never holds for a human and never resubmits — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
 
-6. **Loop exit** when no jobs are active in scheduler (all terminal states).
+6. **Loop exit** when no jobs are active in scheduler (all terminal states), or immediately after a terminal verdict this iteration (`DONE` from workflow-complete cleanup, or `KILLED`) — no extra sleep/re-poll.
 
 7. **PID cleanup** — `monitor.pid` is removed in a `finally` block whether the loop exits normally, via an exception, or after a kill verdict. A missing `monitor.pid` is the signal Processing-MuAgent uses to detect that the daemon has stopped.
 
@@ -123,6 +125,7 @@ All state — including structured `findings` (list of `{severity, code, message
 | `scheduler_failed` | Scheduler reports terminal failure state | Report to human; fix; resubmit |
 | `workflow_error_marker` | Error keywords in logs (Traceback, OOM, …); `message` appends `Root cause — <child_log>: <exception> \| …` scraped from the failing child rule log | Relay the root-cause line to the human; fix; resubmit |
 | `stage_output_verified` | A stage's outputs verified complete and loadable | Informational progress; continue |
+| `workflow_complete` | Workflow finished cleanly but the head job was lingering; the head job was cancelled and the daemon exits | Informational — job done (not a failure); drive the next gate / completion |
 | `stall_suspected` | N quiet intervals; investigation starting | Informational; no action needed |
 | `stall_confirmed` | Investigation concluded confirmed dead (job killed) | Report to human; fix; resubmit |
 | `stall_recovered` | Investigation found life; monitoring continues | Informational; no action needed |

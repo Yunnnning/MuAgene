@@ -93,8 +93,11 @@ A **heartbeat** fires when any run-scoped file mtime advances OR the head log gr
 | `CONFIRMED_DEAD` | Evidence confirmed dead | → KILLED (if --kill-on-hang) |
 | `FS_HANG` | Filesystem-related hang | → KILLED (if --kill-on-hang); reported to Processing |
 | `KILLED` | Cancellation sent | → wait for terminal scheduler state |
+| `DONE` | Workflow finished but the job was still running (lingering) | → head job cancelled; daemon exits |
 
 Definitive signals (`scheduler_failed`, `workflow_error_marker`) bypass the silence counter and go directly to CONFIRMED_DEAD.
+
+If the workflow has finished cleanly (no errors) but the scheduler still shows the job running, the orchestrator process is **lingering** rather than progressing. The monitor recognises this, cancels the leftover job so it does not burn its allocation to walltime, and exits — this is a clean completion, not a failure, so no kill report is raised.
 
 An unhealthy verdict (`CONFIRMED_DEAD` or `FS_HANG`) is killed for cleanup and reported. Execution-MuAgent never holds for a human and never resubmits — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
 
@@ -106,10 +109,11 @@ Gathered when entering SUSPECT:
 |---|---|---|
 | Scheduler state | sacct/squeue (already in snapshot) | Not in FAILED_STATES |
 | Error markers | Log tails (already in snapshot) | None found |
-| CPU utilization | `sstat` (SLURM, best-effort) | CPU > 1 s |
-| Memory | `sstat` MaxRSS | RSS > 100 MB |
+| CPU utilization | `sstat` (SLURM, best-effort) | CPU time advancing between checks |
 | Filesystem responsiveness | `os.stat()` in thread, 5 s timeout | Returns within timeout |
 | Child storage hang | Child log "Storing output in storage." | Not present |
+
+Liveness is judged by **CPU activity between checks**, not mere presence: a finished-but-lingering or deadlocked process still holds memory and accumulated CPU, so "it has memory / it used CPU" is not proof it is doing anything. Only CPU time advancing counts as alive. (`sstat` MaxRSS is collected for the diagnostic report but is monotonic, so it can't signal idleness and is not part of the decision.)
 
 ### Classification rules (first match wins)
 
@@ -117,10 +121,9 @@ Gathered when entering SUSPECT:
 2. Error markers in logs → `confirmed_dead`
 3. Child RUNNING + "Storing output in storage." → `fs_hang`
 4. Filesystem probe timed out → `fs_hang`
-5. CPU > 1 s (sstat) → `recovered`
-6. Memory > 100 MB (sstat) → `recovered`
-7. Filesystem responsive + scheduler RUNNING + no CPU/memory activity → `confirmed_dead`
-8. Inconclusive → `recovered` (conservative default)
+5. CPU advancing since the last check → `recovered`
+6. Filesystem responsive + scheduler RUNNING + a measured-flat CPU sample → `confirmed_dead` (catches a lingering/deadlocked process)
+7. No prior sample yet / no reading → `recovered` (conservative default; a kill needs two samples)
 
 ### Output verification (per step + terminal)
 
@@ -148,6 +151,7 @@ When a run is unhealthy (`CONFIRMED_DEAD` or `FS_HANG`), Execution-MuAgent kills
 | `workflow_error_marker` | error | Error keywords in logs; message appends `Root cause — <child_log>: <exception>` scraped from the failing child rule log |
 | `output_missing` | error | Stage output missing, empty, or corrupt after COMPLETED |
 | `stage_output_verified` | info | A stage's declared outputs verified complete and loadable |
+| `workflow_complete` | info | Workflow finished cleanly but the job was lingering; the leftover job was cancelled and the daemon exits |
 | `stall_suspected` | warning | silence_intervals ≥ tolerance_n; entering investigation |
 | `stall_confirmed` | error | Investigation confirmed dead — kill was sent |
 | `stall_recovered` | warning | Investigation found life; monitoring continues |

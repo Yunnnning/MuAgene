@@ -13,6 +13,7 @@ from unittest import mock
 
 from execution_muagent.monitor import (
     DEFAULT_CHECK_INTERVAL_S,
+    JobHealth,
     MonitorState,
     REPOLL_BUFFER_S,
     SiteConfig,
@@ -22,10 +23,13 @@ from execution_muagent.monitor import (
     _looks_like_hdf5,
     _looks_like_parquet,
     _persist_snapshot,
+    _workflow_complete,
+    classify_investigation,
     collect_snapshot,
     discover_child_job_ids,
     evaluate_snapshot_definitive,
     extract_error_context,
+    monitor_once,
     monitor_watch,
     parse_job_ids_from_log,
     render_submission_script,
@@ -509,6 +513,117 @@ class KillActionOwnershipTests(unittest.TestCase):
             _persist_snapshot(sub, {"checked_at": "t2"},
                               MonitorState(kill_action=kill), findings=[], cancel_result=None)
             self.assertEqual(_json.loads(path.read_text())["kill_action"], kill)
+
+
+class DeltaLivenessTests(unittest.TestCase):
+    """Liveness is judged by CPU *activity* between investigations, not mere presence —
+    so a finished-but-lingering / deadlocked process (flat CPU, still holding memory) is
+    correctly classified confirmed_dead instead of 'recovered'. Memory is diagnostic
+    only (MaxRSS is monotonic) and not part of the classification."""
+
+    BASE = {
+        "scheduler_state": "RUNNING",
+        "error_markers": [],
+        "child_storage_hang_ids": [],
+        "filesystem_responsive": True,
+    }
+
+    def _classify(self, **kw):
+        return classify_investigation({**self.BASE, **kw})[0]
+
+    def test_flat_cpu_delta_confirmed_dead(self) -> None:
+        # Memory held + CPU consumed historically, but CPU did NOT advance → dead.
+        self.assertEqual(self._classify(cpu_delta=0.0), "confirmed_dead")
+
+    def test_cpu_advancing_recovered(self) -> None:
+        self.assertEqual(self._classify(cpu_delta=42.0), "recovered")
+
+    def test_first_sample_no_prior_recovers_as_baseline(self) -> None:
+        # cpu_delta None (no previous investigation) → can't assert activity → recover.
+        self.assertEqual(self._classify(cpu_delta=None), "recovered")
+
+    def test_error_marker_still_dead_regardless_of_deltas(self) -> None:
+        v, _ = classify_investigation({**self.BASE, "error_markers": ["WorkflowError"],
+                                       "cpu_delta": 99.0})
+        self.assertEqual(v, "confirmed_dead")
+
+
+class WorkflowCompleteDetectionTests(unittest.TestCase):
+    def test_complete_marker_no_errors_is_true(self) -> None:
+        snap = {"error_markers": [], "head_log_tail": "3 of 3 steps (100%) done\nComplete log(s): /x\n",
+                "latest_snakemake_tail": ""}
+        self.assertTrue(_workflow_complete(snap))
+
+    def test_error_marker_blocks_completion(self) -> None:
+        snap = {"error_markers": ["WorkflowError"], "head_log_tail": "3 of 3 steps (100%) done",
+                "latest_snakemake_tail": ""}
+        self.assertFalse(_workflow_complete(snap))
+
+    def test_partial_progress_is_not_complete(self) -> None:
+        snap = {"error_markers": [], "head_log_tail": "2 of 3 steps (67%) done",
+                "latest_snakemake_tail": ""}
+        self.assertFalse(_workflow_complete(snap))
+
+
+class MonitorOnceWorkflowCompleteTests(unittest.TestCase):
+    """A head job whose workflow finished cleanly but is still RUNNING (lingering)
+    is cancelled (head only) and marked DONE — without recording a kill_action."""
+
+    def _synthetic_snapshot(self) -> dict:
+        return {
+            "scheduler": {"state": "RUNNING"},
+            "error_markers": [],
+            "head_log_tail": "3 of 3 steps (100%) done\nComplete log(s): /x\n",
+            "latest_snakemake_tail": "",
+            "latest_progress_file": {"exists": True, "mtime": 1.0},
+            "head_log": {"size": 10},
+            "child_job_ids": [],
+        }
+
+    def test_lingering_head_cancelled_head_only_and_done(self) -> None:
+        from execution_muagent import monitor as m
+        cancel_calls: list = []
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = _make_submission(Path(tmp) / "run")
+            with mock.patch.object(m, "collect_snapshot", return_value=self._synthetic_snapshot()), \
+                 mock.patch.object(m, "verify_stage_outputs", return_value={}), \
+                 mock.patch.object(m, "evaluate_snapshot_definitive", return_value=[]), \
+                 mock.patch.object(m, "write_report", return_value=None), \
+                 mock.patch.object(m, "cancel_submission_jobs",
+                                   side_effect=lambda s, ids, t=5: cancel_calls.append(list(ids)) or {}):
+                _, findings, cancel_result, _, state = m.monitor_once(
+                    sub, MonitorState(), kill_on_hang=True)
+        self.assertEqual(state.health, JobHealth.DONE)
+        self.assertTrue(any(f.code == "workflow_complete" for f in findings))
+        self.assertIsNone(cancel_result)        # not a kill → monitor_once returns no cancel_result
+        self.assertIsNone(state.kill_action)     # so Processing sees no phantom cancellation
+        self.assertEqual(cancel_calls, [[]])     # head only (empty child-id list)
+
+    def test_kill_on_hang_false_marks_done_without_cancel(self) -> None:
+        from execution_muagent import monitor as m
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = _make_submission(Path(tmp) / "run")
+            with mock.patch.object(m, "collect_snapshot", return_value=self._synthetic_snapshot()), \
+                 mock.patch.object(m, "verify_stage_outputs", return_value={}), \
+                 mock.patch.object(m, "evaluate_snapshot_definitive", return_value=[]), \
+                 mock.patch.object(m, "write_report", return_value=None), \
+                 mock.patch.object(m, "cancel_submission_jobs") as cancel:
+                _, _, _, _, state = m.monitor_once(sub, MonitorState(), kill_on_hang=False)
+        self.assertEqual(state.health, JobHealth.DONE)
+        cancel.assert_not_called()
+
+
+class MonitorWatchTerminalBreakTests(unittest.TestCase):
+    def test_breaks_on_done_even_if_jobs_still_active(self) -> None:
+        from execution_muagent import monitor as m
+        done = MonitorState(health=JobHealth.DONE)
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = _make_submission(Path(tmp) / "run")
+            with mock.patch.object(m, "monitor_once", return_value=({}, [], None, None, done)), \
+                 mock.patch.object(m, "submission_jobs_active", return_value=True) as sja, \
+                 mock.patch.object(m, "validate_terminal_outputs", return_value=[]):
+                m.monitor_watch(sub, interval_s=0.01, max_checks=3)
+        sja.assert_not_called()  # DONE break precedes the jobs-active re-poll
 
 
 if __name__ == "__main__":

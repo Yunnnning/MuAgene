@@ -309,8 +309,9 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
     for ax, (name, vals) in zip(axes, values_dict.items()):
         v = np.asarray(vals, dtype=float)
         v = v[np.isfinite(v)]
+        label = _qc_metric_display_name(name)
         if v.size == 0:
-            ax.set_title(name + " (no data)")
+            ax.set_title(label + " (no data)")
             continue
         parts = ax.violinplot(v, showmeans=False, showmedians=True)
         for pc in parts["bodies"]:
@@ -321,8 +322,8 @@ def plot_qc_violin(values_dict: dict[str, np.ndarray], *, out_dir: Path | str,
             if key in parts:
                 parts[key].set_color(RNA_VIOLIN_QUANTILE_COLOR)
                 parts[key].set_linewidth(RNA_VIOLIN_QUANTILE_LINEWIDTH)
-        ax.set_title(name)
-        ax.set_ylabel(name)
+        ax.set_title(label)
+        ax.set_ylabel(label)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
     fig.suptitle(title)
@@ -558,24 +559,16 @@ def plot_frip_histogram(
         ax.set_title(f"{FRIP_DISTRIBUTION_TITLE} (no data)")
         return save_figure(fig, out_dir, stem)
 
-    n_total = frip.size
-    n_pass = int((frip >= frip_min).sum())
-    pct_pass = 100.0 * n_pass / n_total if n_total > 0 else 0.0
-
     bins = np.linspace(0, FRIP_XMAX, 36)
     ax.hist(
         frip, bins=bins, color=QC_FILL_COLOR, alpha=QC_FILL_ALPHA,
         edgecolor=QC_EDGE_COLOR, linewidth=QC_EDGE_LINEWIDTH,
     )
-    ax.axvline(
-        frip_min, color=QC_ANNOTATION_COLOR, linestyle="--",
-        linewidth=ANNOTATION_LINEWIDTH, zorder=5,
-    )
-    ax.text(
-        0.98, 0.98,
-        f"threshold = {frip_min:.2f}\n{n_pass}/{n_total} passed ({pct_pass:.1f}%)",
-        transform=ax.transAxes,
-        ha="right", va="top", fontsize=ANNOTATION_FONTSIZE, color=QC_ANNOTATION_COLOR,
+    x_range = float(frip.max() - frip.min()) if frip.size else 1.0
+    _draw_threshold_markers(
+        ax,
+        [(frip_min, _cutoff_label(frip_min, pct=False, log_axis=False), True)],
+        x_range=max(x_range, 1e-12),
     )
     ax.set_xlabel("FRiP (fraction of reads in peaks)")
     ax.set_ylabel("number of cells")
