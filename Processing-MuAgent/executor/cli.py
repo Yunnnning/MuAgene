@@ -1249,6 +1249,13 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
         click.echo(f"Unlocking stale Snakemake locks: {lock_list}")
         _unlock_snakemake(run_dir, paths.run_yaml)
 
+    # Archive the prior run's Snakemake logs so a resubmit's PENDING window is not
+    # misread as the previous run's failure by `hpc-status` (stage state is derived
+    # from the newest per-rule + main logs). No-op on a first submit.
+    archived = hpc.archive_prior_run_logs(paths.snakemake_workdir)
+    if archived is not None:
+        click.echo(f"Archived previous run logs → {archived}")
+
     out_path = Path(output_log) if output_log else hpc.head_job_log_path(executor)
 
     if not paths.site_config.exists():

@@ -266,6 +266,8 @@ Processing-MuAgent supervisor-restart --config $CFG
 
 **When a job fails or is rejected.** Execution-MuAgent never contacts you directly and never resubmits — it records what it found and stops. `hpc-status` shows the result: if the scheduler rejected the job (usually a wrong partition, account, or walltime), re-run `configure-execution` with corrected settings; for any other failure, fix the cause and re-run `submit`. Cluster jobs only ever run through `submit` — there is no manual submission path.
 
+Each `submit` first **archives the previous run's Snakemake logs** to `<run_dir>/internal/snakemake/.snakemake/archive/run_<timestamp>/` (a move, so history is preserved). This keeps the live log dirs scoped to the current run, so `hpc-status` reads stage state from the new job's logs only and never reports a phantom failure from the prior run during the new job's PENDING window. The root-cause line for the failure that prompted the resubmit is in the archived logs (and was already surfaced via `hpc-status` before you resubmitted).
+
 For how the monitor works internally — how it decides a job is stalled, how it verifies outputs, and the diagnostics it records — see **`Execution-MuAgent/README.md`**, the package that owns it.
 
 

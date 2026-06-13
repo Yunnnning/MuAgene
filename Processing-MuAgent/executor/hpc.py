@@ -178,6 +178,44 @@ def snakemake_processes_for_workdir(workdir: Path | str) -> list[tuple[int, str]
     return matches
 
 
+def archive_prior_run_logs(workdir: Path | str, *, stamp: str | None = None) -> Path | None:
+    """Move the previous run's Snakemake logs aside before a (re)submit.
+
+    ``stage_progress.collect_failed_snakemake_rules`` derives each stage's state from
+    the newest Snakemake main log and the per-rule cluster logs. After a resubmit,
+    those files still describe the *prior* (failed) run until the new job overwrites
+    them — so ``hpc-status`` would report a phantom failure during the new job's
+    PENDING window. We archive them under ``.snakemake/archive/run_<stamp>/`` (move,
+    not delete — history is preserved for debugging) so the live log dirs only ever
+    contain the current run. No-op on a first submit (nothing to archive).
+
+    Returns the archive directory, or ``None`` if there was nothing to archive.
+    """
+    sm_root = Path(workdir) / ".snakemake"
+    main_log_dir = sm_root / "log"
+    slurm_logs_dir = sm_root / "slurm_logs"
+    main_logs = list(main_log_dir.glob("*.snakemake.log")) if main_log_dir.is_dir() else []
+    has_rule_logs = slurm_logs_dir.is_dir() and any(slurm_logs_dir.rglob("*.log"))
+    if not main_logs and not has_rule_logs:
+        return None
+    if stamp is None:
+        from datetime import datetime, timezone
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_dir = sm_root / "archive" / f"run_{stamp}"
+    suffix = 1
+    while archive_dir.exists():
+        suffix += 1
+        archive_dir = sm_root / "archive" / f"run_{stamp}_{suffix}"
+    if main_logs:
+        (archive_dir / "log").mkdir(parents=True, exist_ok=True)
+        for log in main_logs:
+            shutil.move(str(log), str(archive_dir / "log" / log.name))
+    if has_rule_logs:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(slurm_logs_dir), str(archive_dir / "slurm_logs"))
+    return archive_dir
+
+
 def resolve_log_dir() -> Path:
     """Return the scheduler log directory, creating it if needed."""
     raw = os.environ.get("PMA_LOG_DIR", "logs")
