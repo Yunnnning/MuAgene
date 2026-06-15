@@ -323,8 +323,13 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             f"ATAC: TSS in ({tss_min.get('value', '?')}, {tss_max.get('value', '?')}), "
             f"MAD on log(n_fragments), nucleosome_signal<{nuc_max.get('value', '?')}{frip_note}"
         ),
-        "reason": "MAD thresholds adapt to the observed distribution; pct_mt is bounded to a fixed [5%, 20%] range.",
-        "certainty": "certain",
+        "reason": (
+            "Review the QC threshold histograms in the appendix. Default MAD thresholds "
+            "are shown — any RNA or ATAC metric can be adjusted or skipped entirely with "
+            "`revise` before approving. Confirm defaults are acceptable, or tell the agent "
+            "which thresholds to change."
+        ),
+        "certainty": "needs confirmation",
     })
 
     # 5. Doublet policy — reconciliation is only meaningful when both detectors run.

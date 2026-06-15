@@ -15,6 +15,7 @@ import pandas as pd
 
 from executor import io as _io
 from executor import qc_explore
+from executor import figures
 from executor.methods.qc_filter_stats import marginal_removals
 from executor.methods import qc_thresholds as qct
 from executor.plan_assembler import render_plan_appendix
@@ -54,7 +55,8 @@ class RnaThresholdTests(unittest.TestCase):
             "pct_counts_ribo": rng.uniform(0, 30, n),
         })
         th = qct.rna_thresholds(
-            obs, k_mad=5.0, pct_mt_k=3.0, pct_mt_ceiling=20.0, pct_mt_floor=5.0,
+            obs, total_counts_k_mad=5.0, n_genes_k_mad=5.0,
+            pct_mt_k=3.0, pct_mt_ceiling=20.0, pct_mt_floor=5.0,
             min_counts_floor=500, min_genes_floor=250,
         )
         self.assertGreaterEqual(th["total_counts_min"], 500)
@@ -74,7 +76,8 @@ class RnaThresholdTests(unittest.TestCase):
             "pct_counts_mt": rng.uniform(0, 3, 200),
         })
         th_p = qct.rna_thresholds(
-            pristine, k_mad=5.0, pct_mt_k=3.0, pct_mt_ceiling=20.0, pct_mt_floor=5.0,
+            pristine, total_counts_k_mad=5.0, n_genes_k_mad=5.0,
+            pct_mt_k=3.0, pct_mt_ceiling=20.0, pct_mt_floor=5.0,
             min_counts_floor=500, min_genes_floor=250,
         )
         self.assertLess(th_p["pct_counts_mt_mad_raw"], th_p["pct_counts_mt_max"])
@@ -85,61 +88,137 @@ class RnaThresholdTests(unittest.TestCase):
                                        "pct_counts_mt", "pct_counts_ribo"})
 
 
-class PctMtPanelRefsTests(unittest.TestCase):
+class PctMtBoundMarkersTests(unittest.TestCase):
     def test_shows_mad_when_floor_clamps_applied(self):
-        th = {"pct_counts_mt_max": 5.0, "pct_counts_mt_mad_raw": 3.4}
-        refs = qc_explore._pct_mt_panel_refs(th)
-        labels = [r[1] for r in refs]
+        markers, _, _ = figures.build_upper_only_markers(
+            applied_hi=5.0,
+            default_hi=5.0,
+            default_mad_hi_raw=3.4,
+            hi_skip_above=100.0,
+            pct=True,
+            default_fixed_refs=[(5.0, "5%"), (10.0, "10%"), (20.0, "20%")],
+        )
+        labels = [m[1] for m in markers]
         self.assertIn("3.4% (MAD)", labels)
         self.assertIn("5%", labels)
         self.assertIn("10%", labels)
         self.assertIn("20%", labels)
 
     def test_omits_mad_when_it_matches_applied(self):
-        th = {"pct_counts_mt_max": 8.2, "pct_counts_mt_mad_raw": 8.2}
-        refs = qc_explore._pct_mt_panel_refs(th)
-        labels = [r[1] for r in refs]
-        self.assertNotIn("8.2% (MAD)", labels)
-        self.assertEqual(labels, ["5%", "10%", "20%"])
+        markers, _, _ = figures.build_upper_only_markers(
+            applied_hi=8.2,
+            default_hi=8.2,
+            default_mad_hi_raw=8.2,
+            hi_skip_above=100.0,
+            pct=True,
+            default_fixed_refs=[(5.0, "5%"), (10.0, "10%"), (20.0, "20%")],
+        )
+        labels = [m[1] for m in markers]
+        self.assertEqual(labels.count("8.2% (MAD)"), 1)
+        self.assertEqual(
+            [m[1] for m in markers if not m[2]],
+            ["5%", "10%", "20%"],
+        )
 
 
-class NGenesPanelRefsTests(unittest.TestCase):
+class NGenesBoundMarkersTests(unittest.TestCase):
     def test_shows_mad_when_floor_clamps_applied(self):
-        th = {"n_genes_min": 250.0, "n_genes_mad_lo_raw": 180.0}
-        refs = qc_explore._n_genes_panel_refs(th, min_genes_floor=250.0)
-        labels = [r[1] for r in refs]
+        markers, _, _ = figures.build_mad_range_markers(
+            applied_lo=250.0,
+            applied_hi=8000.0,
+            default_lo=250.0,
+            default_hi=8000.0,
+            default_mad_lo_raw=180.0,
+            default_floor=250.0,
+            hi_skip_above=1_000_000,
+            log_axis=True,
+        )
+        labels = [m[1] for m in markers]
         self.assertIn("180 (MAD)", labels)
+        self.assertIn("250", labels)
 
     def test_shows_floor_when_below_applied(self):
-        th = {"n_genes_min": 341.0, "n_genes_mad_lo_raw": 341.0}
-        refs = qc_explore._n_genes_panel_refs(th, min_genes_floor=250.0)
-        self.assertEqual(refs, [(250.0, "250")])
+        markers, _, _ = figures.build_mad_range_markers(
+            applied_lo=341.0,
+            applied_hi=8000.0,
+            default_lo=341.0,
+            default_hi=8000.0,
+            default_mad_lo_raw=341.0,
+            default_floor=250.0,
+            hi_skip_above=1_000_000,
+            log_axis=True,
+        )
+        self.assertEqual(
+            [(m[0], m[1]) for m in markers if not m[2]],
+            [(250.0, "250")],
+        )
 
 
-class TotalCountsPanelRefsTests(unittest.TestCase):
+class TotalCountsBoundMarkersTests(unittest.TestCase):
     def test_shows_mad_when_floor_clamps_applied(self):
-        th = {"total_counts_min": 500.0, "total_counts_mad_lo_raw": 326.0}
-        refs = qc_explore._total_counts_panel_refs(th)
-        labels = [r[1] for r in refs]
+        markers, _, _ = figures.build_mad_range_markers(
+            applied_lo=500.0,
+            applied_hi=40000.0,
+            default_lo=500.0,
+            default_hi=40000.0,
+            default_mad_lo_raw=326.0,
+            default_floor=500.0,
+            hi_skip_above=1_000_000,
+            log_axis=True,
+        )
+        labels = [m[1] for m in markers]
         self.assertIn("326 (MAD)", labels)
 
-    def test_omits_mad_when_it_matches_applied(self):
-        th = {"total_counts_min": 800.0, "total_counts_mad_lo_raw": 800.0}
-        refs = qc_explore._total_counts_panel_refs(th)
-        self.assertEqual(refs, [])
+    def test_shows_default_refs_when_skipped(self):
+        markers, filter_lo, filter_hi = figures.build_mad_range_markers(
+            applied_lo=0.0,
+            applied_hi=1e200,
+            default_lo=500.0,
+            default_hi=5267.0,
+            default_mad_lo_raw=133.0,
+            default_floor=500.0,
+            hi_skip_above=1_000_000,
+            log_axis=True,
+        )
+        labels = [m[1] for m in markers]
+        self.assertNotIn("disabled", labels)
+        self.assertNotIn("0", labels)
+        self.assertTrue(all(not m[2] for m in markers))
+        self.assertIn("500", labels)
+        self.assertIn("133 (MAD)", labels)
+        self.assertIn("5,267 (MAD)", labels)
+        self.assertIsNone(filter_lo)
+        self.assertIsNone(filter_hi)
 
 
-class NFragmentsPanelRefsTests(unittest.TestCase):
+class NFragmentsBoundMarkersTests(unittest.TestCase):
     def test_shows_mad_when_floor_clamps_applied(self):
-        th = {"n_fragments_min": 1500.0, "n_fragments_mad_lo_raw": 299.0}
-        refs = qc_explore._n_fragments_panel_refs(th)
-        labels = [r[1] for r in refs]
+        markers, _, _ = figures.build_mad_range_markers(
+            applied_lo=1500.0,
+            applied_hi=60000.0,
+            default_lo=1500.0,
+            default_hi=60000.0,
+            default_mad_lo_raw=299.0,
+            default_floor=1500.0,
+            hi_skip_above=1_000_000,
+            log_axis=True,
+        )
+        labels = [m[1] for m in markers]
         self.assertIn("299 (MAD)", labels)
 
     def test_omits_mad_when_it_matches_applied(self):
-        th = {"n_fragments_min": 1500.0, "n_fragments_mad_lo_raw": 1500.0}
-        refs = qc_explore._n_fragments_panel_refs(th)
-        self.assertEqual(refs, [])
+        markers, _, _ = figures.build_mad_range_markers(
+            applied_lo=1500.0,
+            applied_hi=60000.0,
+            default_lo=1500.0,
+            default_hi=60000.0,
+            default_mad_lo_raw=1500.0,
+            default_floor=1500.0,
+            hi_skip_above=1_000_000,
+            log_axis=True,
+        )
+        ref_labels = [m[1] for m in markers if not m[2]]
+        self.assertEqual(ref_labels, [])
 
 
 class AtacFragmentBoundsTests(unittest.TestCase):
@@ -186,7 +265,7 @@ class AppendixBlockTests(unittest.TestCase):
             self.assertIn("s1_rna_qc", blocks)
             block = blocks["s1_rna_qc"]
             # 4-column header
-            self.assertIn("| parameter | threshold | cells removed | note |", block)
+            self.assertIn("| parameter | removed if | cells removed | note |", block)
             # non-exclusive summary rows present
             self.assertIn("multiple_metrics", block)
             self.assertIn("total_removed", block)
@@ -204,13 +283,13 @@ class AppendixBlockTests(unittest.TestCase):
                 "workflow_branch": "rna_only",
                 "stages": {
                     "s1_rna_qc": {"parameters": {
-                        "k_mad": {"value": 5.0, "rationale": "should be hidden"}}},
+                        "total_counts_k_mad": {"value": 5.0, "rationale": "should be hidden"}}},
                 },
                 "warnings": [],
             }
             md = render_plan_appendix(plan, blocks)
-            self.assertIn("| parameter | threshold | cells removed | note |", md)
-            # the parameter bullet for k_mad is replaced by the table
+            self.assertIn("| parameter | removed if | cells removed | note |", md)
+            # the parameter bullet for total_counts_k_mad is replaced by the table
             self.assertNotIn("should be hidden", md)
 
 

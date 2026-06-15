@@ -19,11 +19,13 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
 
 Three deliberate pauses where you review deliverables and decide before heavy downstream work continues. Everything else runs automatically once upstream artifacts exist and the relevant checkpoint is approved.
 
-| # | CLI name | Internal stage | When | What you decide |
-|---|----------|----------------|------|-----------------|
-| **1** | **Plan review** | `plan_review` | After S0, before S1 | Approve the preprocessing plan (`plan/summary/plan_review.md`) |
-| **2** | **QC review** | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `checkpoints/qc_review/qc_review_<run>.md`; revise **RNA/ATAC quality-filter thresholds** and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
-| **3** | **Resolution review** | `s7_clustering` | After S6, before S8 | Choose Leiden resolution per modality from sweep metrics (`checkpoints/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding) |
+
+| #     | CLI name              | Internal stage   | When                   | What you decide                                                                                                                                                                                                                                                            |
+| ----- | --------------------- | ---------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1** | **Plan review**       | `plan_review`    | After S0, before S1    | Approve the preprocessing plan (`plan/summary/plan_review.md`)                                                                                                                                                                                                             |
+| **2** | **QC review**         | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `checkpoints/qc_review/qc_review_<run>.md`; revise **RNA/ATAC quality-filter thresholds** (or skip individual metrics entirely) and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
+| **3** | **Resolution review** | `s7_clustering`  | After S6, before S8    | Choose Leiden resolution per modality from sweep metrics (`checkpoints/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding)                             |
+
 
 ## Workflow stages
 
@@ -31,34 +33,41 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 
 - **P1 Context extraction** — Biological Context Report (organism, tissue, assay, DOIs) plus DOI-based prior-analysis extraction.
 - **S0 Ingest** — Loads and validates the input files, determines the workflow branch, and prepares the materials for user review at **checkpoint #1**. It accepts both **filtered** and **raw** Cell Ranger matrices, automatically detecting RNA and ATAC formats (see tables below). For **paired** multiome runs, it checks if RNA and ATAC modalities share cell barcodes; if not, it switches to the `separate` branch and records the reason. S0 also performs a **QC threshold preview** — exploring data distributions, estimating per-cell quality cutoffs, reporting how many cells would be removed by each metric, and generating diagnostic histograms. Based on these assessments, it produces a preprocessing plan for user review before QC filtering begins.
-
   **Supported RNA input formats (`rna_path`):**
 
-  | Format tag | File pattern | Notes |
-  |------------|-------------|-------|
-  | `10x_h5` | `*.h5` | Cell Ranger (ARC) HDF5; GEX features filtered automatically |
-  | `10x_mex` | directory | 10x MEX bundle with `matrix.mtx[.gz]` + `barcodes.tsv[.gz]` |
-  | `h5ad` | `*.h5ad` | AnnData; `.X` must contain raw integer counts |
+  | Format tag  | File pattern           | Notes                                                                                                                                                                                 |
+  | ----------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `10x_h5`    | `*.h5`                 | Cell Ranger (ARC) HDF5; GEX features filtered automatically                                                                                                                           |
+  | `10x_mex`   | directory              | 10x MEX bundle with `matrix.mtx[.gz]` + `barcodes.tsv[.gz]`                                                                                                                           |
+  | `h5ad`      | `*.h5ad`               | AnnData; `.X` must contain raw integer counts                                                                                                                                         |
   | `dense_txt` | `*.txt.gz`, `*.tsv.gz` | Dense genes × cells tab-delimited matrix (common GEO supplementary format). Row 0 = cell-barcode header; rows 1+ = gene symbol + counts. Loaded in 500-gene chunks to bound peak RAM. |
 
   **Supported ATAC input formats (`atac_fragments_path`):**
 
-  | Format tag | File pattern | Notes |
-  |------------|-------------|-------|
-  | `fragments_tsv` | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present |
-  | `bed4` *(auto-convert)* | `*.bed.gz` | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
+  | Format tag              | File pattern                | Notes                                                                                                                                                                                                                                                                                                                                                 |
+  | ----------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `fragments_tsv`         | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present                                                                                                                                                                                                                                              |
+  | `bed4` *(auto-convert)* | `*.bed.gz`                  | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
 - **plan_review** — Generates a summary at `deliverables/plan/summary/plan_review.md` (including the QC threshold-preview tables + histograms) for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs.
 
 ### Preprocessing
 
 - **S1a Ambient RNA correction** — Default `method=auto` on RNA branches (SoupX if raw+filtered exist, else DecontX). Omitted on `atac_only`. Whether to run is confirmed by user at **plan review (#1)** depending on the study goal, inputs, and sample context (see [10x ambient RNA guide](https://www.10xgenomics.com/analysis-guides/introduction-to-ambient-rna-correction)).
-- **S1 RNA QC** — MAD-derived thresholds on `total_counts` / `n_genes` / `pct_counts_mt` plus a `pct_counts_ribo` ceiling, computed on decontaminated counts from S1a. Writes pre/post QC violin figures to `deliverables/figures/`.
-- **S2 ATAC QC** — Four per-cell filters:
-  1. **n_fragments** — MAD-based bounds on log-scale fragment count (with an absolute floor).
-  2. **TSS enrichment** — min/max bounds on SnapATAC2's TSS score.
-  3. **Nucleosome signal** — upper bound on Signac-style `mono / nucleosome_free` ratio.
-  4. **FRiP** — Fraction of Reads in Peaks (`frip_min`; default 0.25). S2 acquires a peak set using the same priority order as S5 feature export (see below), calls the peak × cell matrix via SnapATAC2, and filters cells with FRiP below threshold. The peak BED written here is reused by S5 so no redundant peak calling occurs. FRiP filtering is silently skipped when no peak source is available.
+- **S1 RNA QC** — The following per-cell thresholds are applied:
+  - `total_counts` (total UMI counts per cell): Median Absolute Deviation (MAD)-derived threshold with lower floor = **500**
+  - `n_genes_by_counts` (number of genes detected per cell): MAD-derived threshold with lower floor = **250**
+  - `pct_counts_mt` (percentage of counts mapping to mitochondrial genes): MAD-derived upper threshold with lower floor = **5%** and ceiling = **20%**
+  - `pct_counts_ribo` (percentage of counts mapping to ribosomal genes): upper ceiling = **50%**
+- **S2 ATAC QC** — The following per-cell thresholds are applied:
+  - `n_fragments` (number of fragments per cell): MAD-derived threshold with lower floor = **1,500**
+  - `TSS_enrichment` (Transcription Start Site enrichment score): minimum = **1.5**, maximum = **50**
+  - `nucleosome_signal` (nucleosome signal): defult = **3**
+  - `FRiP` (Fraction of Reads in Peaks): defult = **0.25**
+
+**Flexible QC thresholds**
+Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipped** (filter removed entirely), or **partially skipped** (upper or lower bound only removed) — at either **plan review** (checkpoint #1) or **QC review** (checkpoint #2).
+
 - **S3 Doublets** — Per-modality doublet detection, then branch-specific reconciliation:
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
@@ -67,11 +76,10 @@ Three deliberate pauses where you review deliverables and decide before heavy do
 - **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoints/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large intermediate QC objects `rna_qc.h5ad`, `atac_qc.h5ad`, and `atac_snap.h5ad` are automatically deleted to free storage; `qc_summary.json` files and QC metrics parquets are preserved for report generation and threshold revision.
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
-  0. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
-  1. **ARC peak matrix** — pre-called peaks from a combined Cell Ranger ARC `.h5` detected at S0 (`arc_h5` mode).
-  2. **S2 pre-called peaks** — BED file written by S2 ATAC QC (MACS3 or ARC-derived) reused here; no redundant peak calling (`s2_peaks_macs3` / `s2_peaks_arc` mode).
-  3. **Tile-matrix fallback** — verified SnapATAC2 tile matrix (`tile_matrix_fallback` mode), used only when no peak source is available.
-
+  1. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
+  2. **ARC peak matrix** — pre-called peaks from a combined Cell Ranger ARC `.h5` detected at S0 (`arc_h5` mode).
+  3. **S2 pre-called peaks** — BED file written by S2 ATAC QC (MACS3 or ARC-derived) reused here; no redundant peak calling (`s2_peaks_macs3` / `s2_peaks_arc` mode).
+  4. **Tile-matrix fallback** — verified SnapATAC2 tile matrix (`tile_matrix_fallback` mode), used only when no peak source is available.
   Spectral embedding in `obsm['X_spectral']` (with `X_lsi` as a backward-compat alias) is always computed from the tile matrix regardless of peak-export mode. When `drop_first=True`, the first component is removed before S6–S8.
 - **S6 PCA (RNA) + neighbor graph** (`s6_neighbors`) — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** KNN graph on the S5 spectral embedding (`X_spectral` via `snap.pp.knn`). Artifact: `internal/artifacts/s6_neighbors/rna_neighbors.h5ad`.
 - **S7 Clustering** — Leiden resolution sweep with per-modality grid and stable-region knee picker. **Resolution review checkpoint (#3):** `checkpoints/resolution_review/resolution_review.html` / `.ipynb`. Separate branch: chosen resolutions become final labels. Paired branch: diagnostic per-modality labels for UMAP only.
@@ -137,7 +145,6 @@ Processing-MuAgent/
 └── scripts/             # launch_runner.sh + head-job templates
 ```
 
-
 ## Running on HPC (PBS Pro or SLURM)
 
 On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode. Platform settings are gathered once per run via `configure-execution` and stored in `site.config` (the single source of truth); `hpc.env` is generated from it automatically. Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
@@ -166,6 +173,7 @@ Processing-MuAgent configure-execution --config $CFG --mode slurm \
 ```
 
 This writes:
+
 - `deliverables/plan/config/site.config` — YAML platform description (consumed by Execution-MuAgent)
 - `deliverables/plan/config/hpc.env` — shell snippet generated from site.config; source before `submit`
 
@@ -178,16 +186,18 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 
 ### How the HPC run proceeds
 
-| Step | Stages | Executes on | You |
-|------|--------|-------------|-----|
-| Context | P1 | Login node (cheap, interactive) | Fill biological context |
-| load + validate + plan + QC explore | S0 | Cluster | — |
-| Checkpoint **#1** | plan_review | Login node | Review plan |
-| QC | S1a → S1 → S2 → S3 | Cluster | — |
-| Checkpoint **#2** | post_qc_review | — | Review QC |
-| PCA + neighbors + clustering | S4 → S5 → S6 → S7 (sweep) | Cluster | — |
-| Checkpoint **#3** | s7_clustering | — | Review resolution |
-| Finish | S7 (labels) → S8 → manifest | Cluster | — |
+
+| Step                                | Stages                      | Executes on                     | You                     |
+| ----------------------------------- | --------------------------- | ------------------------------- | ----------------------- |
+| Context                             | P1                          | Login node (cheap, interactive) | Fill biological context |
+| load + validate + plan + QC explore | S0                          | Cluster                         | —                       |
+| Checkpoint **#1**                   | plan_review                 | Login node                      | Review plan             |
+| QC                                  | S1a → S1 → S2 → S3          | Cluster                         | —                       |
+| Checkpoint **#2**                   | post_qc_review              | —                               | Review QC               |
+| PCA + neighbors + clustering        | S4 → S5 → S6 → S7 (sweep)   | Cluster                         | —                       |
+| Checkpoint **#3**                   | s7_clustering               | —                               | Review resolution       |
+| Finish                              | S7 (labels) → S8 → manifest | Cluster                         | —                       |
+
 
 **Execution mode must be user-confirmed before any compute runs.** Both `run` and `submit` hard-refuse to launch until `execution.user_confirmed=true` is recorded (via `configure-execution ... --confirmed-by-user`). This is a one-time gate enforced on fresh runs and resume sessions alike — the agent must confirm local vs HPC with the user and never auto-default. `run` additionally refuses when the mode is `pbs`/`slurm` (use `submit`). Once confirmed, the pipeline proceeds automatically.
 
@@ -197,15 +207,17 @@ Each heavy stage runs as its own scheduler job, and only the three checkpoints a
 
 ### Submit workflow
 
-Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. **`submit` auto-infers the Snakemake target** from run state — you do not need to pick `s0_ingest_execute`, `post_qc_review_propose`, `s7_clustering_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
+Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. `**submit` auto-infers the Snakemake target** from run state — you do not need to pick `s0_ingest_execute`, `post_qc_review_propose`, `s7_clustering_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
 
-| Run state | Inferred target | Runs through |
-|-----------|-----------------|--------------|
-| planning not done | `s0_ingest_execute` | load + validate + assemble plan + QC explore, then pauses for plan review |
-| planning done, `plan_review` not approved | `plan_review_propose` | renders the plan-review deliverable, then pauses |
-| `post_qc_review` not approved | `post_qc_review_propose` | S1a → S3 + QC summary, then pauses |
-| `s7_clustering` not approved | `s7_clustering_propose` | S4 → S6 + resolution sweep, then pauses |
-| All approved | `all` | S7 labels → S8 → manifest |
+
+| Run state                                 | Inferred target          | Runs through                                                              |
+| ----------------------------------------- | ------------------------ | ------------------------------------------------------------------------- |
+| planning not done                         | `s0_ingest_execute`      | load + validate + assemble plan + QC explore, then pauses for plan review |
+| planning done, `plan_review` not approved | `plan_review_propose`    | renders the plan-review deliverable, then pauses                          |
+| `post_qc_review` not approved             | `post_qc_review_propose` | S1a → S3 + QC summary, then pauses                                        |
+| `s7_clustering` not approved              | `s7_clustering_propose`  | S4 → S6 + resolution sweep, then pauses                                   |
+| All approved                              | `all`                    | S7 labels → S8 → manifest                                                 |
+
 
 Override with `--target <name>` only when debugging.
 
@@ -268,8 +280,7 @@ Processing-MuAgent supervisor-restart --config $CFG
 
 Each `submit` first **archives the previous run's Snakemake logs** to `<run_dir>/internal/snakemake/.snakemake/archive/run_<timestamp>/` (a move, so history is preserved). This keeps the live log dirs scoped to the current run, so `hpc-status` reads stage state from the new job's logs only and never reports a phantom failure from the prior run during the new job's PENDING window. The root-cause line for the failure that prompted the resubmit is in the archived logs (and was already surfaced via `hpc-status` before you resubmitted).
 
-For how the monitor works internally — how it decides a job is stalled, how it verifies outputs, and the diagnostics it records — see **`Execution-MuAgent/README.md`**, the package that owns it.
-
+For how the monitor works internally — how it decides a job is stalled, how it verifies outputs, and the diagnostics it records — see `**Execution-MuAgent/README.md`**, the package that owns it.
 
 ## Run directory layout
 
@@ -345,23 +356,25 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 
 ### Command reference
 
-| Command | Purpose |
-|---------|---------|
-| `init` | Create run directory scaffold |
-| `declare-branch` | Record workflow branch in `parameters.yaml` |
+
+| Command               | Purpose                                                                                                                                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`                | Create run directory scaffold                                                                                                                                                                  |
+| `declare-branch`      | Record workflow branch in `parameters.yaml`                                                                                                                                                    |
 | `configure-execution` | Set `execution.mode` + `execution.user_confirmed` (`--confirmed-by-user`); write `site.config` (platform source of truth) and derived `hpc.env`. `run`/`submit` refuse compute until confirmed |
-| `hpc-info` | Probe PBS/SLURM queues, partitions, accounts on the login node |
-| `run` | Foreground Snakemake, **local-only** (local-mode execution + login-node localrules). No cluster path — use `submit` for PBS/SLURM |
-| `submit` | **The only cluster-execution path.** Submit head-job via Execution-MuAgent (hard dependency); starts background supervision daemon; infers phase target |
-| `supervisor-restart` | Restart the supervision daemon without resubmitting — use when the daemon died mid-run (SSH drop, site reboot, OOM) but the cluster job is still active |
-| `status` | Per-step pipeline state (S1a–S8 + review gates); `--watch` polls until actionable |
-| `hpc-status` | One-shot report of job health, supervisor liveness, monitor findings, and per-step state (no poll loop); warns if supervision is offline while the cluster job is still running |
-| `approve` | Write `internal/checkpoints/<stage>.approved` (human checkpoints only) |
-| `plan-review` | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/` |
-| `revise` | Update one parameter in `parameters.yaml` and reset a checkpoint to awaiting |
-| `resolution-compare` | Side-by-side resolution comparison figures (optional) |
-| `unlock` | Remove stale Snakemake locks after a cancelled/killed run |
-| `propose` | Run a single `*_propose` rule (optional; not required for the main pipeline) |
+| `hpc-info`            | Probe PBS/SLURM queues, partitions, accounts on the login node                                                                                                                                 |
+| `run`                 | Foreground Snakemake, **local-only** (local-mode execution + login-node localrules). No cluster path — use `submit` for PBS/SLURM                                                              |
+| `submit`              | **The only cluster-execution path.** Submit head-job via Execution-MuAgent (hard dependency); starts background supervision daemon; infers phase target                                        |
+| `supervisor-restart`  | Restart the supervision daemon without resubmitting — use when the daemon died mid-run (SSH drop, site reboot, OOM) but the cluster job is still active                                        |
+| `status`              | Per-step pipeline state (S1a–S8 + review gates); `--watch` polls until actionable                                                                                                              |
+| `hpc-status`          | One-shot report of job health, supervisor liveness, monitor findings, and per-step state (no poll loop); warns if supervision is offline while the cluster job is still running                |
+| `approve`             | Write `internal/checkpoints/<stage>.approved` (human checkpoints only)                                                                                                                         |
+| `plan-review`         | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/`                                                                                                              |
+| `revise`              | Update one or more parameters in `parameters.yaml` and reset a checkpoint to awaiting. Used to tune, tighten, loosen, or **skip** individual QC metrics — see **Flexible QC thresholds**       |
+| `resolution-compare`  | Side-by-side resolution comparison figures (optional)                                                                                                                                          |
+| `unlock`              | Remove stale Snakemake locks after a cancelled/killed run                                                                                                                                      |
+| `propose`             | Run a single `*_propose` rule (optional; not required for the main pipeline)                                                                                                                   |
+
 
 **Approve aliases:** `qc_review` → `post_qc_review`; `resolution_review` → `s7_clustering`. Parameter keys in `revise` still use internal names (e.g. `s7_clustering.rna.resolution`).
 
@@ -420,7 +433,6 @@ Processing-MuAgent propose post_qc_review --config $CFG
 Processing-MuAgent propose s7_clustering --config $CFG
 ```
 
-
 ## Environment
 
 Recreate the canonical conda env:
@@ -430,3 +442,4 @@ micromamba env create -n grn -f workflow/envs/processing.yaml
 micromamba activate grn
 pip install -e .
 ```
+

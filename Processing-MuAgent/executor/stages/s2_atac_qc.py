@@ -84,6 +84,21 @@ def _col_to_numpy(adata, key: str) -> np.ndarray:
     return np.asarray(arr, dtype=float)
 
 
+def _sweep_stage_temps(art: Path) -> None:
+    """Remove leftover scratch files from a prior crashed/aborted S2 run.
+
+    S2 writes large intermediate AnnDatas to ``mkstemp`` files in ``art`` (NFS has
+    space; /tmp on compute nodes does not) and unlinks them on success, but a run
+    that aborts between stages can leave a ``tmp*.h5ad`` or a FRiP scratch file
+    behind. None of these patterns match the final artifact (``atac_qc.h5ad``) or
+    any declared/downstream-consumed file, so clearing them at the start of each
+    run keeps scratch from accumulating across re-runs.
+    """
+    for pat in ("tmp*.h5ad", "_frip_tmp.h5ad", "_peaks_stripped_tmp.bed"):
+        for p in art.glob(pat):
+            p.unlink(missing_ok=True)
+
+
 def _acquire_peaks_for_frip(
     adata_3m,
     run_dir: Path,
@@ -151,9 +166,11 @@ def _acquire_peaks_for_frip(
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_arc_peaks_skipped",
                              "reason": str(e)})
 
-    # Priority 2: MACS3 called on the 3-metric-filtered cells
+    # Priority 2: MACS3 called on the 3-metric-filtered cells. macs3_tmp holds
+    # only MACS3's transient working files (no declared output, never read
+    # downstream); remove it on every exit path so it cannot accumulate.
+    macs_tempdir = art / "macs3_tmp"
     try:
-        macs_tempdir = art / "macs3_tmp"
         macs_tempdir.mkdir(parents=True, exist_ok=True)
 
         # SnapATAC2 2.8: groupby=None → single polars DataFrame;
@@ -187,6 +204,8 @@ def _acquire_peaks_for_frip(
     except Exception as e:
         log_event(run_dir, {"stage": "s2_atac_qc", "event": "frip_macs3_skipped",
                              "reason": str(e)})
+    finally:
+        shutil.rmtree(macs_tempdir, ignore_errors=True)
 
     return None, ""
 
@@ -360,6 +379,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     run_dir = Path(run_dir)
     art = run_dir / "internal" / "artifacts" / "s2_atac_qc"
     art.mkdir(parents=True, exist_ok=True)
+    _sweep_stage_temps(art)
     params_path = run_dir / "internal" / "parameters.yaml"
 
     # Acquire the imported AnnData + per-cell metrics: reuse qc_explore's import

@@ -70,6 +70,47 @@ QC_HIST_LAYOUT_RECT = (0, 0, 1, 0.863)
 QC_HIST_SUBPLOTS_TOP = 0.863
 QC_HIST_HSPACE = 0.50
 
+# Plan-default QC parameters — reference cutoff lines on explore histograms.
+DEFAULT_TOTAL_COUNTS_K_MAD = 5.0
+DEFAULT_N_GENES_K_MAD = 5.0
+DEFAULT_PCT_MT_K = 3.0
+DEFAULT_PCT_MT_CEILING = 20.0
+DEFAULT_PCT_MT_FLOOR = 5.0
+DEFAULT_MIN_COUNTS_FLOOR = 500.0
+DEFAULT_MIN_GENES_FLOOR = 250.0
+DEFAULT_PCT_RIBO_MAX = 50.0
+DEFAULT_N_FRAG_K_MAD = 5.0
+DEFAULT_N_FRAG_FLOOR = 1500.0
+DEFAULT_TSS_MIN = 1.5
+DEFAULT_TSS_MAX = 50.0
+DEFAULT_NUC_MAX = 3.0
+DEFAULT_PCT_MT_REFS: list[tuple[float, str]] = [
+    (5.0, "5%"), (10.0, "10%"), (20.0, "20%"),
+]
+
+
+def default_rna_thresholds(obs) -> dict[str, float]:
+    """MAD bounds at plan defaults (reference lines on QC-explore histograms)."""
+    from .methods import qc_thresholds as qct
+    return qct.rna_thresholds(
+        obs,
+        total_counts_k_mad=DEFAULT_TOTAL_COUNTS_K_MAD,
+        n_genes_k_mad=DEFAULT_N_GENES_K_MAD,
+        pct_mt_k=DEFAULT_PCT_MT_K,
+        pct_mt_ceiling=DEFAULT_PCT_MT_CEILING,
+        pct_mt_floor=DEFAULT_PCT_MT_FLOOR,
+        min_counts_floor=DEFAULT_MIN_COUNTS_FLOOR,
+        min_genes_floor=DEFAULT_MIN_GENES_FLOOR,
+    )
+
+
+def default_atac_fragment_bounds(n_frag: np.ndarray) -> tuple[float, float, float]:
+    """Log-MAD fragment bounds at plan defaults."""
+    from .methods import qc_thresholds as qct
+    return qct.atac_n_fragment_bounds(
+        n_frag, k_mad=DEFAULT_N_FRAG_K_MAD, n_frag_floor=DEFAULT_N_FRAG_FLOOR,
+    )
+
 # User-facing panel / axis labels for QC explore histograms (keys = internal metric ids).
 QC_METRIC_DISPLAY_NAMES: dict[str, str] = {
     "total_counts": "total counts",
@@ -139,6 +180,268 @@ def _cutoff_label(
 ) -> str:
     text = _format_cutoff_value(x, pct=pct, log_axis=log_axis)
     return f"{text} (MAD)" if mad else text
+
+
+def effective_filter_bounds(
+    applied_lo: float | None,
+    applied_hi: float | None,
+    hi_skip_above: float,
+) -> tuple[float | None, float | None]:
+    """Return ``(filter_lo, filter_hi)`` for marginal removal shading on histograms."""
+    hi_skipped = applied_hi is not None and float(applied_hi) >= hi_skip_above
+    lo_v = float(applied_lo) if applied_lo is not None else 0.0
+    filter_lo = None if (hi_skipped and lo_v <= 0) else applied_lo
+    filter_hi = None if hi_skipped else applied_hi
+    return filter_lo, filter_hi
+
+
+def _append_bound_marker(
+    markers: list[tuple[float, str, bool]],
+    x: float,
+    label: str,
+    used: bool,
+    *,
+    pct: bool,
+) -> None:
+    """Add a cutoff marker unless another marker already sits at the same x."""
+    for existing_x, _, _ in markers:
+        if _thresholds_coincide(x, existing_x, pct=pct):
+            return
+    markers.append((float(x), label, used))
+
+
+def _lo_filter_active(applied_lo: float) -> bool:
+    return float(applied_lo) > 0
+
+
+def _hi_filter_active(applied_hi: float, hi_skip_above: float) -> bool:
+    return float(applied_hi) < hi_skip_above
+
+
+def _bound_in_use(x: float, applied: float, active: bool, *, pct: bool) -> bool:
+    return active and _thresholds_coincide(x, applied, pct=pct)
+
+
+def build_mad_range_markers(
+    *,
+    applied_lo: float,
+    applied_hi: float,
+    default_lo: float,
+    default_hi: float,
+    default_mad_lo_raw: float | None,
+    default_floor: float | None,
+    hi_skip_above: float,
+    log_axis: bool,
+    pct: bool = False,
+) -> tuple[list[tuple[float, str, bool]], float | None, float | None]:
+    """Markers for log-MAD range metrics (total_counts, n_genes, n_fragments).
+
+    Plan-default lower/upper bounds are always drawn. Bounds that actively filter
+    are red; unused defaults (e.g. when a metric is skipped) are grey. Skip
+    sentinels (``lo=0``, astronomical upper) are never plotted.
+    """
+    markers: list[tuple[float, str, bool]] = []
+    lo_active = _lo_filter_active(applied_lo)
+    hi_active = _hi_filter_active(applied_hi, hi_skip_above)
+    def_lo = float(default_lo)
+    def_hi = float(default_hi)
+
+    lo_mad = (
+        default_mad_lo_raw is not None
+        and _thresholds_coincide(float(default_mad_lo_raw), def_lo, pct=pct)
+    )
+    _append_bound_marker(
+        markers, def_lo,
+        _cutoff_label(
+            def_lo, pct=pct, log_axis=log_axis,
+            mad=lo_mad and _bound_in_use(def_lo, applied_lo, lo_active, pct=pct),
+        ),
+        _bound_in_use(def_lo, applied_lo, lo_active, pct=pct),
+        pct=pct,
+    )
+    if (
+        default_mad_lo_raw is not None
+        and not _thresholds_coincide(float(default_mad_lo_raw), def_lo, pct=pct)
+    ):
+        _append_bound_marker(
+            markers, float(default_mad_lo_raw),
+            _cutoff_label(float(default_mad_lo_raw), pct=pct, log_axis=log_axis, mad=True),
+            False, pct=pct,
+        )
+    if (
+        default_floor is not None
+        and not _thresholds_coincide(float(default_floor), def_lo, pct=pct)
+    ):
+        _append_bound_marker(
+            markers, float(default_floor),
+            _cutoff_label(float(default_floor), pct=pct, log_axis=log_axis),
+            _bound_in_use(float(default_floor), applied_lo, lo_active, pct=pct),
+            pct=pct,
+        )
+
+    if def_hi < hi_skip_above:
+        _append_bound_marker(
+            markers, def_hi,
+            _cutoff_label(def_hi, pct=pct, log_axis=log_axis, mad=True),
+            _bound_in_use(def_hi, applied_hi, hi_active, pct=pct),
+            pct=pct,
+        )
+
+    if lo_active and not any(
+        _thresholds_coincide(float(applied_lo), m[0], pct=pct) for m in markers
+    ):
+        _append_bound_marker(
+            markers, float(applied_lo),
+            _cutoff_label(float(applied_lo), pct=pct, log_axis=log_axis),
+            True, pct=pct,
+        )
+    if hi_active and not any(
+        _thresholds_coincide(float(applied_hi), m[0], pct=pct) for m in markers
+    ):
+        _append_bound_marker(
+            markers, float(applied_hi),
+            _cutoff_label(float(applied_hi), pct=pct, log_axis=log_axis, mad=True),
+            True, pct=pct,
+        )
+
+    filter_lo, filter_hi = effective_filter_bounds(applied_lo, applied_hi, hi_skip_above)
+    return markers, filter_lo, filter_hi
+
+
+def build_upper_only_markers(
+    *,
+    applied_hi: float,
+    default_hi: float,
+    hi_skip_above: float,
+    default_mad_hi_raw: float | None = None,
+    default_fixed_refs: list[tuple[float, str]] | None = None,
+    pct: bool = False,
+    log_axis: bool = False,
+) -> tuple[list[tuple[float, str, bool]], float | None, float | None]:
+    """Markers for upper-bound-only metrics (pct_counts_mt, pct_counts_ribo, nucleosome)."""
+    markers: list[tuple[float, str, bool]] = []
+    hi_active = _hi_filter_active(applied_hi, hi_skip_above)
+    def_hi = float(default_hi)
+
+    if def_hi < hi_skip_above:
+        hi_mad = (
+            default_mad_hi_raw is not None
+            and _thresholds_coincide(float(default_mad_hi_raw), def_hi, pct=pct)
+        )
+        _append_bound_marker(
+            markers, def_hi,
+            _cutoff_label(def_hi, pct=pct, log_axis=log_axis, mad=hi_mad),
+            _bound_in_use(def_hi, applied_hi, hi_active, pct=pct),
+            pct=pct,
+        )
+    if (
+        default_mad_hi_raw is not None
+        and def_hi < hi_skip_above
+        and not _thresholds_coincide(float(default_mad_hi_raw), def_hi, pct=pct)
+    ):
+        _append_bound_marker(
+            markers, float(default_mad_hi_raw),
+            _cutoff_label(float(default_mad_hi_raw), pct=pct, log_axis=log_axis, mad=True),
+            False, pct=pct,
+        )
+    for rx, rlabel in default_fixed_refs or []:
+        if def_hi < hi_skip_above and _thresholds_coincide(float(rx), def_hi, pct=pct):
+            continue
+        _append_bound_marker(
+            markers, float(rx), str(rlabel),
+            _bound_in_use(float(rx), applied_hi, hi_active, pct=pct),
+            pct=pct,
+        )
+
+    if hi_active and not any(
+        _thresholds_coincide(float(applied_hi), m[0], pct=pct) for m in markers
+    ):
+        hi_mad = (
+            default_mad_hi_raw is not None
+            and _thresholds_coincide(float(default_mad_hi_raw), float(applied_hi), pct=pct)
+        )
+        _append_bound_marker(
+            markers, float(applied_hi),
+            _cutoff_label(float(applied_hi), pct=pct, log_axis=log_axis, mad=hi_mad),
+            True, pct=pct,
+        )
+
+    _, filter_hi = effective_filter_bounds(None, applied_hi, hi_skip_above)
+    return markers, None, filter_hi
+
+
+def build_fixed_range_markers(
+    *,
+    applied_lo: float,
+    applied_hi: float,
+    default_lo: float,
+    default_hi: float,
+    hi_skip_above: float,
+    log_axis: bool = False,
+    pct: bool = False,
+) -> tuple[list[tuple[float, str, bool]], float | None, float | None]:
+    """Markers for fixed lo/hi metrics without MAD (e.g. TSS enrichment)."""
+    markers: list[tuple[float, str, bool]] = []
+    lo_active = _lo_filter_active(applied_lo)
+    hi_active = _hi_filter_active(applied_hi, hi_skip_above)
+    def_lo = float(default_lo)
+    def_hi = float(default_hi)
+
+    _append_bound_marker(
+        markers, def_lo,
+        _cutoff_label(def_lo, pct=pct, log_axis=log_axis),
+        _bound_in_use(def_lo, applied_lo, lo_active, pct=pct),
+        pct=pct,
+    )
+    if def_hi < hi_skip_above:
+        _append_bound_marker(
+            markers, def_hi,
+            _cutoff_label(def_hi, pct=pct, log_axis=log_axis),
+            _bound_in_use(def_hi, applied_hi, hi_active, pct=pct),
+            pct=pct,
+        )
+
+    if lo_active and not any(
+        _thresholds_coincide(float(applied_lo), m[0], pct=pct) for m in markers
+    ):
+        _append_bound_marker(
+            markers, float(applied_lo),
+            _cutoff_label(float(applied_lo), pct=pct, log_axis=log_axis),
+            True, pct=pct,
+        )
+    if hi_active and not any(
+        _thresholds_coincide(float(applied_hi), m[0], pct=pct) for m in markers
+    ):
+        _append_bound_marker(
+            markers, float(applied_hi),
+            _cutoff_label(float(applied_hi), pct=pct, log_axis=log_axis),
+            True, pct=pct,
+        )
+
+    filter_lo, filter_hi = effective_filter_bounds(applied_lo, applied_hi, hi_skip_above)
+    return markers, filter_lo, filter_hi
+
+
+def qc_hist_panel(
+    values,
+    markers: list[tuple[float, str, bool]],
+    *,
+    filter_lo: float | None = None,
+    filter_hi: float | None = None,
+    log: bool = False,
+) -> dict[str, Any]:
+    """Build one metric spec for :func:`plot_qc_threshold_histograms`."""
+    spec: dict[str, Any] = {
+        "values": np.asarray(values, dtype=float),
+        "markers": markers,
+    }
+    if filter_lo is not None:
+        spec["filter_lo"] = filter_lo
+    if filter_hi is not None:
+        spec["filter_hi"] = filter_hi
+    if log:
+        spec["log"] = True
+    return spec
 
 
 def _stagger_threshold_label_ys(
@@ -347,17 +650,11 @@ def plot_qc_threshold_histograms(
 
     ``metrics`` maps a metric name to a spec dict:
       - ``values``: 1D array of per-cell values.
-      - ``lo`` / ``hi``: MAD-derived cutoffs (either may be ``None``); cells
-        outside ``[lo, hi]`` are shaded as removed and the marginal count is
-        annotated.
+      - ``markers``: list of ``(x, label, is_used)`` cutoff lines — used bounds
+        are red, reference bounds grey.
+      - ``filter_lo`` / ``filter_hi``: applied thresholds for the removed-cell
+        count (may be ``None`` when a bound is disabled).
       - ``log``: when truthy, use a log-spaced x-axis (counts / fragments).
-      - ``refs``: optional list of ``(x, label)`` fixed reference lines drawn in a
-        distinct style (e.g. 5% / 10% mito ceilings) — markers only, they do not
-        affect the removed count.
-      - ``mad_lo_raw`` / ``mad_hi_raw``: optional raw MAD bounds; active ``lo`` /
-        ``hi`` labels get a `` (MAD)`` suffix when they coincide with the raw value.
-      - ``mad_hi``: when true and ``mad_hi_raw`` is omitted, the upper cutoff is
-        always labeled as MAD-derived (log-MAD upper bounds without clamping).
 
     ``extra_panel`` (optional) fills one grid slot with a non-histogram panel:
     ``{"distr": <frag_size_distr vector>, "title": str}``. ``extra_panel_slot``
@@ -400,9 +697,8 @@ def plot_qc_threshold_histograms(
         ax = axes[slot]
         vals = np.asarray(spec.get("values"), dtype=float)
         vals = vals[np.isfinite(vals)]
-        lo = spec.get("lo")
-        hi = spec.get("hi")
-        refs = spec.get("refs") or []
+        lo = spec.get("filter_lo")
+        hi = spec.get("filter_hi")
         use_log = bool(spec.get("log"))
         if vals.size == 0:
             ax.set_title(_qc_metric_display_name(name) + " (no data)")
@@ -424,37 +720,12 @@ def plot_qc_threshold_histograms(
             ax.set_ylim(ymin, ymax * QC_HIST_Y_TOP_PAD)
 
         pct_metric = _is_pct_metric(name)
-        mad_lo_raw = spec.get("mad_lo_raw")
-        mad_hi_raw = spec.get("mad_hi_raw")
         removed = np.zeros(vals.shape, dtype=bool)
-        markers: list[tuple[float, str, bool]] = []
         if lo is not None:
             removed |= vals < lo
-            lo_mad = (
-                mad_lo_raw is not None
-                and _thresholds_coincide(float(mad_lo_raw), float(lo), pct=pct_metric)
-            )
-            markers.append((
-                float(lo),
-                _cutoff_label(float(lo), pct=pct_metric, log_axis=use_log, mad=lo_mad),
-                True,
-            ))
         if hi is not None:
             removed |= vals > hi
-            if mad_hi_raw is not None:
-                hi_mad = _thresholds_coincide(float(mad_hi_raw), float(hi), pct=pct_metric)
-            else:
-                hi_mad = bool(spec.get("mad_hi", False))
-            markers.append((
-                float(hi),
-                _cutoff_label(float(hi), pct=pct_metric, log_axis=use_log, mad=hi_mad),
-                True,
-            ))
-        for rx, rlabel in refs:
-            rx_f = float(rx)
-            if any(_thresholds_coincide(rx_f, b, pct=pct_metric) for b in (lo, hi)):
-                continue
-            markers.append((rx_f, str(rlabel), False))
+        markers = list(spec["markers"])
 
         if use_log and vals.size:
             pos = vals[vals > 0]

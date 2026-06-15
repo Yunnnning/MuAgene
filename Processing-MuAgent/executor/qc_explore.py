@@ -35,12 +35,39 @@ from . import qc_tables as _qc_tables
 from . import provenance as _prov
 from .md_tables import fmt as _fmt
 from .figures import (
+    DEFAULT_MIN_COUNTS_FLOOR,
+    DEFAULT_MIN_GENES_FLOOR,
+    DEFAULT_N_FRAG_FLOOR,
+    DEFAULT_N_FRAG_K_MAD,
+    DEFAULT_NUC_MAX,
+    DEFAULT_PCT_MT_CEILING,
+    DEFAULT_PCT_MT_FLOOR,
+    DEFAULT_PCT_MT_K,
+    DEFAULT_PCT_MT_REFS,
+    DEFAULT_PCT_RIBO_MAX,
+    DEFAULT_TSS_MAX,
+    DEFAULT_TSS_MIN,
+    DEFAULT_TOTAL_COUNTS_K_MAD,
+    DEFAULT_N_GENES_K_MAD,
     QC_EXPLORE_ATAC_TITLE,
     QC_EXPLORE_RNA_TITLE,
     RNA_HIST_EDGE_COLOR,
     RNA_HIST_FILL_ALPHA,
     RNA_HIST_FILL_COLOR,
+    build_fixed_range_markers,
+    build_mad_range_markers,
+    build_upper_only_markers,
+    default_atac_fragment_bounds,
+    default_rna_thresholds,
     plot_qc_threshold_histograms,
+    qc_hist_panel,
+)
+from .qc_tables import (
+    SKIP_ABOVE_COUNTS,
+    SKIP_ABOVE_GENES,
+    SKIP_ABOVE_NUC,
+    SKIP_ABOVE_TSS,
+    SKIP_PCT_AT,
 )
 from .log import log_event
 from .methods import qc_thresholds as _qct
@@ -49,89 +76,6 @@ from .run_paths import RunPaths
 
 S1_FIGURE_STEM = "s0_rna_data_explore"
 S2_FIGURE_STEM = "s0_atac_data_explore"
-
-
-def _pct_mt_panel_refs(th: dict[str, float]) -> list[tuple[float, str]]:
-    """Reference lines for the pct_counts_mt QC-explore histogram.
-
-    When floor clamping moves the applied cutoff above the raw MAD bound, the
-    unclamped MAD value is drawn as an extra reference marker. Fixed 5% / 10% /
-    20% references match the standard plan defaults shown at plan review.
-    """
-    from .figures import _cutoff_label, _thresholds_coincide
-
-    applied = th["pct_counts_mt_max"]
-    refs: list[tuple[float, str]] = []
-    mad_raw = th.get("pct_counts_mt_mad_raw")
-    if mad_raw is not None and not _thresholds_coincide(mad_raw, applied, pct=True):
-        refs.append((
-            float(mad_raw),
-            _cutoff_label(float(mad_raw), pct=True, log_axis=False, mad=True),
-        ))
-    refs.append((5.0, "5%"))
-    refs.append((10.0, "10%"))
-    refs.append((20.0, "20%"))
-    return refs
-
-
-def _total_counts_panel_refs(th: dict[str, float]) -> list[tuple[float, str]]:
-    """Reference lines for the total_counts QC-explore histogram.
-
-    When floor clamping raises the applied lower bound above the raw log-MAD
-    bound, the unclamped MAD value is drawn as an extra reference marker.
-    """
-    from .figures import _cutoff_label, _thresholds_coincide
-
-    applied = th["total_counts_min"]
-    refs: list[tuple[float, str]] = []
-    mad_lo = th.get("total_counts_mad_lo_raw")
-    if mad_lo is not None and not _thresholds_coincide(mad_lo, applied, pct=False):
-        refs.append((
-            float(mad_lo),
-            _cutoff_label(float(mad_lo), pct=False, log_axis=True, mad=True),
-        ))
-    return refs
-
-
-def _n_genes_panel_refs(th: dict[str, float], *, min_genes_floor: float) -> list[tuple[float, str]]:
-    """Reference lines for the n_genes QC-explore histogram.
-
-    Shows the raw log-MAD lower bound when floor clamping raises the applied
-    cutoff, and the configured genes floor when it sits below the applied bound.
-    """
-    from .figures import _cutoff_label, _thresholds_coincide
-
-    applied = th["n_genes_min"]
-    refs: list[tuple[float, str]] = []
-    mad_lo = th.get("n_genes_mad_lo_raw")
-    if mad_lo is not None and not _thresholds_coincide(mad_lo, applied, pct=False):
-        refs.append((
-            float(mad_lo),
-            _cutoff_label(float(mad_lo), pct=False, log_axis=True, mad=True),
-        ))
-    floor_f = float(min_genes_floor)
-    if not _thresholds_coincide(floor_f, applied, pct=False):
-        refs.append((floor_f, f"{floor_f:g}"))
-    return refs
-
-
-def _n_fragments_panel_refs(th: dict[str, float]) -> list[tuple[float, str]]:
-    """Reference lines for the n_fragments QC-explore histogram.
-
-    When floor clamping raises the applied lower bound above the raw log-MAD
-    bound, the unclamped MAD value is drawn as an extra reference marker.
-    """
-    from .figures import _cutoff_label, _thresholds_coincide
-
-    applied = th["n_fragments_min"]
-    refs: list[tuple[float, str]] = []
-    mad_lo = th.get("n_fragments_mad_lo_raw")
-    if mad_lo is not None and not _thresholds_coincide(mad_lo, applied, pct=False):
-        refs.append((
-            float(mad_lo),
-            _cutoff_label(float(mad_lo), pct=False, log_axis=True, mad=True),
-        ))
-    return refs
 
 
 def _pval(params: dict[str, Any], key: str, default: Any) -> Any:
@@ -197,16 +141,18 @@ def _rna_qc_from_metrics(
     per-cell metrics frame (columns: RNA_METRIC_COLS). Pure compute + plotting —
     shared by the heavy explore path and the cheap re-derive path. ``params`` is
     the effective (override-overlaid) parameter set."""
-    k_mad = _pval(params, "k_mad", 5.0)
-    pct_mt_k = _pval(params, "pct_mt_k", 3.0)
-    pct_mt_ceil = _pval(params, "pct_mt_ceiling", 20.0)
-    pct_mt_floor = _pval(params, "pct_mt_floor", 5.0)
-    min_counts_floor = _pval(params, "min_counts_floor", 500)
-    min_genes_floor = float(_pval(params, "min_genes_floor", 250))
-    pct_ribo_max = float(_pval(params, "pct_ribo_max", 50.0))
+    total_counts_k_mad = _pval(params, "total_counts_k_mad", DEFAULT_TOTAL_COUNTS_K_MAD)
+    n_genes_k_mad = _pval(params, "n_genes_k_mad", DEFAULT_N_GENES_K_MAD)
+    pct_mt_k = _pval(params, "pct_mt_k", DEFAULT_PCT_MT_K)
+    pct_mt_ceil = _pval(params, "pct_mt_ceiling", DEFAULT_PCT_MT_CEILING)
+    pct_mt_floor = _pval(params, "pct_mt_floor", DEFAULT_PCT_MT_FLOOR)
+    min_counts_floor = _pval(params, "min_counts_floor", DEFAULT_MIN_COUNTS_FLOOR)
+    min_genes_floor = float(_pval(params, "min_genes_floor", DEFAULT_MIN_GENES_FLOOR))
+    pct_ribo_max = float(_pval(params, "pct_ribo_max", DEFAULT_PCT_RIBO_MAX))
 
     th = _qct.rna_thresholds(
-        obs, k_mad=k_mad, pct_mt_k=pct_mt_k, pct_mt_ceiling=pct_mt_ceil,
+        obs, total_counts_k_mad=total_counts_k_mad, n_genes_k_mad=n_genes_k_mad,
+        pct_mt_k=pct_mt_k, pct_mt_ceiling=pct_mt_ceil,
         pct_mt_floor=pct_mt_floor, min_counts_floor=min_counts_floor,
         min_genes_floor=min_genes_floor,
     )
@@ -214,23 +160,59 @@ def _rna_qc_from_metrics(
     cells_removed = marginal_removals(masks)
     th = {**th, "pct_counts_ribo_max": pct_ribo_max}
 
+    default_th = default_rna_thresholds(obs)
+
+    tc_markers, tc_lo, tc_hi = build_mad_range_markers(
+        applied_lo=th["total_counts_min"],
+        applied_hi=th["total_counts_max"],
+        default_lo=default_th["total_counts_min"],
+        default_hi=default_th["total_counts_max"],
+        default_mad_lo_raw=default_th["total_counts_mad_lo_raw"],
+        default_floor=DEFAULT_MIN_COUNTS_FLOOR,
+        hi_skip_above=SKIP_ABOVE_COUNTS,
+        log_axis=True,
+    )
+    ng_markers, ng_lo, ng_hi = build_mad_range_markers(
+        applied_lo=th["n_genes_min"],
+        applied_hi=th["n_genes_max"],
+        default_lo=default_th["n_genes_min"],
+        default_hi=default_th["n_genes_max"],
+        default_mad_lo_raw=default_th["n_genes_mad_lo_raw"],
+        default_floor=DEFAULT_MIN_GENES_FLOOR,
+        hi_skip_above=SKIP_ABOVE_GENES,
+        log_axis=True,
+    )
+    mt_markers, _, mt_hi = build_upper_only_markers(
+        applied_hi=th["pct_counts_mt_max"],
+        default_hi=default_th["pct_counts_mt_max"],
+        default_mad_hi_raw=default_th["pct_counts_mt_mad_raw"],
+        hi_skip_above=SKIP_PCT_AT,
+        pct=True,
+        default_fixed_refs=DEFAULT_PCT_MT_REFS,
+    )
+    ribo_markers, _, ribo_hi = build_upper_only_markers(
+        applied_hi=pct_ribo_max,
+        default_hi=DEFAULT_PCT_RIBO_MAX,
+        hi_skip_above=SKIP_PCT_AT,
+        pct=True,
+    )
+
     plot_qc_threshold_histograms(
         {
-            "total_counts": {"values": np.asarray(obs["total_counts"], dtype=float),
-                             "lo": th["total_counts_min"], "hi": th["total_counts_max"],
-                             "log": True, "mad_lo_raw": th["total_counts_mad_lo_raw"],
-                             "mad_hi": True,
-                             "refs": _total_counts_panel_refs(th)},
-            "n_genes": {"values": np.asarray(obs["n_genes_by_counts"], dtype=float),
-                        "lo": th["n_genes_min"], "hi": th["n_genes_max"], "log": True,
-                        "mad_lo_raw": th["n_genes_mad_lo_raw"], "mad_hi": True,
-                        "refs": _n_genes_panel_refs(th, min_genes_floor=min_genes_floor)},
-            "pct_counts_mt": {"values": np.asarray(obs["pct_counts_mt"], dtype=float),
-                              "lo": None, "hi": th["pct_counts_mt_max"],
-                              "mad_hi_raw": th["pct_counts_mt_mad_raw"],
-                              "refs": _pct_mt_panel_refs(th)},
-            "pct_counts_ribo": {"values": np.asarray(obs["pct_counts_ribo"], dtype=float),
-                                "lo": None, "hi": pct_ribo_max},
+            "total_counts": qc_hist_panel(
+                obs["total_counts"], tc_markers,
+                filter_lo=tc_lo, filter_hi=tc_hi, log=True,
+            ),
+            "n_genes": qc_hist_panel(
+                obs["n_genes_by_counts"], ng_markers,
+                filter_lo=ng_lo, filter_hi=ng_hi, log=True,
+            ),
+            "pct_counts_mt": qc_hist_panel(
+                obs["pct_counts_mt"], mt_markers, filter_hi=mt_hi,
+            ),
+            "pct_counts_ribo": qc_hist_panel(
+                obs["pct_counts_ribo"], ribo_markers, filter_hi=ribo_hi,
+            ),
         },
         out_dir=figs_dir, stem=S1_FIGURE_STEM,
         title=QC_EXPLORE_RNA_TITLE,
@@ -290,11 +272,11 @@ def _atac_qc_from_metrics(
 
     ``frag_size_distr`` (optional) is the pre-filtering SnapATAC2 fragment-size
     distribution; when present it fills the grid's 4th panel."""
-    k_mad = _pval(params, "n_fragments_k_mad", 5.0)
-    n_frag_floor = _pval(params, "n_fragments_floor", 1500)
-    tss_min = float(_pval(params, "tss_enrichment_min", 1.5))
-    tss_max = float(_pval(params, "tss_enrichment_max", 50.0))
-    nuc_max = float(_pval(params, "nucleosome_signal_max", 3.0))
+    k_mad = _pval(params, "n_fragments_k_mad", DEFAULT_N_FRAG_K_MAD)
+    n_frag_floor = _pval(params, "n_fragments_floor", DEFAULT_N_FRAG_FLOOR)
+    tss_min = float(_pval(params, "tss_enrichment_min", DEFAULT_TSS_MIN))
+    tss_max = float(_pval(params, "tss_enrichment_max", DEFAULT_TSS_MAX))
+    nuc_max = float(_pval(params, "nucleosome_signal_max", DEFAULT_NUC_MAX))
     frip_min = float(_pval(params, "frip_min", 0.25))
 
     f_lo, f_hi, f_lo_mad_raw = _qct.atac_n_fragment_bounds(
@@ -319,13 +301,43 @@ def _atac_qc_from_metrics(
             "distr": np.asarray(frag_size_distr, dtype=float),
             "title": "fragment size distribution (pre-filtering)",
         }
+    default_f_lo, default_f_hi, default_f_mad = default_atac_fragment_bounds(n_frag_values)
+    nf_markers, nf_lo, nf_hi = build_mad_range_markers(
+        applied_lo=f_lo,
+        applied_hi=f_hi,
+        default_lo=default_f_lo,
+        default_hi=default_f_hi,
+        default_mad_lo_raw=default_f_mad,
+        default_floor=DEFAULT_N_FRAG_FLOOR,
+        hi_skip_above=SKIP_ABOVE_COUNTS,
+        log_axis=True,
+    )
+    tss_markers, tss_lo, tss_hi = build_fixed_range_markers(
+        applied_lo=tss_min,
+        applied_hi=tss_max,
+        default_lo=DEFAULT_TSS_MIN,
+        default_hi=DEFAULT_TSS_MAX,
+        hi_skip_above=SKIP_ABOVE_TSS,
+    )
+    nuc_markers, _, nuc_hi = build_upper_only_markers(
+        applied_hi=nuc_max,
+        default_hi=DEFAULT_NUC_MAX,
+        hi_skip_above=SKIP_ABOVE_NUC,
+    )
+
     plot_qc_threshold_histograms(
         {
-            "n_fragments": {"values": n_frag_values, "lo": f_lo, "hi": f_hi, "log": True,
-                            "mad_lo_raw": f_lo_mad_raw, "mad_hi": True,
-                            "refs": _n_fragments_panel_refs(th)},
-            "tss_enrichment": {"values": tss_values, "lo": tss_min, "hi": tss_max},
-            "nucleosome_signal": {"values": ns_values, "lo": None, "hi": nuc_max},
+            "n_fragments": qc_hist_panel(
+                n_frag_values, nf_markers,
+                filter_lo=nf_lo, filter_hi=nf_hi, log=True,
+            ),
+            "tss_enrichment": qc_hist_panel(
+                tss_values, tss_markers,
+                filter_lo=tss_lo, filter_hi=tss_hi,
+            ),
+            "nucleosome_signal": qc_hist_panel(
+                ns_values, nuc_markers, filter_hi=nuc_hi,
+            ),
         },
         out_dir=figs_dir, stem=S2_FIGURE_STEM,
         title=QC_EXPLORE_ATAC_TITLE,
@@ -587,7 +599,7 @@ def run(run_dir: Path | str, *, rna_adata=None) -> Path:
 def _rna_table(data: dict[str, Any]) -> str:
     return _qc_tables.rna_removal_table(
         data["thresholds"], data["cells_removed"],
-        value_label="threshold", include_note=True,
+        include_note=True,
     )
 
 
@@ -595,8 +607,8 @@ def _atac_table(data: dict[str, Any]) -> str:
     th = data["thresholds"]
     return _qc_tables.atac_removal_table(
         th, data["cells_removed"],
-        value_label="threshold", include_note=True,
-        frip_threshold_display=f"≥ {_fmt(th['frip_min'])} _(computed at runtime)_",
+        include_note=True,
+        frip_threshold_display=f"< {_fmt(th['frip_min'])} _(computed at runtime)_",
         frip_removed="—",
     )
 

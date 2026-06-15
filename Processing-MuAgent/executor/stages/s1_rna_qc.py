@@ -57,7 +57,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # Parameters from plan, overlaid with any parameters.yaml override (a user
     # `revise` of a recipe knob wins over the frozen plan — same rule as S2/S3).
     params = plan["stages"]["s1_rna_qc"]["parameters"]
-    k_mad = _resolve_param(params_path, params, "k_mad", 5.0)
+    total_counts_k_mad = _resolve_param(params_path, params, "total_counts_k_mad", 5.0)
+    n_genes_k_mad = _resolve_param(params_path, params, "n_genes_k_mad", 5.0)
     pct_mt_k = _resolve_param(params_path, params, "pct_mt_k", 3.0)
     pct_mt_ceil = _resolve_param(params_path, params, "pct_mt_ceiling", 20.0)
     pct_mt_floor = _resolve_param(params_path, params, "pct_mt_floor", 5.0)
@@ -71,7 +72,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # Derive thresholds (shared with the pre-plan QC exploration); absolute
     # floors win when MAD lower bounds fall below them.
     th = _qct.rna_thresholds(
-        a.obs, k_mad=k_mad, pct_mt_k=pct_mt_k, pct_mt_ceiling=pct_mt_ceil,
+        a.obs, total_counts_k_mad=total_counts_k_mad, n_genes_k_mad=n_genes_k_mad,
+        pct_mt_k=pct_mt_k, pct_mt_ceiling=pct_mt_ceil,
         pct_mt_floor=pct_mt_floor, min_counts_floor=min_counts_floor,
         min_genes_floor=min_genes_floor,
     )
@@ -83,10 +85,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     for key, value, rat in [
         ("s1_rna_qc.total_counts_min", float(c_lo),
          f"max(MAD lower bound on log1p(total_counts), min_counts_floor={min_counts_floor})"),
-        ("s1_rna_qc.total_counts_max", float(c_hi), "MAD upper bound on log1p(total_counts)"),
+        ("s1_rna_qc.total_counts_max", float(c_hi),
+         f"MAD upper bound on log1p(total_counts) (total_counts_k_mad={total_counts_k_mad})"),
         ("s1_rna_qc.n_genes_min", float(g_lo),
          f"max(MAD lower bound on log1p(n_genes), min_genes_floor={min_genes_floor})"),
-        ("s1_rna_qc.n_genes_max", float(g_hi), "MAD upper bound on log1p(n_genes)"),
+        ("s1_rna_qc.n_genes_max", float(g_hi),
+         f"MAD upper bound on log1p(n_genes) (n_genes_k_mad={n_genes_k_mad})"),
         ("s1_rna_qc.pct_counts_mt_max", float(pct_mt_upper),
          f"{pct_mt_k}*MAD above median(pct_counts_mt); clamped to [{pct_mt_floor}, {pct_mt_ceil}]"),
         ("s1_rna_qc.pct_counts_ribo_max", float(pct_ribo_max),

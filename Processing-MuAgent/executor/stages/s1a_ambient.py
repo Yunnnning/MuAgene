@@ -152,27 +152,36 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                 "code_ref": "executor/stages/s1a_ambient.py"})
         return {"method": "skipped_empty", "n_cells": 0}
 
+    # Scratch dir for the SoupX/DecontX backend. It holds only transient working
+    # files (no declared output, never read downstream) so it is removed as soon
+    # as correction finishes — including on error — and a leftover from a prior
+    # crashed run is cleared first so it cannot accumulate.
     work_dir = art / f"_work_{chosen}"
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    if chosen == "soupx":
-        if not _io.has_input_ref(s0_art, "rna_raw"):
-            raise ValueError(
-                "SoupX requested but no raw RNA input ref exists — supply rna_raw_path "
-                "in run.yaml or set method=decontx/auto."
-            )
-        legacy_raw = s0_art / "rna_raw.h5ad"
-        if legacy_raw.exists():
-            raw_a = ad.read_h5ad(legacy_raw)
+    try:
+        if chosen == "soupx":
+            if not _io.has_input_ref(s0_art, "rna_raw"):
+                raise ValueError(
+                    "SoupX requested but no raw RNA input ref exists — supply rna_raw_path "
+                    "in run.yaml or set method=decontx/auto."
+                )
+            legacy_raw = s0_art / "rna_raw.h5ad"
+            if legacy_raw.exists():
+                raw_a = ad.read_h5ad(legacy_raw)
+            else:
+                raw_path, raw_fmt = _io.resolve_input_ref(s0_art / "rna_raw")
+                raw_a = _io.load_rna(raw_path, fmt=raw_fmt)
+            result = _amb.run_soupx(a, raw_a, work_dir=work_dir,
+                                     max_contamination=max_contam)
+            del raw_a
         else:
-            raw_path, raw_fmt = _io.resolve_input_ref(s0_art / "rna_raw")
-            raw_a = _io.load_rna(raw_path, fmt=raw_fmt)
-        result = _amb.run_soupx(a, raw_a, work_dir=work_dir,
-                                 max_contamination=max_contam)
-        del raw_a
-    else:
-        result = _amb.run_decontx(a, work_dir=work_dir,
-                                   max_contamination=max_contam)
+            result = _amb.run_decontx(a, work_dir=work_dir,
+                                       max_contamination=max_contam)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     a_corr = _amb.apply_correction(a, result)
     _wipe_marker_caches(art)

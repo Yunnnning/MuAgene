@@ -167,13 +167,51 @@ recipe knob (the multiplier or floor/ceiling), not the bound.
 
 | Stage | Honored keys (inputs) |
 |---|---|
-| `s1_rna_qc` | `k_mad`, `pct_mt_k`, `pct_mt_ceiling`, `pct_mt_floor`, `pct_ribo_max`, `min_counts_floor`, `min_genes_floor`, `min_cells_per_gene` |
+| `s1_rna_qc` | `total_counts_k_mad`, `n_genes_k_mad`, `pct_mt_k`, `pct_mt_ceiling`, `pct_mt_floor`, `pct_ribo_max`, `min_counts_floor`, `min_genes_floor`, `min_cells_per_gene` |
 | `s2_atac_qc` | `frip_min`, `tss_enrichment_min`, `tss_enrichment_max`, `nucleosome_signal_max`, `n_fragments_k_mad`, `n_fragments_floor` |
 | `s3_doublets` | `rna_doublet_score_threshold`, `atac_doublet_probability_threshold` |
 
 ## Stage-done sentinels
 
 Each QC stage's `qc_summary.json` is its stage-done marker (used by `stage_progress.py` and by Execution-MuAgent for output verification) and persists through the `post_qc_review` approval cleanup. `revise` clears it as part of invalidation, so a re-run correctly shows the stage as incomplete — you do not manage these files yourself.
+
+---
+
+## Skipping individual QC metrics
+
+Use these workaround commands when the user wants to disable or remove the upper bound on a specific QC metric. Set them with `revise` before approving the plan (at plan review) or before re-submitting (at QC review).
+
+### RNA (`s1_rna_qc`)
+
+`total_counts_k_mad` and `n_genes_k_mad` are independent — each metric can be tuned separately.
+
+| User intent | Keys to set |
+|---|---|
+| Skip `total_counts` completely | `total_counts_k_mad=999`, `min_counts_floor=0` |
+| Remove upper bound on `total_counts` only | `total_counts_k_mad=999` |
+| Skip `n_genes` completely | `n_genes_k_mad=999`, `min_genes_floor=0` |
+| Remove upper bound on `n_genes` only | `n_genes_k_mad=999` |
+| Skip `pct_counts_mt` | `pct_mt_k=999`, `pct_mt_ceiling=100` |
+| Skip `pct_counts_ribo` | `pct_ribo_max=100` |
+
+### ATAC (`s2_atac_qc`)
+
+| User intent | Keys to set |
+|---|---|
+| Skip `n_fragments` completely | `n_fragments_k_mad=999`, `n_fragments_floor=0` |
+| Remove upper bound on `n_fragments` only | `n_fragments_k_mad=999` |
+| Skip `tss_enrichment` completely | `tss_enrichment_min=0`, `tss_enrichment_max=999` |
+| Remove upper bound on `tss_enrichment` only | `tss_enrichment_max=999` |
+| Skip `nucleosome_signal` (upper-bound metric) | `nucleosome_signal_max=999` |
+| Skip `frip` | `frip_min=0` |
+
+The pipeline renders skip labels automatically — no report editing needed. The threshold display layer detects workaround parameter values and substitutes clean labels (e.g. "0 – no upper bound", "disabled") in both the plan-review appendix and the QC review report.
+
+**At plan review** (gate unapproved): `revise` auto-regenerates `plan_review_<run>.md` — the appendix already shows the clean labels.
+
+**At QC review** (after S1–S3 have run): run `revise`, follow the re-run procedure above (approve affected stages + `s3_doublets`, cancel stale head jobs, submit, monitor). The regenerated report shows clean labels.
+
+---
 
 ## QC report cell-count columns
 

@@ -165,7 +165,8 @@ def assemble_plan(
         },
         "s1_rna_qc": {
             "parameters": {
-                "k_mad": p(5.0, "default", "Project convention for symmetric MAD on log1p counts.", "high"),
+                "total_counts_k_mad": p(5.0, "default", "MAD multiplier for total_counts bounds.", "high"),
+                "n_genes_k_mad": p(5.0, "default", "MAD multiplier for n_genes bounds.", "high"),
                 "pct_mt_k": p(3.0, "default", "MAD multiplier for mito upper bound.", "high"),
                 "pct_mt_ceiling": p(pct_mt_ceil, "default", pct_mt_rat, "high"),
                 "pct_mt_floor": p(5.0, "default", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),

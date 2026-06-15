@@ -11,7 +11,7 @@ class PlanAppendixOrderTests(unittest.TestCase):
         plan = {
             "workflow_branch": "paired",
             "stages": {
-                "s1_rna_qc": {"parameters": {"k_mad": {"value": 5.0, "rationale": "x"}}},
+                "s1_rna_qc": {"parameters": {"total_counts_k_mad": {"value": 5.0, "rationale": "x"}}},
                 "s1a_ambient": {"parameters": {"method": {"value": "auto", "rationale": "y"}}},
             },
             "warnings": [],

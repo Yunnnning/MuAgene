@@ -225,7 +225,20 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
      - **decline** → carried as `--skip-marker-genes` on the approve call below (or `--marker-genes skip` on submit).
    - If `s1a_ambient.method == none`, skip this question entirely.
 
-5. On user decision:
+5. **QC threshold confirmation — mandatory question, runs after marker-gene step.**
+   The "QC strategy" summary item shows `[? needs confirmation]`. Surface it as part of presenting the plan — this is not optional. After the marker-gene question is resolved, ask:
+   > "The QC strategy is marked **[? needs confirmation]**. The default MAD-based thresholds are shown in the plan appendix histograms. Would you like to:
+   > - Keep the defaults and proceed to approval?
+   > - Adjust one or more thresholds (tell me which and how)?
+   > - Skip one or more metrics entirely?
+   >
+   > Any RNA metric (`total_counts`, `n_genes`, `pct_counts_mt`, `pct_counts_ribo`) or ATAC metric (`n_fragments`, `tss_enrichment`, `nucleosome_signal`, `frip`) can be tuned or disabled — see `qc_threshold_revision.md` → 'Skipping individual QC metrics'."
+
+   User outcomes:
+   - **Confirm defaults** → proceed to approval (step 6 below).
+   - **Adjust / skip** → run `executor revise s1_rna_qc / s2_atac_qc <key>=<value> --config $CFG --rationale "<reason>"`. `revise` auto-regenerates the plan deliverables; re-surface and re-ask until the user confirms.
+
+6. On user decision:
    - **Approve** → `executor approve plan_review --config $CFG --note "approved after review"`, adding `--defer-marker-genes` or `--skip-marker-genes` to match the user's marker-gene choice when no genes were provided. **The executor refuses to approve while the marker-gene decision is unresolved** — if you see that error, you skipped the mandatory question above; go ask it. (On HPC, the same decision is carried as `--marker-genes defer|skip` on `submit --auto-approve`.)
    - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. While `plan_review` is unapproved, `revise` **automatically regenerates** `plan_review_<run>.md` / `plan_summary_<run>.html` (and re-derives the cheap QC preview from persisted metrics) so the overlay shows the new value — you do not refresh them by hand. The override wins over the frozen plan when the stage runs. Stage is re-set to awaiting_approval; re-surface the updated deliverable and ask if more revisions are needed before re-approving. (Revise the input knobs, not the MAD-derived bounds — see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) "Common revise keys".)
    - **Abort** → stop. Tell the user the run dir is intact; they can resume later by re-invoking you on the same config.

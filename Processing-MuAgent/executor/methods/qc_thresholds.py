@@ -20,7 +20,8 @@ from . import mad_thresholds as _mad
 def rna_thresholds(
     obs: Any,
     *,
-    k_mad: float,
+    total_counts_k_mad: float,
+    n_genes_k_mad: float,
     pct_mt_k: float,
     pct_mt_ceiling: float,
     pct_mt_floor: float,
@@ -38,10 +39,10 @@ def rna_thresholds(
     mt = np.asarray(obs["pct_counts_mt"], dtype=float)
 
     keep_floor = tc >= float(min_counts_floor)
-    c_lo, c_hi = _mad.log_mad_bounds(tc[keep_floor], k=k_mad)
+    c_lo, c_hi = _mad.log_mad_bounds(tc[keep_floor], k=total_counts_k_mad)
     c_lo_mad_raw = float(c_lo)
     c_lo = max(c_lo, float(min_counts_floor))
-    g_lo, g_hi = _mad.log_mad_bounds(ng[keep_floor], k=k_mad)
+    g_lo, g_hi = _mad.log_mad_bounds(ng[keep_floor], k=n_genes_k_mad)
     g_lo_mad_raw = float(g_lo)
     g_lo = max(g_lo, float(min_genes_floor))
     mt_subset = mt[keep_floor]

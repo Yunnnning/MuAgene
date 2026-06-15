@@ -112,7 +112,7 @@ def _rna_threshold_table(params: dict[str, Any], rm: dict[str, Any]) -> str:
         "pct_counts_mt_max": _param(params, "s1_rna_qc.pct_counts_mt_max"),
         "pct_counts_ribo_max": _param(params, "s1_rna_qc.pct_counts_ribo_max"),
     }
-    return _qc_tables.rna_removal_table(th, rm, value_label="value", include_note=False)
+    return _qc_tables.rna_removal_table(th, rm, include_note=False)
 
 
 def _atac_threshold_table(
@@ -130,11 +130,11 @@ def _atac_threshold_table(
         "frip_min": _param(params, "s2_atac_qc.frip_min"),
     }
     frip_display = (
-        f"≥ {_fmt(th['frip_min'])}" if peak_source
-        else f"≥ {_fmt(th['frip_min'])} _(not applied — no peaks available)_"
+        f"< {_fmt(th['frip_min'])}" if peak_source
+        else f"< {_fmt(th['frip_min'])} _(not applied — no peaks available)_"
     )
     return _qc_tables.atac_removal_table(
-        th, rm, value_label="value", include_note=False,
+        th, rm, include_note=False,
         frip_threshold_display=frip_display, frip_removed=_rm_count(rm, "frip_min"),
     )
 
