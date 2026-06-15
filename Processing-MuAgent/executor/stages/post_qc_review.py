@@ -134,13 +134,13 @@ def _plot_cell_count_waterfall(run_dir: Path, figs_dir: Path) -> list[Path]:
     import matplotlib.pyplot as plt
 
     counts = _qcs._stage_counts(run_dir)
-
-    rna_after_s1a = counts.get("rna_after_ambient") or counts.get("rna_ingest")
+    branch = _qcs._workflow_branch(run_dir)
+    steps = _qcs._preprocessing_flow_steps(
+        run_dir, counts, branch, include_final_stage=False,
+    )
     stages = [
-        ("raw", counts.get("rna_raw"), counts.get("atac_raw_barcodes")),
-        ("after ambient\nRNA correction", rna_after_s1a, counts.get("atac_raw_barcodes")),
-        ("after RNA /\nATAC QC", counts.get("rna_qc_post"), counts.get("atac_qc_post")),
-        ("after doublet\nremoval", counts.get("rna_post_doublet"), counts.get("atac_post_doublet")),
+        (_qcs._flow_chart_label(step["stage"]), step["rna"], step["atac"])
+        for step in steps
     ]
 
     stages = [(lbl, r, a) for lbl, r, a in stages if r is not None or a is not None]

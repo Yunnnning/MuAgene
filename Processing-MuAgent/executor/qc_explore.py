@@ -330,6 +330,7 @@ def _atac_qc_from_metrics(
         out_dir=figs_dir, stem=S2_FIGURE_STEM,
         title=QC_EXPLORE_ATAC_TITLE,
         extra_panel=extra_panel,
+        extra_panel_slot=1,
     )
     return {
         "thresholds": th,
@@ -510,8 +511,7 @@ def rederive_from_metrics(run_dir: Path | str) -> Path:
             metrics = pd.read_parquet(atac_parquet)
             params = _effective_stage_params(run_dir, plan, "s2_atac_qc")
             # Reload the persisted pre-filtering fragment-size distribution so the
-            # 4th grid panel re-renders without re-importing fragments. Absent on
-            # runs predating this artifact → panel falls back to "(no data)".
+            # fragment-size panel re-renders without re-importing fragments.
             fsd_path = art / ATAC_FRAG_SIZE_DISTR_NPY
             frag_size_distr = np.load(fsd_path) if fsd_path.exists() else None
             out["s2_atac_qc"] = _atac_qc_from_metrics(

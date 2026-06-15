@@ -162,21 +162,6 @@ def execute_done(paths: RunPaths, stage: str) -> bool:
     return execute_artifact(paths, stage).exists()
 
 
-def _planning_done(paths: RunPaths) -> bool:
-    """True when the merged planning job (s0_ingest_execute) has fully completed.
-
-    The merged job loads + validates, assembles the plan, and runs the QC
-    exploration in one shot. ``qc_explore.json`` is its last write, so requiring
-    both the validation report and the explore JSON catches a job that died after
-    ingest but before exploration. A dedicated predicate is used (not
-    EXECUTE_MARKERS) because the explore marker lives in a different artifact dir
-    than the stage id.
-    """
-    return (
-        paths.validation_report.exists()
-        and paths.artifact("qc_explore", "qc_explore.json").exists()
-    )
-
 
 def _s7_sweep_done(paths: RunPaths) -> bool:
     return paths.artifact(RESOLUTION_REVIEW_STAGE, S7_SWEEP_MARKER).exists()
@@ -473,18 +458,17 @@ def infer_resume_target(run_dir: Path | str) -> str:
     rule makes Snakemake pull the whole phase's execute stages in as
     dependencies AND run the gate-arming localrule at the end — so one head-job
     submission runs the entire phase *and* arms the gate. Targeting the last
-    execute stage instead (the old behaviour) truncated the phase one rule
-    early, leaving the gate unarmed and the run waiting for a signal that never
-    came. Snakemake reruns any missing/failed upstream execute stage before the
-    localrule, so this also covers partial-resume.
+    execute stage instead truncated the phase one rule early, leaving the gate
+    unarmed and the run waiting for a signal that never came. Snakemake reruns
+    any missing/failed upstream execute stage before the localrule, so this also
+    covers partial-resume.
     """
     paths = RunPaths(run_dir)
 
-    # Planning phase: the merged s0_ingest job (load + validate + plan + QC
-    # exploration) runs before checkpoint #1. Route it through `submit` so
-    # Execution-MuAgent owns the cluster submission.
-    if not _planning_done(paths):
-        return "s0_ingest_execute"
+    # Planning phase terminus = plan_review_propose (pulls P1 → s0_ingest_execute
+    # → P2 as dependencies). When S0 has not run, Snakemake resolves the full
+    # chain. When S0 is done but the gate is unarmed, only the cheap localrule
+    # runs. Matches the established QC / resolution pattern.
     if not paths.approved_sentinel("plan_review").exists():
         return "plan_review_propose"
 

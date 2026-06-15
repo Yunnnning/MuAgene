@@ -71,6 +71,18 @@ class FragmentSizePanelTests(unittest.TestCase):
             self.assertTrue(any(p.suffix == ".png" and p.exists() and p.stat().st_size > 0
                                 for p in paths))
 
+    def test_atac_extra_panel_slot_one(self):
+        n_used = 4
+        extra_slot = 1
+        hist_slots = [i for i in range(n_used) if i != extra_slot]
+        metric_names = ["n_fragments", "tss_enrichment", "nucleosome_signal"]
+        layout = {hist_slots[i]: metric_names[i] for i in range(len(metric_names))}
+        layout[extra_slot] = "fragment_size"
+        self.assertEqual(layout[0], "n_fragments")
+        self.assertEqual(layout[1], "fragment_size")
+        self.assertEqual(layout[2], "tss_enrichment")
+        self.assertEqual(layout[3], "nucleosome_signal")
+
     def test_pct_mt_shows_mad_ref_when_below_floor(self):
         rng = np.random.default_rng(0)
         vals = rng.uniform(0, 8, 500)

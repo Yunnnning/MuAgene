@@ -1,5 +1,8 @@
 rule plan_review_propose:
-    """Render the merged plan review summary (concise + appendix). Writes the awaiting_approval sentinel.
+    """Arm the plan_review gate and write per-stage job specs.
+
+    Deliverables (plan_review_<run>.md and plan_summary_<run>.html) are written
+    by the agent via ``executor plan-review --intro "..."``, not here.
     User must approve before any preprocessing stage (S1..S8) runs.
     """
     input:
@@ -8,14 +11,12 @@ rule plan_review_propose:
         ctx         = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
         qc_explore  = str(INTERNAL / "artifacts" / "qc_explore" / "qc_explore.json"),
     output:
-        # Run-scoped plan review deliverables (reviewed before plan approval).
-        summary      = str(PLAN / "summary" / f"plan_review_{RUN_DIR.name}.md"),
-        summary_html = str(PLAN / "summary" / f"plan_summary_{RUN_DIR.name}.html"),
-        awaiting     = str(INTERNAL / "proposals" / "plan_review.awaiting_approval"),
+        awaiting    = str(INTERNAL / "proposals" / "plan_review.awaiting_approval"),
     params:
         run_dir = str(RUN_DIR),
     run:
-        from executor import plan_review as pr, approval
-        out = pr.write_summary(params.run_dir)
-        pr.write_plan_summary_html(params.run_dir)
+        import json as _json
+        from executor import approval, specs as _specs
+        branch = _json.loads(open(input.plan).read()).get("workflow_branch", "paired")
+        _specs.write_stage_specs(params.run_dir, branch)
         approval.mark_awaiting(params.run_dir, "plan_review")

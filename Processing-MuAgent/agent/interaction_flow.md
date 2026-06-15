@@ -117,26 +117,25 @@ Once the user answers, in order:
 5. Invoke `executor declare-branch <paired|separate|rna_only|atac_only> --config $CFG`.
    - S0 will confirm this assertion against its own pairing detection; if they mismatch, S0 raises with a clear diff — relay it verbatim.
 
-6. **Run planning (P1 → S0 → P2) — S0 execution location depends on configured mode:**
-   The planning target is **`s0_ingest_execute`** — it runs P1 → S0 and assembles
-   the preprocessing plan in-process. The former separate `p2_plan` rule was merged
-   into S0; there is no `p2_plan_execute` rule (requesting it raises
-   `MissingRuleException`). One `s0_ingest_execute` run emits the ingest h5ad,
-   `validation_report.json`, `preprocessing_plan.json`, and the `qc_explore`
-   artifacts the plan review consumes.
+6. **Run planning (P1 → S0 → P2) — execution location depends on configured mode:**
+   The planning phase target is **`plan_review_propose`** (auto-inferred by
+   `infer_resume_target()`). `plan_review_propose` depends on `s0_ingest_execute`,
+   so Snakemake runs P1 → S0 → P2 → gate-arming in a single head-job submission —
+   the gate is armed at the end without a separate step. Targeting `s0_ingest_execute`
+   directly would stop one rule early and leave the gate unarmed.
    S0 execution location follows the configured mode (the execution model and
    monitoring mechanics are defined once under *Running on HPC* — don't restate them).
-   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, submit S0 as a cluster head-job, then report-and-repoll:
+   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, submit the planning head-job, then report-and-repoll:
      ```
      source deliverables/plan/config/hpc.env
-     executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
+     executor submit --config $CFG --executor pbs|slurm
      executor hpc-status --config $CFG             # one-shot: report the daemon's snapshot, then yield
      ```
-     The Execution-MuAgent daemon runs S0 on a compute node and is the sole monitor;
-     follow the **report-and-repoll** rule under *Running on HPC* (report one-shot
-     `hpc-status`, then re-poll on a non-blocking scheduled wakeup until the gate signal — never block or tail logs).
-   - **Local mode (`execution.mode` is `local`):** `executor run --config $CFG --target s0_ingest_execute` (runs P1 → S0 + plan assembly; ~30s on small inputs).
-     - **If S0 OOMs locally:** this means the machine is too small. Switch to HPC (a mode change, so re-confirm): `executor configure-execution --config $CFG --mode slurm|pbs ... --confirmed-by-user` then submit S0 as above. There is no automatic local→cluster retry.
+     Target is auto-inferred (`plan_review_propose`). The Execution-MuAgent daemon
+     runs S0 on a compute node and is the sole monitor; follow the **report-and-repoll**
+     rule under *Running on HPC* (report one-shot `hpc-status`, then re-poll on a
+     non-blocking scheduled wakeup until the gate signal — never block or tail logs).
+   - **Local mode (`execution.mode` is `local`):** `executor run --config $CFG --target plan_review_propose` (runs P1 → S0 + plan assembly + gate-arming; ~30s on small inputs).
    - **Do not** retry logic errors (pairing ambiguous, declared-vs-detected mismatch, missing index). Relay the message; user fixes inputs or branch declaration.
    - After S0 completes, surface `validation_report.json` pairing fields if `paired` was downgraded or ambiguous.
 

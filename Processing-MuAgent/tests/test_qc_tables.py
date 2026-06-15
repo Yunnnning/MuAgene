@@ -74,5 +74,37 @@ class AtacTableTests(unittest.TestCase):
         self.assertIn("not applied — no peaks available", t)
 
 
+class FlowStepTests(unittest.TestCase):
+    def test_preprocessing_flow_steps_split_rna_atac_qc(self):
+        from pathlib import Path
+        from executor import qc_summary as qcs
+
+        counts = {
+            "rna_raw": 100, "atac_raw_barcodes": 100,
+            "rna_qc_post": 80, "atac_qc_post": 70,
+            "rna_post_doublet": 60, "atac_post_doublet": 60,
+            "n_cells_joint": 60,
+        }
+        steps = qcs._preprocessing_flow_steps(
+            Path("/tmp/run"), counts, "paired", include_final_stage=False,
+        )
+        self.assertEqual([s["stage"] for s in steps], [
+            "1. raw",
+            "2. after RNA QC",
+            "3. after ATAC QC",
+            "4. after doublet removal",
+        ])
+        self.assertEqual(steps[1]["rna"], 80)
+        self.assertEqual(steps[1]["atac"], 100)
+        self.assertEqual(steps[2]["rna"], 80)
+        self.assertEqual(steps[2]["atac"], 70)
+
+    def test_flow_chart_label(self):
+        from executor import qc_summary as qcs
+
+        self.assertEqual(qcs._flow_chart_label("2. after RNA QC"), "after RNA\nQC")
+        self.assertEqual(qcs._flow_chart_label("1. raw"), "raw")
+
+
 if __name__ == "__main__":
     unittest.main()

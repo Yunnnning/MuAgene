@@ -253,11 +253,12 @@ class StageProgressTests(unittest.TestCase):
             self.assertEqual(infer_resume_target(tmp), "s7_clustering_propose")
 
     def test_infer_resume_targets_planning_first(self):
-        """A fresh run (no planning artifacts) routes the merged planning job first,
-        so `submit` dispatches it via Execution-MuAgent."""
+        """A fresh run (no planning artifacts) targets plan_review_propose.
+        Snakemake pulls s0_ingest_execute in as a dependency, so the whole
+        planning phase (P1 → S0 → P2 → gate) runs in a single head-job."""
         with tempfile.TemporaryDirectory() as tmp:
             self._init_run(tmp, planning_done=False)
-            self.assertEqual(infer_resume_target(tmp), "s0_ingest_execute")
+            self.assertEqual(infer_resume_target(tmp), "plan_review_propose")
 
     def test_infer_resume_plan_review_after_planning(self):
         """Once planning artifacts exist but plan_review is unapproved, the resume
@@ -268,13 +269,14 @@ class StageProgressTests(unittest.TestCase):
 
     def test_infer_resume_incomplete_planning_when_explore_missing(self):
         """A planning job that died after the validation report but before the QC
-        exploration is still treated as incomplete."""
+        exploration targets plan_review_propose. Snakemake sees qc_explore.json
+        is missing and re-runs s0_ingest_execute before the localrule."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp, planning_done=False)
             report = paths.artifact("s0_ingest", "validation_report.json")
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text("{}")
-            self.assertEqual(infer_resume_target(tmp), "s0_ingest_execute")
+            self.assertEqual(infer_resume_target(tmp), "plan_review_propose")
 
     def test_required_human_approvals_planning_targets_empty(self):
         """Planning targets run before checkpoint #1 — they cannot require the

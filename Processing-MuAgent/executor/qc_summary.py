@@ -514,25 +514,131 @@ def _barcode_set_snap(path: Path) -> set[str] | None:
         return None
 
 
+def _atac_whitelist_barcodes(artifacts: Path) -> set[str] | None:
+    path = artifacts / "s0_ingest" / "atac_cell_barcodes.tsv"
+    if not path.exists():
+        return None
+    return {line.strip() for line in path.read_text().splitlines() if line.strip()}
+
+
+def _rna_qc_barcodes(artifacts: Path) -> set[str] | None:
+    path = artifacts / "s1_rna_qc" / "qc_metrics_post.parquet"
+    if not path.exists():
+        return None
+    return set(pd.read_parquet(path).index.astype(str))
+
+
+def _flow_chart_label(stage: str) -> str:
+    """Convert a numbered table stage label to a multi-line chart x-tick label."""
+    label = re.sub(r"^\d+\.\s*", "", stage)
+    chart_labels = {
+        "after RNA QC": "after RNA\nQC",
+        "after ATAC QC": "after ATAC\nQC",
+        "after doublet removal": "after doublet\nremoval",
+    }
+    return chart_labels.get(label, label)
+
+
+def _preprocessing_flow_steps(
+    run_dir: Path,
+    counts: dict[str, Any],
+    workflow_branch: str,
+    *,
+    include_final_stage: bool = True,
+) -> list[dict[str, Any]]:
+    """Structured cell-count flow steps for tables and bar charts."""
+    atac_pre_qc = counts.get("atac_raw_barcodes")
+    if atac_pre_qc is None:
+        atac_pre_qc = counts.get("atac_after_snap_import")
+
+    joint = counts.get("n_cells_joint")
+    s3_note = (
+        "union doublet removal and joint cell retention"
+        if joint is not None
+        else "union doublet removal per modality"
+    )
+
+    steps: list[dict[str, Any]] = [
+        {
+            "stage": "1. raw",
+            "rna": counts.get("rna_raw"),
+            "atac": atac_pre_qc,
+            "note": "—",
+        },
+        {
+            "stage": "2. after RNA QC",
+            "rna": counts.get("rna_qc_post"),
+            "atac": atac_pre_qc,
+            "note": "RNA MAD and quality thresholds",
+        },
+        {
+            "stage": "3. after ATAC QC",
+            "rna": counts.get("rna_qc_post"),
+            "atac": counts.get("atac_qc_post"),
+            "note": "ATAC quality thresholds",
+        },
+        {
+            "stage": "4. after doublet removal",
+            "rna": counts.get("rna_post_doublet"),
+            "atac": counts.get("atac_post_doublet"),
+            "note": s3_note,
+        },
+    ]
+    if include_final_stage:
+        rna_inter = (
+            (counts["rna_post_doublet"] - counts["rna_final"])
+            if (counts.get("rna_post_doublet") is not None
+                and counts.get("rna_final") is not None) else None
+        )
+        atac_inter = (
+            (counts["atac_post_doublet"] - counts["atac_final"])
+            if (counts.get("atac_post_doublet") is not None
+                and counts.get("atac_final") is not None) else None
+        )
+        def _fmt(v):
+            return "n/a" if v is None else str(int(v))
+        steps.append({
+            "stage": "5. after S4–S8 (final)",
+            "rna": counts.get("rna_final"),
+            "atac": counts.get("atac_final"),
+            "note": (
+                f"paired: S8 assembly is a no-op intersection; RNA lost {_fmt(rna_inter)}, "
+                f"ATAC lost {_fmt(atac_inter)} downstream of S3"
+                if joint is not None
+                else "per-modality final outputs (no joint object on this branch)"
+            ),
+        })
+    return steps
+
+
 def _paired_shared_flow_counts(run_dir: Path, counts: dict[str, Any]) -> list[int | None]:
     """Shared RNA∩ATAC barcode counts per flow row (paired branch only)."""
     from .run_paths import RunPaths
     A = RunPaths(run_dir).artifacts
-    n_rows = 5 if counts.get("rna_final") is not None else 4
+    n_rows = len(_preprocessing_flow_steps(
+        run_dir, counts, "paired", include_final_stage=counts.get("rna_final") is not None,
+    ))
     shared: list[int | None] = [None] * n_rows
 
     rna_ingest = _barcode_set_h5ad(A / "s0_ingest" / "rna_ingest.h5ad")
     if rna_ingest is None:
         return shared
 
-    ingest_shared = len(rna_ingest)
-    shared[0] = ingest_shared
-    shared[1] = ingest_shared
+    shared[0] = len(rna_ingest)
+
+    rna_qc = _rna_qc_barcodes(A)
+    atac_whitelist = _atac_whitelist_barcodes(A)
+    if rna_qc is not None and atac_whitelist is not None:
+        shared[1] = len(rna_qc & atac_whitelist)
 
     calls_p = A / "s3_doublets" / "calls.parquet"
     if calls_p.exists():
         calls = pd.read_parquet(calls_p)
-        both = calls["scrublet_score"].notna() & calls["atac_doublet_score"].notna()
+        if "atac_doublet_probability" in calls.columns:
+            atac_present = calls["atac_doublet_probability"].notna()
+        else:
+            atac_present = calls.get("atac_doublet_score", pd.Series(dtype=float)).notna()
+        both = calls["scrublet_score"].notna() & atac_present
         shared[2] = int(both.sum())
 
     joint = counts.get("n_cells_joint")
@@ -563,59 +669,22 @@ def _flow_section(
     def fmt(v):
         return "n/a" if v is None else str(int(v))
 
-    rna_raw = counts["rna_raw"]
-    atac_raw = counts["atac_raw_barcodes"]
-
-    joint = counts.get("n_cells_joint")
-
-    rna_after_s1a = counts["rna_after_ambient"]
-    if rna_after_s1a is None:
-        rna_after_s1a = counts["rna_ingest"]
-
-    s3_note = (
-        "union doublet removal and joint cell retention"
-        if joint is not None
-        else "union doublet removal per modality"
-    )
-
     paired = workflow_branch == "paired"
     shared_counts = _paired_shared_flow_counts(run_dir, counts) if paired else []
+    steps = _preprocessing_flow_steps(
+        run_dir, counts, workflow_branch, include_final_stage=include_final_stage,
+    )
 
-    def _flow_row(stage: str, rna: Any, atac: Any, note: str, shared_idx: int) -> list[Any]:
-        row = [stage, fmt(rna), fmt(atac)]
+    rows: list[list[Any]] = []
+    for idx, step in enumerate(steps):
+        row = [step["stage"], fmt(step["rna"]), fmt(step["atac"])]
         if paired:
-            sh = shared_counts[shared_idx] if shared_idx < len(shared_counts) else None
+            sh = shared_counts[idx] if idx < len(shared_counts) else None
             row.append(fmt(sh))
-        row.append(note)
-        return row
+        row.append(step["note"])
+        rows.append(row)
 
-    rows = [
-        _flow_row("1. raw", rna_raw, atac_raw, "—", 0),
-        _flow_row("2. after ambient RNA correction", rna_after_s1a, atac_raw,
-                  "RNA ambient correction (cell count unchanged)", 1),
-        _flow_row("3. after RNA / ATAC QC", counts["rna_qc_post"], counts["atac_qc_post"],
-                  "per-modality MAD and quality thresholds", 2),
-        _flow_row("4. after doublet removal", counts["rna_post_doublet"], counts["atac_post_doublet"],
-                  s3_note, 3),
-    ]
-    if include_final_stage:
-        rna_inter = (
-            (counts["rna_post_doublet"] - counts["rna_final"])
-            if (counts["rna_post_doublet"] is not None and counts["rna_final"] is not None) else None
-        )
-        atac_inter = (
-            (counts["atac_post_doublet"] - counts["atac_final"])
-            if (counts["atac_post_doublet"] is not None and counts["atac_final"] is not None) else None
-        )
-        rows.append(
-            _flow_row("5. after S4–S8 (final)", counts["rna_final"], counts["atac_final"],
-                      (f"paired: S8 assembly is a no-op intersection; RNA lost {fmt(rna_inter)}, "
-                       f"ATAC lost {fmt(atac_inter)} downstream of S3"
-                       if joint is not None
-                       else "per-modality final outputs (no joint object on this branch)"),
-                      4)
-        )
-    headers = ["stage", "RNA", "ATAC"] + (["Shared"] if paired else []) + ["note"]
+    headers = ["Stage", "RNA", "ATAC"] + (["Shared"] if paired else []) + ["note"]
     return (
         "## Cell-count flow across stages\n\n"
         f"{_md_table(headers, rows)}\n"

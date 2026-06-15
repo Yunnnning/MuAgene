@@ -782,6 +782,9 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
             click.echo(f"Wrote {len(written)} stage metadata file(s) to {RunPaths(run_dir).stage_meta_dir}/")
     except Exception:
         pass  # spec writing is best-effort; never block plan-review
+    # Arm the plan_review gate — makes the CLI a complete gate-arming path
+    # independent of whether the Snakemake propose rule ran.
+    approval.mark_awaiting(run_dir, "plan_review")
 
 
 @main.command(name="resolution-compare")
@@ -1163,9 +1166,9 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
 
     This is the ONLY cluster-execution path: Processing-MuAgent prepares the
     head-job spec + site.config and Execution-MuAgent owns submission and
-    monitoring (kill-on-hang, hpc-status). This includes the planning-phase S0
-    ingest (`--target s0_ingest_execute`) on HPC — S0's QC exploration is
-    memory-heavy and must run on a compute node, never the login node.
+    monitoring (kill-on-hang, hpc-status). The planning phase targets
+    ``plan_review_propose`` (auto-inferred), which pulls P1 → S0 → P2 as
+    Snakemake dependencies and arms the gate at the end of a single head-job.
 
     Execution-MuAgent is a hard dependency for cluster submission — it renders the
     submission script, submits the head-job, and owns monitoring. If Execution-MuAgent
@@ -1214,9 +1217,10 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
     resolved_target = target if target is not None else _infer_submit_target(run_dir)
 
     # Phase 1 biological-context gate — enforced for planning-phase submissions
-    # (S0) exactly as `run` does. Resume submissions (S1+) skip it: context was
-    # already validated when planning ran.
-    if resolved_target == "s0_ingest_execute":
+    # exactly as `run` does. Resume submissions (S1+) skip it: context was
+    # already validated when planning ran. Covers both the canonical auto-inferred
+    # target (plan_review_propose) and legacy explicit --target s0_ingest_execute.
+    if resolved_target in {"s0_ingest_execute", "plan_review_propose"}:
         _enforce_context_gate(paths, no_context)
 
     phase_seeded = _prepare_submit_approvals(

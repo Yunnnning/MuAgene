@@ -341,6 +341,7 @@ def plot_qc_threshold_histograms(
     edge_color: str = QC_EDGE_COLOR,
     fill_alpha: float = QC_FILL_ALPHA,
     extra_panel: "dict[str, Any] | None" = None,
+    extra_panel_slot: "int | None" = None,
 ) -> list[Path]:
     """Per-metric histograms with the default QC cutoffs drawn on them.
 
@@ -358,10 +359,10 @@ def plot_qc_threshold_histograms(
       - ``mad_hi``: when true and ``mad_hi_raw`` is omitted, the upper cutoff is
         always labeled as MAD-derived (log-MAD upper bounds without clamping).
 
-    ``extra_panel`` (optional) fills the first otherwise-empty grid slot with a
-    non-histogram panel: ``{"distr": <frag_size_distr vector>, "title": str}``.
-    Used by the ATAC QC-explore grid to add a pre-filtering fragment-size
-    distribution in the 4th (2,2) slot.
+    ``extra_panel`` (optional) fills one grid slot with a non-histogram panel:
+    ``{"distr": <frag_size_distr vector>, "title": str}``. ``extra_panel_slot``
+    is the 0-based slot index (row-major in the 2×2 ATAC grid); defaults to the
+    last slot when omitted.
     """
     _apply_style()
     import matplotlib.pyplot as plt
@@ -380,13 +381,23 @@ def plot_qc_threshold_histograms(
     axes = list(np.atleast_1d(axes_grid).ravel())
     for ax in axes[n_used:]:
         ax.set_visible(False)
-    if extra_panel is not None and n < len(axes):
+
+    extra_slot = extra_panel_slot if extra_panel_slot is not None else n
+    if extra_panel is not None:
+        if extra_slot < 0 or extra_slot >= n_used:
+            raise ValueError(
+                f"extra_panel_slot={extra_slot} out of range for {n_used} panels"
+            )
+        hist_slots = [i for i in range(n_used) if i != extra_slot]
         _draw_fragment_size_distribution(
-            axes[n], extra_panel.get("distr"),
+            axes[extra_slot], extra_panel.get("distr"),
             title=extra_panel.get("title"),
         )
+    else:
+        hist_slots = list(range(n))
 
-    for ax, (name, spec) in zip(axes, metrics.items()):
+    for slot, (name, spec) in zip(hist_slots, metrics.items()):
+        ax = axes[slot]
         vals = np.asarray(spec.get("values"), dtype=float)
         vals = vals[np.isfinite(vals)]
         lo = spec.get("lo")
