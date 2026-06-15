@@ -98,31 +98,58 @@ def propose(stage: str, config_path: str) -> None:
     _snakemake(["--configfile", str(paths.run_yaml), f"{stage}_propose"], run_dir)
 
 
+# S1a recompute caches: regenerated whenever S1a re-runs, so they are both the
+# stale-on-revise set (see _S1A_QC_ARTIFACTS) AND safe to delete once QC is
+# approved (no further S1a re-run can occur). Single source of truth for both.
+_S1A_REGEN_CACHES = [
+    ("s1a_ambient", "tsne_coords_cache.parquet"),
+    ("s1a_ambient", "cell_totals.parquet"),
+]
+
+
 def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
     """Remove large QC-only working files after post_qc_review is approved.
 
-    This is the single authority that deletes the QC intermediate matrices. None
-    of these files are declared Snakemake outputs — the QC stages declare only
+    This is the single authority that deletes QC intermediate working files. None
+    of these are declared Snakemake outputs — the QC stages declare only
     qc_summary.json (the durable stage-done marker that carries the S1/S2 -> S3
-    dependency edge), so removing the matrices here does NOT make any rule's
-    declared outputs "missing" and therefore never triggers a re-run of S1/S2/S3
-    on a later submit. Removed:
+    dependency edge), so removing them here does NOT make any rule's declared
+    outputs "missing" and therefore never triggers a re-run of S1/S2/S3 on a later
+    submit. None is read by any post-gate stage (S4–S8). Removed:
       - rna_qc.h5ad / atac_qc.h5ad — untracked QC matrices, consumed only by S3.
       - atac_snap.h5ad — the pre-filter SnapATAC2 import.
       - atac_snap_explore.h5ad — the qc_explore ATAC import (reused by S2 during
         QC, no longer needed once QC is approved).
+      - atac_fragments_cbf[_chrnorm].tsv.gz (+ .tbi) — the chr-normalised fragment
+        caches written by io.prepare_fragments_for_snapatac. These are the single
+        biggest QC artifact. They are deliberately reused across QC re-runs (hence
+        excluded from _invalidate_qc_downstream), but become dead once QC is
+        approved: S5 reads only the cache *filename* recorded in parameters.yaml to
+        match the peak chrom convention, never the file contents.
+      - tsne_coords_cache.parquet / cell_totals.parquet — S1a recompute caches.
 
-    Keeps qc_summary.json, qc_metrics parquets, CBF fragment caches, S1a output,
-    and all S3+ artifacts so threshold revision and downstream stages are
+    Keeps qc_summary.json, the s1/s2 qc_metrics parquets (the final manifest's
+    qc_summary.write() reads qc_metrics_post.parquet at S8), rna_decontaminated.h5ad
+    (declared S1a output), and all S3+ artifacts so downstream stages are
     unaffected. Deleting an already-absent file is a no-op.
     """
     rp = RunPaths(run_dir)
+    # Untracked QC working matrices (DAG edge is qc_summary.json).
     targets = [
         rp.artifact("s1_rna_qc",  "rna_qc.h5ad"),
         rp.artifact("s2_atac_qc", "atac_qc.h5ad"),
         rp.artifact("s2_atac_qc", "atac_snap.h5ad"),
         rp.artifact("qc_explore", "atac_snap_explore.h5ad"),
     ]
+    # Chr-normalised fragment caches: both naming variants + tabix index, in
+    # whichever stage dir they landed in (qc_explore import or an S2 re-derive).
+    for stage in ("qc_explore", "s2_atac_qc"):
+        for name in ("atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz"):
+            targets.append(rp.artifact(stage, name))
+            targets.append(rp.artifact(stage, name + ".tbi"))
+    # S1a recompute caches (no S1a re-run can happen after approval).
+    targets += [rp.artifact(s, f) for (s, f) in _S1A_REGEN_CACHES]
+
     deleted: list[str] = []
     for p in targets:
         if p.exists():
@@ -136,12 +163,9 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
 # everything strictly downstream of it through S3 (the DAG is
 # s1a_ambient -> s1_rna_qc -> s3_doublets and s2_atac_qc -> s3_doublets). The
 # expensive chr-normalized fragment cache (atac_fragments_cbf_chrnorm.tsv.gz*) is
-# intentionally NOT listed — it is reused across re-runs.
-_S1A_QC_ARTIFACTS = [
-    ("s1a_ambient", "rna_decontaminated.h5ad"),
-    ("s1a_ambient", "tsne_coords_cache.parquet"),
-    ("s1a_ambient", "cell_totals.parquet"),
-]
+# intentionally NOT listed — it is reused across re-runs, and only deleted once QC
+# is approved (by _cleanup_qc_intermediates, when no further re-run can occur).
+_S1A_QC_ARTIFACTS = [("s1a_ambient", "rna_decontaminated.h5ad")] + _S1A_REGEN_CACHES
 _S1_QC_ARTIFACTS = [
     ("s1_rna_qc", "rna_qc.h5ad"),
     ("s1_rna_qc", "qc_summary.json"),  # stage-done marker

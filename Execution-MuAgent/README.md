@@ -223,8 +223,10 @@ progress_timeout_hint: 60
 ```
 
 S1/S2 declare their `qc_summary.json` as the monitored output (not the large h5ad), because the
-h5ad is deleted by `executor approve post_qc_review` and would cause false `output_missing`
-findings in subsequent post-QC job runs:
+h5ad — along with the chr-normalised fragment caches (`atac_fragments_cbf[_chrnorm].tsv.gz`) and
+other QC-only working files — is deleted by `executor approve post_qc_review` and would otherwise
+cause false `output_missing` findings in subsequent post-QC job runs. None of the deleted files is
+a declared output, so monitoring keys only off the durable `qc_summary.json`:
 
 ```yaml
 # s1_rna_qc.yaml

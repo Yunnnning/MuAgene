@@ -68,14 +68,65 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
             self.assertTrue(s1_json.exists())
             self.assertTrue(s2_json.exists())
 
-    def test_preserves_parquets_and_cbf_cache(self):
+    def test_preserves_qc_metrics_parquets(self):
+        """The s1/s2 qc_metrics parquets must survive: the final S8 manifest's
+        qc_summary.write() reads qc_metrics_post.parquet."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = _init_run(tmp)
             _touch(paths.artifact("s1_rna_qc", "rna_qc.h5ad"))
             kept = [
                 _touch(paths.artifact("s1_rna_qc", "qc_metrics_pre.parquet"),  b"PAR1\x00PAR1"),
                 _touch(paths.artifact("s1_rna_qc", "qc_metrics_post.parquet"), b"PAR1\x00PAR1"),
-                _touch(paths.artifact("s2_atac_qc", "atac_fragments_cbf.tsv.gz"), b"data"),
+                _touch(paths.artifact("s2_atac_qc", "qc_metrics_pre.parquet"),  b"PAR1\x00PAR1"),
+                _touch(paths.artifact("s2_atac_qc", "qc_metrics_post.parquet"), b"PAR1\x00PAR1"),
+            ]
+
+            _cleanup_qc_intermediates(Path(tmp))
+
+            for p in kept:
+                self.assertTrue(p.exists(), f"Expected {p} to be preserved")
+
+    def test_deletes_cbf_fragment_caches(self):
+        """The chr-normalised fragment caches (both variants + tabix index, in
+        either qc_explore/ or s2_atac_qc/) are the biggest QC artifact and become
+        dead once QC is approved; S5 reads only their recorded filename, not the
+        file. They must be deleted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp)
+            caches = []
+            for stage in ("qc_explore", "s2_atac_qc"):
+                for name in ("atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz"):
+                    caches.append(_touch(paths.artifact(stage, name), b"data"))
+                    caches.append(_touch(paths.artifact(stage, name + ".tbi"), b"idx"))
+
+            deleted = _cleanup_qc_intermediates(Path(tmp))
+
+            for p in caches:
+                self.assertFalse(p.exists(), f"Expected {p} to be deleted")
+            self.assertEqual(len(deleted), len(caches))
+
+    def test_deletes_s1a_recompute_caches(self):
+        """S1a recompute caches are dead after approval (no S1a re-run can occur)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp)
+            caches = [
+                _touch(paths.artifact("s1a_ambient", "tsne_coords_cache.parquet"), b"PAR1"),
+                _touch(paths.artifact("s1a_ambient", "cell_totals.parquet"), b"PAR1"),
+            ]
+
+            _cleanup_qc_intermediates(Path(tmp))
+
+            for p in caches:
+                self.assertFalse(p.exists(), f"Expected {p} to be deleted")
+
+    def test_preserves_s1a_provenance_diagnostics(self):
+        """Per-cell ambient provenance is kept (not a cache, negligible size)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp)
+            kept = [
+                _touch(paths.artifact("s1a_ambient", "contamination.parquet"), b"PAR1"),
+                _touch(paths.artifact("s1a_ambient", "marker_gene_check.json"), b"{}"),
+                _touch(paths.artifact("s1a_ambient", "summary.json"), b"{}"),
             ]
 
             _cleanup_qc_intermediates(Path(tmp))
@@ -176,6 +227,49 @@ class QCMatrixUntrackedTests(unittest.TestCase):
                          "s3 must not declare rna_qc.h5ad as an input edge")
         self.assertNotIn("atac_qc.h5ad", code,
                          "s3 must not declare atac_qc.h5ad as an input edge")
+
+    def test_cleanup_targets_are_not_declared_outputs(self):
+        """Every file deleted at the gate must be untracked by Snakemake — if any
+        were a declared output, deleting it would make a rule's output "missing"
+        and trigger a re-run on the next submit."""
+        names = [
+            "atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz",
+            "atac_snap_explore.h5ad", "atac_snap.h5ad",
+            "tsne_coords_cache.parquet", "cell_totals.parquet",
+        ]
+        joined = "\n".join(self._code(p.read_text()) for p in self._RULES.glob("*.smk"))
+        for name in names:
+            self.assertNotIn(name, joined,
+                             f"{name} must not be a declared Snakemake output")
+
+
+class S2TempSweepTests(unittest.TestCase):
+    """_sweep_stage_temps removes leaked S2 scratch without touching real outputs."""
+
+    def test_sweeps_only_scratch(self):
+        try:
+            from executor.stages.s2_atac_qc import _sweep_stage_temps
+        except ModuleNotFoundError as e:  # numpy/snapatac2 absent in a bare env
+            self.skipTest(f"s2_atac_qc dependencies unavailable: {e}")
+        with tempfile.TemporaryDirectory() as tmp:
+            art = Path(tmp)
+            scratch = [
+                _touch(art / "tmpABCDEF.h5ad"),
+                _touch(art / "_frip_tmp.h5ad"),
+                _touch(art / "_peaks_stripped_tmp.bed"),
+            ]
+            kept = [
+                _touch(art / "atac_qc.h5ad"),
+                _touch(art / "qc_summary.json", b"{}"),
+                _touch(art / "qc_metrics_post.parquet", b"PAR1"),
+            ]
+
+            _sweep_stage_temps(art)
+
+            for p in scratch:
+                self.assertFalse(p.exists(), f"Expected scratch {p} to be swept")
+            for p in kept:
+                self.assertTrue(p.exists(), f"Expected {p} to be preserved")
 
 
 if __name__ == "__main__":
