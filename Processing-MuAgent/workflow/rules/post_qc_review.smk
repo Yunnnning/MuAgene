@@ -5,8 +5,8 @@ rule post_qc_review_propose:
       - deliverables/figures/post_qc_review_cell_counts.{png,pdf}
       - deliverables/figures/post_qc_review_doublet_rna.{png,pdf}
       - deliverables/figures/post_qc_review_doublet_atac.{png,pdf}
-      - deliverables/checkpoints/qc_review/qc_review_<run>.md
-      - deliverables/checkpoints/qc_review/qc_summary_<run>.html
+      - deliverables/qc_review/qc_review_<run>.md
+      - deliverables/qc_review/qc_summary_<run>.html
 
     S1/S2 QC figures are already in deliverables/figures/.
     On paired multiome, the summary documents the S3 union doublet policy for
@@ -19,7 +19,7 @@ rule post_qc_review_propose:
     output:
         proposal = str(INTERNAL / "proposals" / "post_qc_review.yaml"),
         awaiting = str(INTERNAL / "proposals" / "post_qc_review.awaiting_approval"),
-        summary  = str(CHECKPOINTS / "qc_review" / f"qc_review_{RUN_DIR.name}.md"),
+        summary  = str(QC_REVIEW / f"qc_review_{RUN_DIR.name}.md"),
     params:
         run_dir = str(RUN_DIR),
     run:

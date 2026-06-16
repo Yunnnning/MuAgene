@@ -1,8 +1,8 @@
 """Generate a user-facing Jupyter review notebook for each run.
 
 Writes:
-    <run_dir>/deliverables/results/review_processed_h5mu.ipynb
-    <run_dir>/deliverables/results/review_processed_h5mu.py   (paired script)
+    <run_dir>/deliverables/results/review_processed_<run>.ipynb
+    <run_dir>/deliverables/results/review_processed_<run>.py
 
 The notebook is self-contained: RUN_DIR is baked in at generation time and can be
 overridden at runtime via the `PMA_RUN_DIR` environment variable so the notebook
@@ -14,8 +14,8 @@ Design goals:
     - Reproduce the per-cluster UMAP from the loaded object (QC / ambient figures
       are NOT reproduced here — they already live in deliverables/figures/ and the
       QC-review checkpoint).
-    - Surface the fixed per-modality clustering resolutions, and let the user
-      re-cluster at a different resolution and regenerate the coloured UMAP.
+    - Let the user re-cluster at a different resolution and regenerate the
+      processed output (new labels + recoloured UMAP).
 """
 from __future__ import annotations
 
@@ -59,20 +59,22 @@ def _code(source: str, salt: str = "") -> dict[str, Any]:
 # Cell content — kept small and composable for the paired .py export below
 # ---------------------------------------------------------------------------
 
-def _cell_header(run_dir: str) -> dict:
+def _cell_header(run_dir: str, run_name: str) -> dict:
+    h5mu_file = f"processed_{run_name}.h5mu"
     return _md(
-        f"# Review — `processed.h5mu`\n"
+        f"# Review — `{h5mu_file}`\n"
         f"\n"
         f"Run directory: `{run_dir}`\n"
     )
 
 
-_CELL_LOAD = """\
+def _cell_load(run_name: str) -> str:
+    h5mu_file = f"processed_{run_name}.h5mu"
+    return f"""\
 import os
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import yaml
 import matplotlib.pyplot as plt
 import mudata as mu
 import anndata as ad
@@ -80,7 +82,7 @@ from IPython.display import display
 
 RUN_DIR = Path(os.environ.get("PMA_RUN_DIR", "__BAKED_RUN_DIR__"))
 PROCESSED_DIR = RUN_DIR / "deliverables" / "results"
-H5MU = PROCESSED_DIR / "processed.h5mu"
+H5MU = PROCESSED_DIR / "{h5mu_file}"
 RNA_H5AD = PROCESSED_DIR / "rna_processed.h5ad"
 ATAC_H5AD = PROCESSED_DIR / "atac_processed.h5ad"
 
@@ -88,17 +90,17 @@ if H5MU.exists():
     mdata = mu.read_h5mu(H5MU)
 elif RNA_H5AD.exists() and ATAC_H5AD.exists():
     # Separate branch: two independent h5ads
-    mdata = mu.MuData({"rna": ad.read_h5ad(RNA_H5AD),
-                       "atac": ad.read_h5ad(ATAC_H5AD)})
+    mdata = mu.MuData({{"rna": ad.read_h5ad(RNA_H5AD),
+                       "atac": ad.read_h5ad(ATAC_H5AD)}})
 elif RNA_H5AD.exists():
     # rna_only branch
-    mdata = mu.MuData({"rna": ad.read_h5ad(RNA_H5AD)})
+    mdata = mu.MuData({{"rna": ad.read_h5ad(RNA_H5AD)}})
 elif ATAC_H5AD.exists():
     # atac_only branch
-    mdata = mu.MuData({"atac": ad.read_h5ad(ATAC_H5AD)})
+    mdata = mu.MuData({{"atac": ad.read_h5ad(ATAC_H5AD)}})
 else:
     raise FileNotFoundError(
-        f"No processed outputs found under {PROCESSED_DIR}")
+        f"No processed outputs found under {{PROCESSED_DIR}}")
 
 print(mdata)
 """
@@ -145,10 +147,12 @@ if atac_cluster_col:
 """
 
 
-_CELL_UMAP_REPRO = """\
+def _cell_umap_repro(run_name: str) -> str:
+    h5mu_file = f"processed_{run_name}.h5mu"
+    return f"""\
 def _plot_umap_from_obj(ad_, coord_key: str, label_col: str, title: str) -> None:
     if coord_key not in ad_.obsm or label_col not in ad_.obs:
-        print(f"(skip {title}: {coord_key} or {label_col} missing)")
+        print(f"(skip {{title}}: {{coord_key}} or {{label_col}} missing)")
         return
     coords = np.asarray(ad_.obsm[coord_key])
     labels = ad_.obs[label_col].astype(str)
@@ -173,43 +177,31 @@ if rna_cluster_col:
         mdata["rna"],
         "X_umap_rna" if "X_umap_rna" in mdata["rna"].obsm else "X_umap",
         rna_cluster_col,
-        "RNA UMAP — reproduced from processed.h5mu",
+        "RNA UMAP — reproduced from {h5mu_file}",
     )
 if atac_cluster_col:
     _plot_umap_from_obj(
         mdata["atac"],
         "X_umap_atac" if "X_umap_atac" in mdata["atac"].obsm else "X_umap",
         atac_cluster_col,
-        "ATAC UMAP — reproduced from processed.h5mu",
+        "ATAC UMAP — reproduced from {h5mu_file}",
     )
 """
 
 
-_CELL_RESOLUTIONS = """\
-params_path = RUN_DIR / "internal" / "parameters.yaml"
-params = yaml.safe_load(params_path.read_text())
-rna_res = params.get("s7_clustering.rna_resolution", {}).get("value")
-atac_res = params.get("s7_clustering.atac_resolution", {}).get("value")
-
-print("Leiden clustering ran at fixed per-modality resolutions:")
-if rna_res is not None:
-    print(f"  RNA  (leiden_rna):  resolution = {rna_res}")
-if atac_res is not None:
-    print(f"  ATAC (leiden_atac): resolution = {atac_res}")
-"""
-
-
-_CELL_RECLUSTER = """\
-# Try a DIFFERENT clustering resolution and regenerate the coloured UMAP.
+def _cell_recluster() -> str:
+    return """\
+# Try a DIFFERENT clustering resolution and regenerate the processed outputs.
 #
-# The UMAP embedding is fixed by the latent representation (RNA: X_pca,
-# ATAC: X_spectral) — changing the resolution only changes the cluster *labels*,
-# so we recompute Leiden on the stored latent and recolour the existing UMAP.
-# This is an exploratory tool; it does not overwrite the pipeline's labels unless
-# you pass `save_to=`.
+# Re-running Leiden at a new resolution only changes the cluster *labels*; the
+# UMAP embedding (computed from the latent representation — RNA: X_pca,
+# ATAC: X_spectral) is unchanged. `recluster()` recomputes the labels, OVERWRITES
+# the canonical `leiden_<modality>` column in memory, and recolours the UMAP.
+# Nothing is written to disk until you call `save_processed()` — which regenerates
+# the processed output file(s) so downstream tools use the new resolution.
 import scanpy as sc
 
-def recluster(modality="rna", resolution=0.7, *, save_to=None):
+def recluster(modality="rna", resolution=0.7):
     if modality not in mdata.mod:
         print(f"(modality {modality!r} not present)"); return
     adata = mdata[modality]
@@ -219,24 +211,46 @@ def recluster(modality="rna", resolution=0.7, *, save_to=None):
         print(f"(latent representation {rep!r} missing for {modality}; cannot re-cluster)")
         return
     sc.pp.neighbors(adata, use_rep=rep)
-    key = f"leiden_{modality}_res{resolution}"
-    sc.tl.leiden(adata, resolution=resolution, key_added=key)
-    n = adata.obs[key].nunique()
-    print(f"{modality.upper()} @ resolution={resolution}: {n} clusters")
+    label_col = f"leiden_{modality}"
+    sc.tl.leiden(adata, resolution=resolution, key_added=label_col)
+    adata.uns[f"{label_col}_resolution"] = float(resolution)
+    n = adata.obs[label_col].nunique()
+    print(f"{modality.upper()} re-clustered at resolution={resolution}: {n} clusters")
+    print(f"  -> canonical column '{label_col}' updated in memory; "
+          "call save_processed() to write it to disk.")
     umap_key = f"X_umap_{modality}" if f"X_umap_{modality}" in adata.obsm else "X_umap"
-    _plot_umap_from_obj(adata, umap_key, key, f"{modality.upper()} UMAP — Leiden res={resolution}")
-    display(adata.obs[key].value_counts().sort_index()
-            .rename_axis(key).reset_index(name="n_cells"))
-    if save_to is not None:
-        mdata.write(str(save_to))
-        print(f"Saved updated object with new labels → {save_to}")
-    return adata.obs[key]
+    _plot_umap_from_obj(adata, umap_key, label_col,
+                        f"{modality.upper()} UMAP — Leiden res={resolution}")
+    display(adata.obs[label_col].value_counts().sort_index()
+            .rename_axis(label_col).reset_index(name="n_cells"))
+
+def save_processed(*, overwrite=False, suffix="reclustered"):
+    \"\"\"Persist the re-clustered object(s) to disk so downstream tools use the new
+    labels. Default: writes new file(s) next to the originals (non-destructive,
+    `<name>_reclustered.<ext>`). Pass overwrite=True to replace the canonical
+    processed output in place.\"\"\"
+    def _dest(orig):
+        return orig if overwrite else orig.with_name(f"{orig.stem}_{suffix}{orig.suffix}")
+    written = []
+    if H5MU.exists():
+        mdata.update()  # sync per-modality obs into the MuData before writing
+        d = _dest(H5MU); mdata.write(str(d)); written.append(d)
+    else:
+        if RNA_H5AD.exists() and "rna" in mdata.mod:
+            d = _dest(RNA_H5AD); mdata["rna"].write(str(d)); written.append(d)
+        if ATAC_H5AD.exists() and "atac" in mdata.mod:
+            d = _dest(ATAC_H5AD); mdata["atac"].write(str(d)); written.append(d)
+    for w in written:
+        print(f"Wrote {w}")
+    return written
 
 # Edit the resolution and re-run this cell. Examples:
 recluster("rna", resolution=0.7)
 # recluster("atac", resolution=0.5)
-# Persist a new labelling to a separate file (does NOT touch processed.h5mu):
-# recluster("rna", resolution=1.0, save_to=PROCESSED_DIR / "processed_reclustered.h5mu")
+# Persist the re-clustered labels (non-destructive — writes *_reclustered files):
+# save_processed()
+# Or replace the canonical processed output in place:
+# save_processed(overwrite=True)
 """
 
 
@@ -244,31 +258,32 @@ recluster("rna", resolution=0.7)
 # Assembly
 # ---------------------------------------------------------------------------
 
-def _cells(run_dir: str) -> list[dict[str, Any]]:
+def _cells(run_dir: str, run_name: str) -> list[dict[str, Any]]:
+    h5mu_file = f"processed_{run_name}.h5mu"
+
     def bake(s: str) -> str:
         return s.replace("__BAKED_RUN_DIR__", run_dir)
 
     return [
-        _cell_header(run_dir),
+        _cell_header(run_dir, run_name),
         _md("## 1. Load data"),
-        _code(bake(_CELL_LOAD)),
+        _code(bake(_cell_load(run_name))),
         _md("## 2. Inspect contents"),
         _code(_CELL_INSPECT),
         _md("### Cluster sizes"),
         _code(_CELL_CLUSTER_SIZES),
         _md("## 3. Clustering"),
-        _md("### Resolutions used"),
-        _code(_CELL_RESOLUTIONS),
-        _md("### UMAPs — coloured by cluster (reproduced from `processed.h5mu`)"),
-        _code(_CELL_UMAP_REPRO),
+        _md(f"### UMAPs — coloured by cluster (reproduced from `{h5mu_file}`)"),
+        _code(_cell_umap_repro(run_name)),
         _md("### Try a different resolution"),
-        _code(_CELL_RECLUSTER),
+        _code(_cell_recluster()),
     ]
 
 
 def build_notebook(run_dir: Path | str) -> dict[str, Any]:
+    run_dir = Path(run_dir)
     return {
-        "cells": _cells(str(run_dir)),
+        "cells": _cells(str(run_dir), run_dir.name),
         "metadata": {
             "kernelspec": {
                 "display_name": "Python 3",
@@ -292,15 +307,17 @@ def build_notebook(run_dir: Path | str) -> dict[str, Any]:
 
 def build_script(run_dir: Path | str) -> str:
     """Paired .py version with jupytext percent-format cell markers."""
+    run_dir = Path(run_dir)
+    h5mu_file = f"processed_{run_dir.name}.h5mu"
     header = (
-        '"""Review processed.h5mu — paired script version of the notebook.\n'
+        f'"""Review {h5mu_file} — paired script version of the notebook.\n'
         "\n"
         "Run from any working directory; RUN_DIR is baked in at generation time and\n"
         "can be overridden via the PMA_RUN_DIR environment variable.\n"
         '"""\n\n'
     )
     parts: list[str] = [header]
-    for cell in _cells(str(run_dir)):
+    for cell in _cells(str(run_dir), run_dir.name):
         src = "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
         if cell["cell_type"] == "markdown":
             parts.append("# %% [markdown]\n")
@@ -316,7 +333,7 @@ def build_script(run_dir: Path | str) -> str:
 
 def write_review_notebook(run_dir: Path | str) -> tuple[Path, Path]:
     from .run_paths import RunPaths
-    run_dir = Path(run_dir)
+    run_dir = Path(run_dir).resolve()
     paths = RunPaths(run_dir)
     paths.deliv_results.mkdir(parents=True, exist_ok=True)
 

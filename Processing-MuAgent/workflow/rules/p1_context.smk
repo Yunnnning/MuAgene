@@ -24,7 +24,7 @@ rule p1_context_execute:
         # Machine-readable extraction stays internal; human-readable summary is
         # a pre-run deliverable (reviewed before plan approval).
         extraction = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
-        summary    = str(PLAN / "summary" / "context_summary.md"),
+        summary    = str(PLAN / "context_summary.md"),
     params:
         run_dir = str(RUN_DIR),
     run:

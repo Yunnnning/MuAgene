@@ -8,7 +8,7 @@ Four workflow branches, selected by the user's declared analysis type + S0's dia
 
 | `workflow_branch` | RNA input | ATAC input | Final output |
 |-------------------|-----------|------------|--------------|
-| `paired`          | required  | required   | `processed.h5mu` (shared `obs_names`) |
+| `paired`          | required  | required   | `processed_<run>.h5mu` (shared `obs_names`) |
 | `separate`        | required  | required   | `rna_processed.h5ad` + `atac_processed.h5ad` (independent) |
 | `rna_only`        | required  | absent     | `rna_processed.h5ad` only |
 | `atac_only`       | absent    | required   | `atac_processed.h5ad` only |
@@ -30,8 +30,8 @@ P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 
 ### User checkpoints (2)
 
-1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `plan/summary/plan_review_<run>.md`.
-2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `checkpoints/qc_review/qc_review_<run>.md` (figures embedded; raw plots in `deliverables/figures/`). If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
+1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `plan/plan_review_<run>.md`.
+2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `deliverables/qc_review/qc_review_<run>.md` (figures embedded; raw plots in `deliverables/figures/`). If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
 
 After QC approval, S4→S8 run automatically with no further pause. **S7 clustering** uses fixed per-modality Leiden resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`) — no sweep and no resolution checkpoint. Separate / single-modality branches: these become the **final** `leiden_rna` / `leiden_atac` labels. Paired: diagnostic per-modality labels for UMAP only (not joint embedding). To change them, `revise s7_clustering.rna_resolution=<x>` at plan review.
 
@@ -70,16 +70,16 @@ Files the user reviews BEFORE approving the plan — point them here at the righ
 - `deliverables/plan/config/biological_context.md`
 - `deliverables/plan/config/hpc.env` (HPC runs — source before submit)
 - `deliverables/plan/config/site.config` (HPC runs — YAML platform description written by `configure-execution`; consumed by Execution-MuAgent; not user-reviewed unless they ask)
-- `deliverables/plan/summary/context_summary.md`
-- `deliverables/plan/summary/plan_review_<run>.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
-- `deliverables/plan/summary/plan_summary_<run>.html` (plan review checkpoint #1 — self-contained web version of the plan review with the intro paragraph and figures embedded as data URIs; download-friendly with viewable data quality exploratory figures — point the user here when they want to download/share the review)
+- `deliverables/plan/context_summary.md`
+- `deliverables/plan/plan_review_<run>.md` (plan review checkpoint #1 — summary + parameter appendix; summary also includes execution mode and HPC configuration)
+- `deliverables/plan/plan_summary_<run>.html` (plan review checkpoint #1 — self-contained web version of the plan review with the intro paragraph and figures embedded as data URIs; download-friendly with viewable data quality exploratory figures — point the user here when they want to download/share the review)
 
 Files at user checkpoints and at the hard stop:
 
-- `deliverables/checkpoints/qc_review/qc_review_<run>.md` (QC review checkpoint #2)
-- `deliverables/checkpoints/qc_review/qc_summary_<run>.html` (rendered QC report)
+- `deliverables/qc_review/qc_review_<run>.md` (QC review checkpoint #2)
+- `deliverables/qc_review/qc_summary_<run>.html` (rendered QC report)
 - `deliverables/figures/` (all pipeline figures — QC, UMAP)
 - `deliverables/results/run_manifest.json` (handoff artifact)
-- `deliverables/results/` (processed data, review_processed_h5mu.ipynb)
+- `deliverables/results/` (processed data, `review_processed_<run>.ipynb`)
 
 All executor CLI commands accept `--config <path-to-run.yaml>`. The canonical path after `executor init` is `deliverables/plan/config/run.yaml`; use that for every subsequent CLI call.

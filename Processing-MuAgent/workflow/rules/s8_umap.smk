@@ -18,7 +18,7 @@ def _s8_outputs(wildcards):
     from executor import provenance
     branch = provenance.current_branch(str(INTERNAL / "parameters.yaml"))
     if branch == "paired":
-        return [str(RESULTS / "processed.h5mu")]
+        return [str(RESULTS / f"processed_{RUN_DIR.name}.h5mu")]
     return [
         str(RESULTS / "rna_processed.h5ad"),
         str(RESULTS / "atac_processed.h5ad"),

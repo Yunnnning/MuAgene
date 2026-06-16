@@ -5,7 +5,7 @@ final location by the producing stage or helper. This module no longer
 mirrors or symlinks files. It does two small things:
 
 1. `ensure_scaffold(run_dir)` — create the internal + plan skeleton if missing.
-   Idempotent. Does not pre-create figures/, checkpoints/, or results/.
+   Idempotent. Does not pre-create figures/, qc_review/, or results/.
 2. `finalize(run_dir)` — sweep any legacy symlinks left by pre-refactor runs,
    then write a `layout.json` manifest listing the files actually present
    under `deliverables/`.

@@ -59,10 +59,10 @@ class EffectiveValueTests(unittest.TestCase):
             7)
 
     def test_effective_params_overlays_and_keeps_others(self):
-        _write_params(self.params_path, {"s2_atac_qc.frip_min": _user_entry(0.20)})
-        plan_params = {"frip_min": {"value": 0.25}, "tss_enrichment_min": {"value": 1.5}}
+        _write_params(self.params_path, {"s2_atac_qc.frip_min": _user_entry(0.15)})
+        plan_params = {"frip_min": {"value": 0.2}, "tss_enrichment_min": {"value": 1.5}}
         eff = provenance.effective_params(self.params_path, plan_params, "s2_atac_qc")
-        self.assertEqual(eff["frip_min"]["value"], 0.20)
+        self.assertEqual(eff["frip_min"]["value"], 0.15)
         self.assertEqual(eff["tss_enrichment_min"]["value"], 1.5)
 
 
@@ -99,7 +99,7 @@ class OverlayPlanTests(unittest.TestCase):
             "workflow_branch": "paired",
             "stages": {
                 "s2_atac_qc": {"parameters": {
-                    "frip_min": {"value": 0.25, "source": "default", "rationale": "plan default"},
+                    "frip_min": {"value": 0.2, "source": "default", "rationale": "plan default"},
                     "tss_enrichment_min": {"value": 1.5, "source": "default", "rationale": "keep"},
                 }},
             },
@@ -109,25 +109,25 @@ class OverlayPlanTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_user_override_reflected_with_source(self):
-        _write_params(self.params_path, {"s2_atac_qc.frip_min": _user_entry(0.20, "loosen FRiP")})
+        _write_params(self.params_path, {"s2_atac_qc.frip_min": _user_entry(0.15, "loosen FRiP")})
         eff = plan_assembler.overlay_plan(self.plan, self.params_path)
         p = eff["stages"]["s2_atac_qc"]["parameters"]["frip_min"]
-        self.assertEqual(p["value"], 0.20)
+        self.assertEqual(p["value"], 0.15)
         self.assertEqual(p["source"], "user")
         self.assertEqual(p["rationale"], "loosen FRiP")
         # Non-overridden parameter untouched.
         self.assertEqual(eff["stages"]["s2_atac_qc"]["parameters"]["tss_enrichment_min"]["value"], 1.5)
         # Original plan not mutated (deep copy).
-        self.assertEqual(self.plan["stages"]["s2_atac_qc"]["parameters"]["frip_min"]["value"], 0.25)
+        self.assertEqual(self.plan["stages"]["s2_atac_qc"]["parameters"]["frip_min"]["value"], 0.2)
 
     def test_echoed_value_syncs_but_keeps_plan_rationale(self):
         # After a stage runs it echoes the applied value back as source!=user.
         _write_params(self.params_path, {
-            "s2_atac_qc.frip_min": {"value": 0.20, "source": "recommended", "confidence": "medium",
+            "s2_atac_qc.frip_min": {"value": 0.15, "source": "recommended", "confidence": "medium",
                                      "rationale": "stage echo", "assumptions": []}})
         eff = plan_assembler.overlay_plan(self.plan, self.params_path)
         p = eff["stages"]["s2_atac_qc"]["parameters"]["frip_min"]
-        self.assertEqual(p["value"], 0.20)            # value synced → display == applied
+        self.assertEqual(p["value"], 0.15)            # value synced → display == applied
         self.assertEqual(p["rationale"], "plan default")  # explanatory text preserved
 
 
@@ -141,7 +141,7 @@ def _seed_run(tmp: str) -> tuple[RunPaths, Path]:
         "execution": {"mode": "local", "settings": {}},
         "stages": {
             "s2_atac_qc": {"parameters": {
-                "frip_min": {"value": 0.25, "source": "default", "rationale": "plan default"},
+                "frip_min": {"value": 0.2, "source": "default", "rationale": "plan default"},
             }},
         },
     }
@@ -168,13 +168,13 @@ class ReviseGateBranchTests(unittest.TestCase):
             s2_summary.write_text("{}")
 
             res = CliRunner().invoke(main, [
-                "revise", "s2_atac_qc", "s2_atac_qc.frip_min=0.20",
+                "revise", "s2_atac_qc", "s2_atac_qc.frip_min=0.15",
                 "--config", str(cfg), "--rationale", "loosen FRiP"])
             self.assertEqual(res.exit_code, 0, res.output)
             self.assertIn("Regenerated plan deliverables", res.output)
             # Deliverable regenerated and overlay reflects the override.
             self.assertTrue(paths.plan_review_md.exists())
-            self.assertIn("0.2", paths.plan_review_md.read_text())
+            self.assertIn("0.15", paths.plan_review_md.read_text())
             # No downstream invalidation at this gate.
             self.assertTrue(s2_summary.exists())
             self.assertNotIn("Invalidated", res.output)
@@ -195,7 +195,7 @@ class ReviseGateBranchTests(unittest.TestCase):
             gate.write_text("")
 
             res = CliRunner().invoke(main, [
-                "revise", "s2_atac_qc", "s2_atac_qc.frip_min=0.20",
+                "revise", "s2_atac_qc", "s2_atac_qc.frip_min=0.15",
                 "--config", str(cfg), "--rationale", "loosen FRiP"])
             self.assertEqual(res.exit_code, 0, res.output)
             self.assertIn("Invalidated", res.output)

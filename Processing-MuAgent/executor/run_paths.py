@@ -8,18 +8,16 @@ Top-level layout (direct-write; external inputs referenced via symlinks):
           config/
             run.yaml                    ← canonical copy of the user config
             biological_context.md       ← canonical Biological Context Report
-          summary/
-            context_summary.md          ← P1 output
-            plan_review_<run>.md        ← plan review gate (summary + parameter appendix)
-            plan_summary_<run>.html     ← self-contained web version (figures embedded)
+          context_summary.md          ← P1 output
+          plan_review_<run>.md        ← plan review gate (summary + parameter appendix)
+          plan_summary_<run>.html     ← self-contained web version (figures embedded)
         figures/                    all pipeline figures (PNG + PDF), any stage
-        checkpoints/                intermediate review reports (no figure files)
-          qc_review/                  QC review checkpoint (summaries only)
-            qc_review_<run>.md
-            qc_summary_<run>.html
+        qc_review/                  QC review checkpoint (summaries only; no figure files)
+          qc_review_<run>.md
+          qc_summary_<run>.html
         results/                    final deliverables (data + manifest; no figures)
-          review_processed_h5mu.{ipynb,py}
-          processed.h5mu              (paired branch)
+          review_processed_<run>.{ipynb,py}
+          processed_<run>.h5mu        (paired branch)
           rna_processed.h5ad          (separate / rna_only branches)
           atac_processed.h5ad         (separate / atac_only branches)
           run_manifest.json           ← manifest rule (handoff artifact)
@@ -39,7 +37,7 @@ Key invariants:
 - All figures live in deliverables/figures/; checkpoint dirs hold reports with embedded refs.
 - results/ contains processed data, final notebook, and manifest only.
 - plan/ contains only files the user reviews before approving the plan.
-- figures/, checkpoints/, and results/ are created lazily when first written — not at init.
+- figures/, qc_review/, and results/ are created lazily when first written — not at init.
 """
 from __future__ import annotations
 
@@ -114,13 +112,9 @@ class RunPaths:
         return self.deliverables / "figures"
 
     @property
-    def deliv_checkpoints(self) -> Path:
-        return self.deliverables / "checkpoints"
-
-    @property
     def deliv_qc_review(self) -> Path:
-        """checkpoints/qc_review/ — QC review reports (md/html only)."""
-        return self.deliv_checkpoints / "qc_review"
+        """qc_review/ — QC review reports (md/html only)."""
+        return self.deliverables / "qc_review"
 
     @property
     def deliv_results(self) -> Path:
@@ -132,11 +126,6 @@ class RunPaths:
     def deliv_config(self) -> Path:
         """plan/config/ — user-supplied config + biological context."""
         return self.deliv_plan / "config"
-
-    @property
-    def deliv_plan_summary(self) -> Path:
-        """plan/summary/ — P1 / P2 / plan_review materials for approval."""
-        return self.deliv_plan / "summary"
 
     # --- Canonical user-facing files --------------------------------------
     @property
@@ -181,16 +170,21 @@ class RunPaths:
 
     @property
     def context_summary_md(self) -> Path:
-        return self.deliv_plan_summary / "context_summary.md"
+        canonical = self.deliv_plan / "context_summary.md"
+        return self._existing_file(canonical, self.deliv_plan / "summary" / "context_summary.md")
 
     @property
     def plan_review_md(self) -> Path:
-        return self.deliv_plan_summary / f"plan_review_{self.run_dir.name}.md"
+        name = f"plan_review_{self.run_dir.name}.md"
+        canonical = self.deliv_plan / name
+        return self._existing_file(canonical, self.deliv_plan / "summary" / name)
 
     @property
     def plan_summary_html(self) -> Path:
         """Self-contained HTML plan review (figures embedded as data URIs)."""
-        return self.deliv_plan_summary / f"plan_summary_{self.run_dir.name}.html"
+        name = f"plan_summary_{self.run_dir.name}.html"
+        canonical = self.deliv_plan / name
+        return self._existing_file(canonical, self.deliv_plan / "summary" / name)
 
     @property
     def preprocessing_plan(self) -> Path:
@@ -225,11 +219,17 @@ class RunPaths:
 
     @property
     def qc_review_summary_md(self) -> Path:
-        return self.deliv_qc_review / f"qc_review_{self.run_dir.name}.md"
+        name = f"qc_review_{self.run_dir.name}.md"
+        canonical = self.deliv_qc_review / name
+        legacy = self.deliverables / "checkpoints" / "qc_review" / name
+        return self._existing_file(canonical, legacy)
 
     @property
     def qc_summary_html(self) -> Path:
-        return self.deliv_qc_review / f"qc_summary_{self.run_dir.name}.html"
+        name = f"qc_summary_{self.run_dir.name}.html"
+        canonical = self.deliv_qc_review / name
+        legacy = self.deliverables / "checkpoints" / "qc_review" / name
+        return self._existing_file(canonical, legacy)
 
     @property
     def qc_summary_pre_dimred_md(self) -> Path:
@@ -245,7 +245,8 @@ class RunPaths:
 
     @property
     def processed_h5mu(self) -> Path:
-        return self.deliv_results / "processed.h5mu"
+        canonical = self.deliv_results / f"processed_{self.run_dir.name}.h5mu"
+        return self._existing_file(canonical, self.deliv_results / "processed.h5mu")
 
     @property
     def rna_processed_h5ad(self) -> Path:
@@ -257,11 +258,13 @@ class RunPaths:
 
     @property
     def review_notebook_ipynb(self) -> Path:
-        return self.deliv_results / "review_processed_h5mu.ipynb"
+        canonical = self.deliv_results / f"review_processed_{self.run_dir.name}.ipynb"
+        return self._existing_file(canonical, self.deliv_results / "review_processed_h5mu.ipynb")
 
     @property
     def review_notebook_py(self) -> Path:
-        return self.deliv_results / "review_processed_h5mu.py"
+        canonical = self.deliv_results / f"review_processed_{self.run_dir.name}.py"
+        return self._existing_file(canonical, self.deliv_results / "review_processed_h5mu.py")
 
     # --- Stage helpers -----------------------------------------------------
     def stage_dir(self, stage: str) -> Path:
@@ -293,7 +296,7 @@ class RunPaths:
             self.deliv_qc_review / "figures" / f"{stem}.{ext}",
             self.deliv_qc_review / f"{stem}.{ext}",
             d / "checkpoint" / "resolution_review" / f"{stem}.{ext}",
-            self.deliv_checkpoints / "resolution_review" / f"{stem}.{ext}",
+            d / "checkpoints" / "resolution_review" / f"{stem}.{ext}",
             d / "post_run" / f"{stem}.{ext}",
             self.deliv_results / f"{stem}.{ext}",
         )
@@ -318,8 +321,9 @@ class RunPaths:
             self.deliverables / "checkpoint" / "qc_review",
             self.deliverables / "checkpoints" / "qc_review" / "figures",
             self.deliverables / "checkpoints" / "qc_review",
+            self.deliv_qc_review,
             self.deliverables / "checkpoint" / "resolution_review",
-            self.deliv_checkpoints / "resolution_review",
+            self.deliverables / "checkpoints" / "resolution_review",
             self.deliverables / "post_run",
             self.deliv_results,
         )
@@ -341,12 +345,12 @@ class RunPaths:
     def ensure(self) -> None:
         """Create internal + plan scaffold only (idempotent).
 
-        figures/, checkpoints/, and results/ are created lazily when first written.
+        figures/, qc_review/, and results/ are created lazily when first written.
         """
         for p in (
             self.internal,
             self.artifacts, self.proposals, self.checkpoints, self.snakemake_workdir,
             self.deliverables,
-            self.deliv_plan, self.deliv_config, self.deliv_plan_summary,
+            self.deliv_plan, self.deliv_config,
         ):
             p.mkdir(parents=True, exist_ok=True)

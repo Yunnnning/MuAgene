@@ -68,7 +68,7 @@ This creates:
 - `<run_dir>/internal/` — pipeline state scaffold
 - `<run_dir>/deliverables/plan/config/run.yaml` — canonical copy of the config
 - `<run_dir>/deliverables/plan/config/biological_context.md` — blank template
-- `<run_dir>/deliverables/plan/` — created at init; `figures/`, `checkpoints/`, and `results/` appear when outputs are written
+- `<run_dir>/deliverables/plan/` — created at init; `figures/`, `qc_review/`, and `results/` appear when outputs are written
 
 From now on, `$CFG = <run_dir>/deliverables/plan/config/run.yaml` for every subsequent CLI call.
 
@@ -244,13 +244,13 @@ After `configure-execution`: confirm `execution.mode` and, for HPC, the path to 
 
 After `executor run --target s0_ingest_execute`:
 
-- If `deliverables/plan/summary/context_summary.md` exists, paste its content back verbatim. Any conflicts (e.g. "report says mouse, file fingerprint says human") surface here and must be resolved before Step 3.
+- If `deliverables/plan/context_summary.md` exists, paste its content back verbatim. Any conflicts (e.g. "report says mouse, file fingerprint says human") surface here and must be resolved before Step 3.
 - If `executor run` errored:
   - **Phase 1 gate error** — context template is blank and user didn't opt out. Ask for context OR tell them to re-invoke with `--no-context`.
   - **S0 declared-vs-detected mismatch** — relay the raised error and ask the user to fix the declaration or the inputs.
   - **S0 ambiguous pairing** — relay the raised error; ask paired vs separate; re-run `executor declare-branch` and re-try.
 
-Transition to Step 3 (`plan_review`) once `plan_review.md` exists under `deliverables/plan/summary/` (written by `plan_review_propose` or `Processing-MuAgent plan-review`).
+Transition to Step 3 (`plan_review`) once `plan_review_<run>.md` exists under `deliverables/plan/` (written by `plan_review_propose` or `Processing-MuAgent plan-review`).
 
 ## Explicit non-actions
 

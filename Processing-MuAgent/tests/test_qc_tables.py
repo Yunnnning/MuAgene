@@ -19,7 +19,7 @@ RNA_RM = {
 ATAC_TH = {
     "n_fragments_min": 1500, "n_fragments_max": 100000,
     "tss_enrichment_min": 1.5, "tss_enrichment_max": 50,
-    "nucleosome_signal_max": 3, "frip_min": 0.25,
+    "nucleosome_signal_max": 3, "frip_min": 0.2,
 }
 ATAC_RM = {
     "n_fragments": 4, "tss_enrichment": 2, "nucleosome_signal": 1,
@@ -55,22 +55,22 @@ class AtacTableTests(unittest.TestCase):
         self.assertIn("| parameter | value | cells removed |", t)
         # Removal-condition format
         self.assertIn("| nucleosome_signal | ≥ 3 | 1 |", t)
-        self.assertIn("| frip | < 0.25 | 6 |", t)
+        self.assertIn("| frip | < 0.2 | 6 |", t)
         self.assertIn("| n_fragments | < 1500 or > 100000 | 4 |", t)
 
     def test_custom_frip_display_runtime(self):
         t = qc_tables.atac_removal_table(
             ATAC_TH, ATAC_RM, value_label="threshold", include_note=True,
-            frip_threshold_display="< 0.25 _(computed at runtime)_", frip_removed="—",
+            frip_threshold_display="< 0.2 _(computed at runtime)_", frip_removed="—",
         )
         self.assertIn("| parameter | threshold | cells removed | note |", t)
-        self.assertIn("< 0.25 _(computed at runtime)_", t)
-        self.assertIn("| frip | < 0.25 _(computed at runtime)_ | — |", t)
+        self.assertIn("< 0.2 _(computed at runtime)_", t)
+        self.assertIn("| frip | < 0.2 _(computed at runtime)_ | — |", t)
 
     def test_frip_no_peaks_note(self):
         t = qc_tables.atac_removal_table(
             ATAC_TH, ATAC_RM, value_label="value", include_note=False,
-            frip_threshold_display="< 0.25 _(not applied — no peaks available)_",
+            frip_threshold_display="< 0.2 _(not applied — no peaks available)_",
             frip_removed="",
         )
         self.assertIn("not applied — no peaks available", t)

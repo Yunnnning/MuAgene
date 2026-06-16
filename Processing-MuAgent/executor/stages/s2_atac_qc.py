@@ -412,7 +412,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     tss_min = float(_resolve_param(params_path, plan_params, "tss_enrichment_min", 1.5))
     tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", 50.0))
     nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 3.0))
-    frip_min = float(_resolve_param(params_path, plan_params, "frip_min", 0.25))
+    frip_min = float(_resolve_param(params_path, plan_params, "frip_min", 0.2))
 
     # n_fragments MAD bounds (shared with the pre-plan QC exploration).
     f_lo, f_hi, _ = _qct.atac_n_fragment_bounds(

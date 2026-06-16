@@ -1642,5 +1642,5 @@ def write_qc_review(run_dir: Path | str) -> Path:
 
 # NOTE: the end-to-end QC summary for results/ (former ``build`` / ``write``) was
 # removed — it duplicated the QC-review checkpoint deliverable
-# (deliverables/checkpoints/qc_review/qc_review_<run>.md, written by
+# (deliverables/qc_review/qc_review_<run>.md, written by
 # ``build_qc_review`` above). The QC review is the single user-facing QC summary.

@@ -277,7 +277,7 @@ def _atac_qc_from_metrics(
     tss_min = float(_pval(params, "tss_enrichment_min", DEFAULT_TSS_MIN))
     tss_max = float(_pval(params, "tss_enrichment_max", DEFAULT_TSS_MAX))
     nuc_max = float(_pval(params, "nucleosome_signal_max", DEFAULT_NUC_MAX))
-    frip_min = float(_pval(params, "frip_min", 0.25))
+    frip_min = float(_pval(params, "frip_min", 0.2))
 
     f_lo, f_hi, f_lo_mad_raw = _qct.atac_n_fragment_bounds(
         n_frag_values, k_mad=k_mad, n_frag_floor=n_frag_floor,

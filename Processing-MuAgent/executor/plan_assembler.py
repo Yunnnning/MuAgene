@@ -197,7 +197,7 @@ def assemble_plan(
                 "nucleosome_signal_max": p(3.0, "default",
                                             "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
                                             "ratio). Cells at or above are removed.", "medium"),
-                "frip_min": p(0.25, "default",
+                "frip_min": p(0.2, "default",
                                "Minimum Fraction of Reads in Peaks (FRiP) per cell. "
                                "Cells below this value are removed. Set to 0 to disable. "
                                "Only applied when a peak set is available "

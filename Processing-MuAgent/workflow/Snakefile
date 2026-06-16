@@ -18,8 +18,7 @@ Direct-write layout:
                                                       (run.yaml, biological_context.md,
                                                        context_summary.md, plan_review_<run>.md)
       FIGURES    = deliverables/figures             — all pipeline figures (PNG + PDF)
-      CHECKPOINTS = deliverables/checkpoints        — intermediate review reports
-                                                      (qc_review/)
+      QC_REVIEW  = deliverables/qc_review           — QC review reports (md/html)
       RESULTS    = deliverables/results             — final results (data, notebook,
                                                       manifest; no figures)
 Rule outputs land directly at their canonical location; no mirroring.
@@ -31,7 +30,7 @@ INTERNAL = RUN_DIR / "internal"
 DELIVERABLES = RUN_DIR / "deliverables"
 PLAN = DELIVERABLES / "plan"
 FIGURES = DELIVERABLES / "figures"
-CHECKPOINTS = DELIVERABLES / "checkpoints"
+QC_REVIEW = DELIVERABLES / "qc_review"
 RESULTS = DELIVERABLES / "results"
 
 STAGES = [

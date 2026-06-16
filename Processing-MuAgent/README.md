@@ -22,10 +22,10 @@ Two deliberate pauses where you review deliverables and decide before heavy down
 
 | #     | CLI name              | Internal stage   | When                   | What you decide                                                                                                                                                                                                                                                            |
 | ----- | --------------------- | ---------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1** | **Plan review**       | `plan_review`    | After S0, before S1    | Approve the preprocessing plan (`plan/summary/plan_review.md`)                                                                                                                                                                                                             |
-| **2** | **QC review**         | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `checkpoints/qc_review/qc_review_<run>.md`; revise **RNA/ATAC quality-filter thresholds** (or skip individual metrics entirely) and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
+| **1** | **Plan review**       | `plan_review`    | After S0, before S1    | Approve the preprocessing plan (`plan/plan_review_<run>.md`)                                                                                                                                                                                                             |
+| **2** | **QC review**         | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `qc_summary/qc_review_<run>.html`; revise **RNA/ATAC quality-filter thresholds** (or skip individual metrics entirely) and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
 
-After QC approval the pipeline runs straight through to the final outputs: Leiden clustering uses **fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5)** — no sweep and no resolution checkpoint. To use different values, `revise s7_clustering.rna_resolution` / `s7_clustering.atac_resolution` at plan review.
+After QC approval the pipeline runs straight through to the final outputs: Leiden clustering uses **fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5)**. To use different values, revise clustering resolutions at plan review, or manually re-run clustering on the final outputs using your chosen parameters.
 
 
 ## Workflow stages
@@ -50,7 +50,7 @@ After QC approval the pipeline runs straight through to the final outputs: Leide
   | `fragments_tsv`         | `*.tsv.gz` + `*.tsv.gz.tbi` | Standard 5-column bgzipped fragments file (`chrom start end barcode count`); tabix index must be present                                                                                                                                                                                                                                              |
   | `bed4` *(auto-convert)* | `*.bed.gz`                  | 4-column BED (`chrom start end barcode`). S0 auto-converts to a standard 5-column `fragments.tsv.gz` using `zcat → awk → sort → bgzip → tabix`. The source file is **never modified**; the derived `.tsv.gz` + `.tbi` are written alongside it. Windows `\r\n` line endings are handled automatically. Requires `bgzip` and `tabix` (htslib) on PATH. |
 
-- **plan_review** — Generates a summary at `deliverables/plan/summary/plan_review.md` (including the QC threshold-preview tables + histograms) for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs.
+- **plan_review** — Generates a summary at `deliverables/plan/plan_review_<run>.md` (including the QC threshold-preview tables + histograms) for the user to review. The workflow pauses here until approval, before any S1–S8 execute rule runs.
 
 ### Preprocessing
 
@@ -64,7 +64,7 @@ After QC approval the pipeline runs straight through to the final outputs: Leide
   - `n_fragments` (number of fragments per cell): MAD-derived threshold with lower floor = **1,500**
   - `TSS_enrichment` (Transcription Start Site enrichment score): minimum = **1.5**, maximum = **50**
   - `nucleosome_signal` (nucleosome signal): defult = **3**
-  - `FRiP` (Fraction of Reads in Peaks): defult = **0.25**
+  - `FRiP` (Fraction of Reads in Peaks): defult = **0.2**
 
 **Flexible QC thresholds**
 Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipped** (filter removed entirely), or **partially skipped** (upper or lower bound only removed) — at either **plan review** (checkpoint #1) or **QC review** (checkpoint #2).
@@ -73,8 +73,8 @@ Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipp
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
-  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`checkpoints/qc_review/qc_review_<run>.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `checkpoints/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large QC-only working files are automatically deleted to free storage (~2 GB/run): the QC matrices `rna_qc.h5ad`, `atac_qc.h5ad`, `atac_snap.h5ad`, the `qc_explore/atac_snap_explore.h5ad` import, the chr-normalised fragment caches `atac_fragments_cbf[_chrnorm].tsv.gz` (the single biggest artifact — reused across QC re-runs but dead once approved), and the S1a recompute caches (`tsne_coords_cache.parquet`, `cell_totals.parquet`). None is a declared Snakemake output or read by a post-gate stage, so deletion never triggers a re-run. Preserved: `qc_summary.json` markers, the QC-metrics parquets (the final S8 manifest reads `qc_metrics_post.parquet`), `rna_decontaminated.h5ad`, and all S3+ artifacts. (Per-stage scratch dirs — `_work_soupx`/`_work_decontx`, `macs3_tmp` — are removed by their own stage as soon as it finishes, not here.)
+  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`qc_review/qc_review_<run>.md`).
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large QC-only working files are automatically deleted to free storage (~2 GB/run): the QC matrices `rna_qc.h5ad`, `atac_qc.h5ad`, `atac_snap.h5ad`, the `qc_explore/atac_snap_explore.h5ad` import, the chr-normalised fragment caches `atac_fragments_cbf[_chrnorm].tsv.gz` (the single biggest artifact — reused across QC re-runs but dead once approved), and the S1a recompute caches (`tsne_coords_cache.parquet`, `cell_totals.parquet`). None is a declared Snakemake output or read by a post-gate stage, so deletion never triggers a re-run. Preserved: `qc_summary.json` markers, the QC-metrics parquets (the final S8 manifest reads `qc_metrics_post.parquet`), `rna_decontaminated.h5ad`, and all S3+ artifacts. (Per-stage scratch dirs — `_work_soupx`/`_work_decontx`, `macs3_tmp` — are removed by their own stage as soon as it finishes, not here.)
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
   1. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
@@ -84,7 +84,7 @@ Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipp
   Spectral embedding in `obsm['X_spectral']` (with `X_lsi` as a backward-compat alias) is always computed from the tile matrix regardless of peak-export mode. When `drop_first=True`, the first component is removed before S6–S8.
 - **S6 PCA (RNA) + neighbor graph** (`s6_neighbors`) — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** KNN graph on the S5 spectral embedding (`X_spectral` via `snap.pp.knn`). Artifact: `internal/artifacts/s6_neighbors/rna_neighbors.h5ad`.
 - **S7 Clustering** — Leiden clustering at fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`). Runs automatically with no sweep and no checkpoint. Separate / single-modality branches: these become the final `leiden_rna` / `leiden_atac` labels. Paired branch: diagnostic per-modality labels for UMAP only (not joint embedding).
-- **S8 UMAP** — Per-modality UMAP. **Paired** → `processed.h5mu`; **separate** → `rna_processed.h5ad` + `atac_processed.h5ad`. On the paired branch, S8 expects matching barcodes from S3; final assembly includes a defensive re-intersection logged only when it filters cells.
+- **S8 UMAP** — Per-modality UMAP. **Paired** → `processed_<run>.h5mu`; **separate** → `rna_processed.h5ad` + `atac_processed.h5ad`. On the paired branch, S8 expects matching barcodes from S3; final assembly includes a defensive re-intersection logged only when it filters cells.
 - **manifest** — `run_manifest.json` handoff contract (v1.0.0), the review notebook, and `layout.json`. 
 
 ## Paired multiome
@@ -95,7 +95,7 @@ The paired branch admits three input shapes:
 2. Cell Ranger GEX `.h5` + ATAC fragments where cell barcodes match directly (or differ only by a `-N` / `_LIBRARY` suffix).
 3. Independent GEX + ATAC pipelines whose barcodes live in different 10x whitelists — requires a 2-column TSV at `barcode_translation_path` (or `cell_metadata_path` with `rna_barcode` + `atac_barcode` columns) so S0 can rewrite ATAC barcodes into RNA space before QC.
 
-In all cases, the final `processed.h5mu` contains only cells passing both RNA and ATAC QC with matching barcodes.
+In all cases, the final `processed_<run>.h5mu` contains only cells passing both RNA and ATAC QC with matching barcodes.
 
 ### Barcode matching and intersection
 
@@ -278,7 +278,7 @@ For how the monitor works internally — how it decides a job is stalled, how it
 
 ## Run directory layout
 
-After `init`, only `deliverables/plan/` exists under deliverables. The `figures/`, `checkpoints/`, and `results/` folders are created when the pipeline first writes into them.
+After `init`, only `deliverables/plan/` exists under deliverables. The `figures/`, `qc_review/`, and `results/` folders are created when the pipeline first writes into them.
 
 ```
 <run_dir>/
@@ -289,16 +289,14 @@ After `init`, only `deliverables/plan/` exists under deliverables. The `figures/
         biological_context.md     ← Biological Context Report
         hpc.env                   ← source before submit/run on cluster
         site.config               ← YAML platform description (consumed by Execution-MuAgent)
-      summary/
-        context_summary.md        ← P1 output
-        plan_review_<run>.md      ← plan review gate (summary + parameter appendix)
-        plan_summary_<run>.html   ← download-friendly web version of plan_review (figures embedded)
+      context_summary.md          ← P1 output
+      plan_review_<run>.md        ← plan review gate (summary + parameter appendix)
+      plan_summary_<run>.html     ← download-friendly web version of plan_review (figures embedded)
     figures/                      ← all pipeline figures (created at first plot)
-    checkpoints/                  ← review reports (created at first checkpoint)
-      qc_review/                    ← QC review (#2): qc_review_<run>.md + qc_summary_<run>.html
+    qc_review/                    ← QC review (#2): qc_review_<run>.md + qc_summary_<run>.html
     results/                      ← final deliverables (created at S8/manifest; data + manifest)
-      processed.h5mu              ← or rna/atac_processed.h5ad (separate branch)
-      review_processed_h5mu.{ipynb,py}
+      processed_<run>.h5mu         ← or rna/atac_processed.h5ad (separate branch)
+      review_processed_<run>.{ipynb,py}
       run_manifest.json           ← handoff artifact
       layout.json
   internal/

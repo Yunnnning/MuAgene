@@ -15,7 +15,7 @@ class DeliverablesFigureLayoutTests(unittest.TestCase):
             paths.ensure()
             self.assertTrue(paths.deliv_plan.is_dir())
             self.assertFalse(paths.deliv_figures.exists())
-            self.assertFalse(paths.deliv_checkpoints.exists())
+            self.assertFalse(paths.deliv_qc_review.exists())
             self.assertFalse(paths.deliv_results.exists())
 
     def test_deliv_figures_path_uses_central_dir(self):
@@ -33,7 +33,6 @@ class DeliverablesFigureLayoutTests(unittest.TestCase):
             legacy_qc.mkdir(parents=True, exist_ok=True)
             flat_png = legacy_qc / "post_qc_review_cell_counts.png"
             flat_png.write_bytes(b"PNG")
-            paths.deliv_checkpoints.mkdir(parents=True, exist_ok=True)
             paths.deliv_qc_review.mkdir(parents=True, exist_ok=True)
             paths.qc_review_summary_md.write_text("# QC review\n")
 

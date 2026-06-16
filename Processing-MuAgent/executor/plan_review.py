@@ -424,10 +424,9 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
 
     # 7. Output location
     branch = plan.get("workflow_branch", "unknown")
-    _s8 = paths.stage_dir("s8_umap")
     outputs = {
-        "paired": f"{_s8}/processed.h5mu",
-        "separate": f"{_s8}/rna_processed.h5ad + atac_processed.h5ad",
+        "paired": str(paths.processed_h5mu),
+        "separate": f"{paths.rna_processed_h5ad} + {paths.atac_processed_h5ad}",
     }.get(branch, "(branch unknown)")
     branch_labels = {
         "paired": "Paired multiome run",
@@ -631,8 +630,8 @@ def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str
 def _remove_legacy_plan_review_paths(paths) -> None:
     """Drop pre-run-scoped filenames (plan_review.md / plan_summary.html)."""
     for legacy in (
-        paths.deliv_plan_summary / "plan_review.md",
-        paths.deliv_plan_summary / "plan_summary.html",
+        paths.deliv_plan / "plan_review.md",
+        paths.deliv_plan / "plan_summary.html",
     ):
         if legacy.exists():
             legacy.unlink()

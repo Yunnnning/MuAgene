@@ -3,7 +3,7 @@ rule s1_rna_qc_propose:
         plan              = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         rna               = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
         plan_review_done  = str(INTERNAL / "checkpoints" / "plan_review.approved"),
-        plan_review_md    = str(PLAN / "summary" / f"plan_review_{RUN_DIR.name}.md"),
+        plan_review_md    = str(PLAN / f"plan_review_{RUN_DIR.name}.md"),
     output:
         proposal = str(INTERNAL / "proposals" / "s1_rna_qc.yaml"),
     params:

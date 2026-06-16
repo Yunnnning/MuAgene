@@ -3,7 +3,7 @@ rule manifest:
         s8 = str(INTERNAL / "artifacts" / "s8_umap" / "s8_done.txt"),
     output:
         manifest = str(RESULTS / "run_manifest.json"),
-        notebook = str(RESULTS / "review_processed_h5mu.ipynb"),
+        notebook = str(RESULTS / f"review_processed_{RUN_DIR.name}.ipynb"),
         layout = str(RESULTS / "layout.json"),
     params:
         run_dir = str(RUN_DIR),
@@ -16,7 +16,7 @@ rule manifest:
         cfg["run_id"] = cfg.get("run_id", Path(params.run_dir).name)
         # Write each deliverable directly to its canonical location. No mirroring.
         # The QC summary is NOT regenerated here — it already lives at the QC-review
-        # checkpoint (deliverables/checkpoints/qc_review/qc_review_<run>.md); a second
+        # checkpoint (deliverables/qc_review/qc_review_<run>.md); a second
         # copy in results/ would be redundant.
         manifest.write_manifest(params.run_dir, cfg)
         notebook_builder.write_review_notebook(params.run_dir)

@@ -87,7 +87,7 @@ Once the user answers, in order:
    Write it to a temporary path like `<run_dir>/run.yaml.draft` (before init copies it to the canonical location).
 
 2. Invoke `executor init --config <draft-run.yaml>`.
-   - This scaffolds `internal/` and `deliverables/plan/` (only the plan subtree at init; `figures/`, `checkpoints/`, and `results/` appear when outputs are written) and writes the blank biological-context template at `deliverables/plan/config/biological_context.md`.
+   - This scaffolds `internal/` and `deliverables/plan/` (only the plan subtree at init; `figures/`, `qc_review/`, and `results/` appear when outputs are written) and writes the blank biological-context template at `deliverables/plan/config/biological_context.md`.
    - From this point forward, use `$CFG = <run_dir>/deliverables/plan/config/run.yaml` for every CLI call.
 
 3. Populate biological context (if the user gave any):
@@ -144,7 +144,7 @@ Once the user answers, in order:
 - Confirm `executor init` wrote `deliverables/plan/config/run.yaml` and `biological_context.md`.
 - If context was supplied, confirm it was written (`deliverables/plan/config/biological_context.md`).
 - If HPC mode was configured, confirm `execution.mode` and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume.
-- After `executor run --target s0_ingest_execute`, surface `deliverables/plan/summary/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
+- After `executor run --target s0_ingest_execute`, surface `deliverables/plan/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
 
 See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the canonical Step 2 script and the per-context-form handling details.
 
@@ -245,7 +245,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 
 ### WHAT_TO_SURFACE_BACK
 
-The **Summary** section of `plan_review.md`, verbatim (the appendix is reference detail — surface decision points and any `?` flags from the summary). Do not paraphrase values. Also point the user at `deliverables/plan/summary/plan_summary_<run>.html` (the download-friendly web version — described in the path list in `system_prompt.md`).
+The **Summary** section of `plan_review.md`, verbatim (the appendix is reference detail — surface decision points and any `?` flags from the summary). Do not paraphrase values. Also point the user at `deliverables/plan/plan_summary_<run>.html` (the download-friendly web version — described in the path list in `system_prompt.md`).
 
 If marker genes were stored at this step, confirm the stored gene list in one line (e.g. "Marker genes `Cd3e Cd20 Epcam` stored — the check will run automatically during ambient correction.").
 
@@ -259,7 +259,7 @@ If marker genes were stored at this step, confirm the stored gene list in one li
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
-- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoints/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies. **Hard rule — close the marker-gene loop here:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"** (this is the second chance when the check was deferred or skipped at plan review), you **must** relay that notice verbatim and obtain an explicit user decision — provide genes → run `executor marker-gene-check --config $CFG <genes...>` (plots before/after and refreshes the QC report), or explicitly decline — **before** approving QC. Do not auto-approve `post_qc_review` past an unaddressed "strongly recommended" notice. Follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact procedure. Never supply gene names yourself.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `deliverables/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies. **Hard rule — close the marker-gene loop here:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"** (this is the second chance when the check was deferred or skipped at plan review), you **must** relay that notice verbatim and obtain an explicit user decision — provide genes → run `executor marker-gene-check --config $CFG <genes...>` (plots before/after and refreshes the QC report), or explicitly decline — **before** approving QC. Do not auto-approve `post_qc_review` past an unaddressed "strongly recommended" notice. Follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact procedure. Never supply gene names yourself.
 - **`s7_clustering`** (all branches): **not a user checkpoint.** Leiden clustering runs automatically at fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5). Separate / single-modality: these are the **final** `leiden_rna` / `leiden_atac` labels; paired: diagnostic labels for UMAP only. If the user wants different values, `executor revise s7_clustering s7_clustering.rna_resolution=<x>` at plan review.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
@@ -278,7 +278,7 @@ Approve, revise, or abort?"
    - Loop:
      a. Run `executor status --config $CFG` to see which stage is currently `awaiting_approval`.
      b. Read `<run_dir>/internal/proposals/<stage>.yaml` — the structured proposal.
-     c. If the stage has a linked summary under `deliverables/checkpoints/` (e.g., `qc_review_<run>.md` for post_qc_review), read that too and surface both.
+     c. If the stage has a linked summary under `deliverables/qc_review/` (e.g., `qc_review_<run>.md` for post_qc_review), read that too and surface both.
      d. Based on user decision:
         - Approve → `executor approve <stage> --config $CFG`.
         - Revise → if the current stage is `post_qc_review`, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
@@ -288,12 +288,12 @@ Approve, revise, or abort?"
 
 2. When `manifest` finishes:
    - Read `deliverables/results/run_manifest.json` and extract `workflow_branch`, `outputs`.
-   - Point the user at the review notebook `deliverables/results/review_processed_h5mu.ipynb` (load + inspect + re-cluster at a custom resolution), the UMAP figures in `deliverables/figures/`, and the handoff artifact `run_manifest.json`. The QC summary lives at `deliverables/checkpoints/qc_review/qc_review_<run>.md`.
+   - Point the user at the review notebook `deliverables/results/review_processed_<run>.ipynb` (load + inspect + re-cluster at a custom resolution), the UMAP figures in `deliverables/figures/`, and the handoff artifact `run_manifest.json`. The QC summary lives at `deliverables/qc_review/qc_review_<run>.md`.
 
 ### WHAT_TO_SURFACE_BACK
 
 - At each pause: the full proposal yaml content + any linked summary markdown.
-- At **`post_qc_review` after a threshold revision:** relay `deliverables/checkpoints/qc_review/qc_review_<run_name>.md` **verbatim** (not the proposal yaml alone). Mention `qc_summary_<run_name>.html` for the rendered report.
+- At **`post_qc_review` after a threshold revision:** relay `deliverables/deliverables/qc_review/qc_review_<run_name>.md` **verbatim** (not the proposal yaml alone). Mention `qc_summary_<run_name>.html` for the rendered report.
 - At completion: the manifest's `outputs` keys + a one-line sign-off ("Run complete. Outputs at `deliverables/results/`. I stop here — integration/annotation is out of scope.").
 
 ---

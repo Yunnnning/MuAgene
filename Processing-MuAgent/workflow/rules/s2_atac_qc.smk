@@ -11,7 +11,7 @@ def _s2_propose_inputs(wildcards):
     # For atac_only, S2 is the first modality stage after plan_review — demand
     # the run-scoped plan review md so plan_review_propose is always pulled into the DAG.
     if branch == "atac_only":
-        paths["plan_review_md"] = str(PLAN / "summary" / f"plan_review_{RUN_DIR.name}.md")
+        paths["plan_review_md"] = str(PLAN / f"plan_review_{RUN_DIR.name}.md")
     return paths
 
 
