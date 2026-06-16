@@ -53,14 +53,10 @@ class StageProgressTests(unittest.TestCase):
             self._mark_planning_done(paths)
         return paths
 
-    def test_every_monitor_step_has_snakemake_rules_except_resolution_gate(self):
+    def test_every_monitor_step_has_snakemake_rules(self):
         for mid in MONITOR_PIPELINE:
             rules = snakemake_rules_for_monitor(mid)
-            if mid == "resolution_review":
-                self.assertEqual(rules, ())
-            elif mid in EXECUTE_MARKERS or mid in (
-                "plan_review", "post_qc_review", "s7_sweep", "s7_labels",
-            ):
+            if mid in EXECUTE_MARKERS or mid in ("plan_review", "post_qc_review"):
                 self.assertTrue(rules, msg=mid)
 
     def test_automated_steps_include_propose_and_execute_rules(self):
@@ -68,16 +64,13 @@ class StageProgressTests(unittest.TestCase):
             snakemake_rules_for_monitor("s3_doublets"),
             ("s3_doublets_propose", "s3_doublets_execute"),
         )
+        # S7 is now an ordinary automated stage (no resolution checkpoint).
         self.assertEqual(
-            snakemake_rules_for_monitor("s7_sweep"),
-            ("s7_clustering_propose",),
-        )
-        self.assertEqual(
-            snakemake_rules_for_monitor("s7_labels"),
-            ("s7_clustering_execute",),
+            snakemake_rules_for_monitor("s7_clustering"),
+            ("s7_clustering_propose", "s7_clustering_execute"),
         )
 
-    def test_stage_states_lists_substeps_and_resolution_review(self):
+    def test_stage_states_lists_substeps_and_clustering(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
@@ -91,7 +84,7 @@ class StageProgressTests(unittest.TestCase):
 
             self.assertEqual(states["S1a"], "done")
             self.assertEqual(states["qc_review"], "awaiting_approval")
-            self.assertIn("resolution_review", states)
+            self.assertIn("S7", states)
 
     def test_s1_s2_show_done_after_cleanup(self):
         """qc_summary.json persists after post_qc_review cleanup; S1/S2 must stay done."""
@@ -112,18 +105,23 @@ class StageProgressTests(unittest.TestCase):
             self.assertEqual(states["S1"], "done")
             self.assertEqual(states["S2"], "done")
 
-    def test_resolution_review_awaiting_after_sweep(self):
+    def test_s7_clustering_runs_automatically(self):
+        """S7 has no resolution checkpoint: it is done once rna_clustered.h5ad exists."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
-            sweep = paths.artifact("s7_clustering", "sweep.parquet")
-            sweep.parent.mkdir(parents=True, exist_ok=True)
-            sweep.write_text("")
-            paths.awaiting_sentinel("s7_clustering").write_text("")
+            paths.approved_sentinel("plan_review").write_text("")
+            paths.approved_sentinel("post_qc_review").write_text("")
 
             states = _states_by_label(paths)
+            self.assertEqual(states["S7"], "pending")
+
+            clustered = paths.artifact("s7_clustering", "rna_clustered.h5ad")
+            clustered.parent.mkdir(parents=True, exist_ok=True)
+            clustered.write_text("")
+            states = _states_by_label(paths)
             self.assertEqual(states["S7"], "done")
-            self.assertEqual(states["resolution_review"], "awaiting_approval")
-            self.assertEqual(states["S7-labels"], "pending")
+            # No resolution_review row exists anymore.
+            self.assertNotIn("resolution_review", states)
 
     def test_s3_shows_failed_from_cluster_log(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -248,9 +246,9 @@ class StageProgressTests(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("")
 
-            # Mid phase terminus is the resolution gate-arming localrule:
-            # Snakemake chains s5→s6→s7_clustering_propose in one submission.
-            self.assertEqual(infer_resume_target(tmp), "s7_clustering_propose")
+            # No gate follows QC: the final phase targets `all`, so one
+            # submission chains s5→s6→s7→s8→manifest through to final results.
+            self.assertEqual(infer_resume_target(tmp), "all")
 
     def test_infer_resume_targets_planning_first(self):
         """A fresh run (no planning artifacts) targets plan_review_propose.

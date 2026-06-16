@@ -1640,35 +1640,7 @@ def write_qc_review(run_dir: Path | str) -> Path:
     return rp.qc_review_summary_md
 
 
-def build(run_dir: Path | str) -> str:
-    """Full end-to-end QC summary (written at manifest to results/)."""
-    from .run_paths import RunPaths
-    run_dir = Path(run_dir)
-    rp = RunPaths(run_dir)
-    params_path = rp.parameters_yaml
-    params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
-    counts = _stage_counts(run_dir)
-    render = _FigRender(md_parent=rp.deliv_results)
-
-    branch = _workflow_branch(run_dir)
-    sections = [
-        "# QC Summary",
-        "",
-        _flow_section(run_dir, counts, branch) + _flow_figures(run_dir, render=render),
-        _ambient_section(run_dir, params, counts, render=render),
-        _rna_section(run_dir, params, counts, render=render),
-        _atac_section(run_dir, params, counts, render=render),
-        _doublet_section(run_dir, params, counts, render=render),
-        _final_section(run_dir, counts),
-    ]
-    return "\n".join(sections).rstrip() + "\n"
-
-
-def write(run_dir: Path | str) -> Path:
-    """Write the QC summary markdown directly to its canonical user-facing location."""
-    from .run_paths import RunPaths
-    run_dir = Path(run_dir)
-    out = RunPaths(run_dir).qc_summary_md
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(build(run_dir))
-    return out
+# NOTE: the end-to-end QC summary for results/ (former ``build`` / ``write``) was
+# removed — it duplicated the QC-review checkpoint deliverable
+# (deliverables/checkpoints/qc_review/qc_review_<run>.md, written by
+# ``build_qc_review`` above). The QC review is the single user-facing QC summary.

@@ -31,14 +31,12 @@ STAGES = ["p1_context", "plan_review", "s0_ingest",
           "post_qc_review",
           "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"]
 
-HUMAN_CHECKPOINT_STAGES = ("plan_review", "post_qc_review", "s7_clustering")
+HUMAN_CHECKPOINT_STAGES = ("plan_review", "post_qc_review")
 STAGE_ALIASES = {
     "qc_review": "post_qc_review",
-    "resolution_review": "s7_clustering",
 }
 STAGE_DISPLAY = {
     "post_qc_review": "qc_review",
-    "s7_clustering": "resolution_review",
 }
 AUTOMATED_STAGES = tuple(s for s in STAGES if s not in HUMAN_CHECKPOINT_STAGES)
 
@@ -128,8 +126,8 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
         match the peak chrom convention, never the file contents.
       - tsne_coords_cache.parquet / cell_totals.parquet — S1a recompute caches.
 
-    Keeps qc_summary.json, the s1/s2 qc_metrics parquets (the final manifest's
-    qc_summary.write() reads qc_metrics_post.parquet at S8), rna_decontaminated.h5ad
+    Keeps qc_summary.json, the s1/s2 qc_metrics parquets (the durable QC-metrics
+    record, consumed by the QC-review summary), rna_decontaminated.h5ad
     (declared S1a output), and all S3+ artifacts so downstream stages are
     unaffected. Deleting an already-absent file is a no-op.
     """
@@ -580,7 +578,7 @@ def status(config_path: str, watch: bool, interval: float) -> None:
             return
         if any(st == "awaiting_approval" for _, _, st in states):
             click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
-                       "`Processing-MuAgent approve <stage>` (e.g. qc_review, resolution_review).")
+                       "`Processing-MuAgent approve <stage>` (e.g. qc_review).")
             return
         if paths.run_manifest_json.exists():
             click.echo("\n→ run_manifest.json present; pipeline complete.")
@@ -705,7 +703,7 @@ def hpc_status(config_path: str) -> None:
                    "then fix and `submit` again (resume target is inferred).")
     elif gate:
         click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
-                   "`Processing-MuAgent approve <stage>` (e.g. qc_review, resolution_review).")
+                   "`Processing-MuAgent approve <stage>` (e.g. qc_review).")
     elif complete:
         click.echo("\n→ run_manifest.json present; pipeline complete.")
 
@@ -809,30 +807,6 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
     # Arm the plan_review gate — makes the CLI a complete gate-arming path
     # independent of whether the Snakemake propose rule ran.
     approval.mark_awaiting(run_dir, "plan_review")
-
-
-@main.command(name="resolution-compare")
-@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
-@click.option("--rna", "rna_pair", default="1.0,1.2",
-              help="Comma-separated RNA resolutions, e.g. 1.0,1.2")
-@click.option("--atac", "atac_pair", default="0.6,0.8",
-              help="Comma-separated ATAC resolutions, e.g. 0.6,0.8")
-def resolution_compare_cmd(config_path: str, rna_pair: str, atac_pair: str) -> None:
-    """Render side-by-side Leiden resolution comparisons for RNA and ATAC.
-
-    Re-clusters at the specified resolutions; does NOT change the approved cluster
-    labels. Produces side-by-side UMAP figures + a markdown summary.
-    """
-    from . import resolution_compare as _rc, layout as _layout
-    run_dir = _resolve_run_dir(config_path)
-    rna_res = tuple(float(x) for x in rna_pair.split(","))
-    atac_res = tuple(float(x) for x in atac_pair.split(","))
-    out = _rc.run_comparison(run_dir, rna_resolutions=rna_res, atac_resolutions=atac_res)
-    # Refresh deliverables layout manifest after writing comparison figures.
-    if (run_dir / "deliverables").exists():
-        _layout.reorganise(run_dir)
-    click.echo(f"Comparison written: {out}")
-    click.echo(out.read_text())
 
 
 def _unlock_snakemake(run_dir: Path, config_path: Path) -> None:
@@ -1002,7 +976,7 @@ def _enforce_execution_mode_gate(run_dir: Path, paths: RunPaths) -> None:
 @click.option("--auto-approve", is_flag=True, help="Auto-approve every checkpoint (noninteractive).")
 @click.option("--auto-approve-except", "auto_except", multiple=True,
               help="With --auto-approve, do NOT pre-seed the given stage(s). Repeatable. "
-                   "Example: --auto-approve-except s7_clustering")
+                   "Example: --auto-approve-except qc_review")
 @click.option("--no-context", is_flag=True, help="Explicit user choice to proceed without biological context; fields marked status=missing.")
 @click.option("--marker-genes", "marker_genes_ack",
               type=click.Choice(["defer", "skip"]), default=None,
@@ -1019,8 +993,8 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
     submission and monitoring is owned by Execution-MuAgent via `submit` — there
     is no `run --executor pbs|slurm` path.
 
-    Use --auto-approve-except <stage> to keep specific gates honoured (e.g. the
-    S7 clustering-resolution review in headless HPC mode).
+    Use --auto-approve-except <stage> to keep specific gates honoured (e.g.
+    qc_review in headless HPC mode).
     """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
@@ -1207,15 +1181,12 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
 
         # Run planning interactively (Phase A), then submit the heavy middle:
         Processing-MuAgent submit --config $CFG --executor slurm \\
-                --auto-approve --auto-approve-except post_qc_review \\
-                --auto-approve-except s7_clustering
+                --auto-approve --auto-approve-except post_qc_review
 
-        # After QC review, approve and resume (target auto-inferred):
+        # After QC review, approve and resume (target auto-inferred); the run
+        # proceeds through clustering and UMAP to the final outputs with no
+        # further checkpoint:
         Processing-MuAgent approve post_qc_review --config $CFG
-        Processing-MuAgent submit --config $CFG --executor slurm
-
-        # After resolution review, approve and finish:
-        Processing-MuAgent approve s7_clustering --config $CFG
         Processing-MuAgent submit --config $CFG --executor slurm
     """
     run_dir = _resolve_run_dir(config_path)

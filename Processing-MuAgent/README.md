@@ -12,19 +12,20 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
   P1 context extraction → S0 ingest (load + validate + assemble plan + QC explore) → (CHECKPOINT 1) plan_review
   → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → (CHECKPOINT 2) post_qc_review
   → S4 RNA normalization + HVG → S5 ATAC spectral embedding → S6 PCA (RNA) + neighbor graph
-  → S7 clustering + (CHECKPOINT 3) resolution_review → S8 UMAP → outputs
+  → S7 clustering (fixed resolutions) → S8 UMAP → outputs
 ```
 
-### User checkpoints (3)
+### User checkpoints (2)
 
-Three deliberate pauses where you review deliverables and decide before heavy downstream work continues. Everything else runs automatically once upstream artifacts exist and the relevant checkpoint is approved.
+Two deliberate pauses where you review deliverables and decide before heavy downstream work continues. Everything else — including clustering and UMAP — runs automatically once upstream artifacts exist and the relevant checkpoint is approved.
 
 
 | #     | CLI name              | Internal stage   | When                   | What you decide                                                                                                                                                                                                                                                            |
 | ----- | --------------------- | ---------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **1** | **Plan review**       | `plan_review`    | After S0, before S1    | Approve the preprocessing plan (`plan/summary/plan_review.md`)                                                                                                                                                                                                             |
 | **2** | **QC review**         | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `checkpoints/qc_review/qc_review_<run>.md`; revise **RNA/ATAC quality-filter thresholds** (or skip individual metrics entirely) and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
-| **3** | **Resolution review** | `s7_clustering`  | After S6, before S8    | Choose Leiden resolution per modality from sweep metrics (`checkpoints/resolution_review/`). **Separate / single-modality:** sets **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding)                             |
+
+After QC approval the pipeline runs straight through to the final outputs: Leiden clustering uses **fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5)** — no sweep and no resolution checkpoint. To use different values, `revise s7_clustering.rna_resolution` / `s7_clustering.atac_resolution` at plan review.
 
 
 ## Workflow stages
@@ -82,9 +83,9 @@ Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipp
   4. **Tile-matrix fallback** — verified SnapATAC2 tile matrix (`tile_matrix_fallback` mode), used only when no peak source is available.
   Spectral embedding in `obsm['X_spectral']` (with `X_lsi` as a backward-compat alias) is always computed from the tile matrix regardless of peak-export mode. When `drop_first=True`, the first component is removed before S6–S8.
 - **S6 PCA (RNA) + neighbor graph** (`s6_neighbors`) — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** KNN graph on the S5 spectral embedding (`X_spectral` via `snap.pp.knn`). Artifact: `internal/artifacts/s6_neighbors/rna_neighbors.h5ad`.
-- **S7 Clustering** — Leiden resolution sweep with per-modality grid and stable-region knee picker. **Resolution review checkpoint (#3):** `checkpoints/resolution_review/resolution_review.html` / `.ipynb`. Separate branch: chosen resolutions become final labels. Paired branch: diagnostic per-modality labels for UMAP only.
+- **S7 Clustering** — Leiden clustering at fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`). Runs automatically with no sweep and no checkpoint. Separate / single-modality branches: these become the final `leiden_rna` / `leiden_atac` labels. Paired branch: diagnostic per-modality labels for UMAP only (not joint embedding).
 - **S8 UMAP** — Per-modality UMAP. **Paired** → `processed.h5mu`; **separate** → `rna_processed.h5ad` + `atac_processed.h5ad`. On the paired branch, S8 expects matching barcodes from S3; final assembly includes a defensive re-intersection logged only when it filters cells.
-- **manifest** — `run_manifest.json` handoff contract (v1.0.0), final `qc_summary.md`, and `layout.json`.
+- **manifest** — `run_manifest.json` handoff contract (v1.0.0), the review notebook, and `layout.json`. 
 
 ## Paired multiome
 
@@ -131,7 +132,7 @@ Processing-MuAgent/
 ├── config/              # example run configurations
 ├── executor/            # Python implementation (stages, methods, CLI, helpers)
 │   ├── stages/          # per-stage scripts S0..S8 + post_qc_review
-│   ├── methods/         # MAD thresholds, resolution sweep, doublet policy
+│   ├── methods/         # MAD thresholds, doublet policy
 │   ├── hpc.py           # site.config/hpc.env writers; submission delegated to Execution-MuAgent
 │   └── specs.py         # stage metadata authoring (writes internal/stage_meta/)
 ├── workflow/            # Snakemake orchestration
@@ -194,20 +195,18 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Checkpoint **#1**                   | plan_review                 | Login node                      | Review plan             |
 | QC                                  | S1a → S1 → S2 → S3          | Cluster                         | —                       |
 | Checkpoint **#2**                   | post_qc_review              | —                               | Review QC               |
-| PCA + neighbors + clustering        | S4 → S5 → S6 → S7 (sweep)   | Cluster                         | —                       |
-| Checkpoint **#3**                   | s7_clustering               | —                               | Review resolution       |
-| Finish                              | S7 (labels) → S8 → manifest | Cluster                         | —                       |
+| Finish                              | S4 → S5 → S6 → S7 → S8 → manifest | Cluster                    | —                       |
 
 
 **Execution mode must be user-confirmed before any compute runs.** Both `run` and `submit` hard-refuse to launch until `execution.user_confirmed=true` is recorded (via `configure-execution ... --confirmed-by-user`). This is a one-time gate enforced on fresh runs and resume sessions alike — the agent must confirm local vs HPC with the user and never auto-default. `run` additionally refuses when the mode is `pbs`/`slurm` (use `submit`). Once confirmed, the pipeline proceeds automatically.
 
 **S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, S0 runs in the foreground on this machine via `run`.
 
-Each heavy stage runs as its own scheduler job, and only the three checkpoints above need `approve`. After `submit`, a background monitor is the sole watcher of your job; Processing-MuAgent follows **report-and-repoll** — it reports one-shot `hpc-status`, then re-polls on a non-blocking scheduled wakeup (~295s, the cadence printed on the `Next check:` line) and re-reports only when the state changes, until the job finishes or a review gate arms. You never have to ask for status by hand.
+Each heavy stage runs as its own scheduler job, and only the two checkpoints above need `approve`. After `submit`, a background monitor is the sole watcher of your job; Processing-MuAgent follows **report-and-repoll** — it reports one-shot `hpc-status`, then re-polls on a non-blocking scheduled wakeup (~295s, the cadence printed on the `Next check:` line) and re-reports only when the state changes, until the job finishes or a review gate arms. You never have to ask for status by hand.
 
 ### Submit workflow
 
-Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. `**submit` auto-infers the Snakemake target** from run state — you do not need to pick `s0_ingest_execute`, `post_qc_review_propose`, `s7_clustering_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
+Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. `**submit` auto-infers the Snakemake target** from run state — you do not need to pick `s0_ingest_execute`, `post_qc_review_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
 
 
 | Run state                                 | Inferred target          | Runs through                                                              |
@@ -215,8 +214,7 @@ Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` 
 | planning not done                         | `s0_ingest_execute`      | load + validate + assemble plan + QC explore, then pauses for plan review |
 | planning done, `plan_review` not approved | `plan_review_propose`    | renders the plan-review deliverable, then pauses                          |
 | `post_qc_review` not approved             | `post_qc_review_propose` | S1a → S3 + QC summary, then pauses                                        |
-| `s7_clustering` not approved              | `s7_clustering_propose`  | S4 → S6 + resolution sweep, then pauses                                   |
-| All approved                              | `all`                    | S7 labels → S8 → manifest                                                 |
+| `post_qc_review` approved                 | `all`                    | S4 → S6 → S7 clustering → S8 → manifest → final results (no further pause) |
 
 
 Override with `--target <name>` only when debugging.
@@ -249,16 +247,12 @@ Processing-MuAgent approve plan_review --config $CFG
 # First heavy QC batch (stops at QC review):
 Processing-MuAgent submit --config $CFG --executor slurm
 
-# After QC review:
+# After QC review — runs clustering + UMAP through to the final outputs (no further pause):
 Processing-MuAgent approve qc_review --config $CFG
-Processing-MuAgent submit --config $CFG --executor slurm
-
-# After resolution review:
-Processing-MuAgent approve resolution_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 ```
 
-After `submit` returns, the background monitor keeps watching your job — see **How cluster jobs run and stay supervised** below. For an unattended batch, pre-seed all three checkpoints with `--auto-approve` on `run` or `submit`; to keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts checkpoint aliases).
+After `submit` returns, the background monitor keeps watching your job — see **How cluster jobs run and stay supervised** below. For an unattended batch, pre-seed both checkpoints with `--auto-approve` on `run` or `submit`; to keep specific gates interactive, add `--auto-approve-except qc_review` (repeatable; accepts checkpoint aliases).
 
 ### How cluster jobs run and stay supervised
 
@@ -302,11 +296,9 @@ After `init`, only `deliverables/plan/` exists under deliverables. The `figures/
     figures/                      ← all pipeline figures (created at first plot)
     checkpoints/                  ← review reports (created at first checkpoint)
       qc_review/                    ← QC review (#2): qc_review_<run>.md + qc_summary_<run>.html
-      resolution_review/          ← resolution_summary.md + resolution_review.{html,ipynb}
     results/                      ← final deliverables (created at S8/manifest; data + manifest)
       processed.h5mu              ← or rna/atac_processed.h5ad (separate branch)
       review_processed_h5mu.{ipynb,py}
-      qc_summary.md               ← final QC summary
       run_manifest.json           ← handoff artifact
       layout.json
   internal/
@@ -314,7 +306,7 @@ After `init`, only `deliverables/plan/` exists under deliverables. The `figures/
     stage_meta/<stage>.yaml       ← per-stage metadata (resources, I/O, timeout hint) — not a submission contract
     stage_meta/head_job.yaml      ← head-job submission spec (written by submit, read by Execution-MuAgent)
     proposals/                    ← optional <stage>.yaml (mainly checkpoint review artifacts)
-    checkpoints/                  ← plan_review, post_qc_review, s7_clustering .approved only
+    checkpoints/                  ← plan_review, post_qc_review .approved only
     hpc_monitor/
       submissions.jsonl           ← append-only job registration log
       latest_submission.json      ← most recent submission record (used by supervisor-restart)
@@ -371,16 +363,15 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 | `approve`             | Write `internal/checkpoints/<stage>.approved` (human checkpoints only)                                                                                                                         |
 | `plan-review`         | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/`                                                                                                              |
 | `revise`              | Update one or more parameters in `parameters.yaml` and reset a checkpoint to awaiting. Used to tune, tighten, loosen, or **skip** individual QC metrics — see **Flexible QC thresholds**       |
-| `resolution-compare`  | Side-by-side resolution comparison figures (optional)                                                                                                                                          |
 | `unlock`              | Remove stale Snakemake locks after a cancelled/killed run                                                                                                                                      |
 | `propose`             | Run a single `*_propose` rule (optional; not required for the main pipeline)                                                                                                                   |
 
 
-**Approve aliases:** `qc_review` → `post_qc_review`; `resolution_review` → `s7_clustering`. Parameter keys in `revise` still use internal names (e.g. `s7_clustering.rna.resolution`).
+**Approve aliases:** `qc_review` → `post_qc_review`. Parameter keys in `revise` use internal names (e.g. `s7_clustering.rna_resolution`).
 
 ### Local workflow
 
-Planning and QC stages run automatically. Snakemake stops only at the three checkpoints.
+Planning and QC stages run automatically. Snakemake stops only at the two checkpoints; after QC approval it runs straight through clustering and UMAP to the final outputs.
 
 ```bash
 CFG=<run_dir>/deliverables/plan/config/run.yaml
@@ -393,11 +384,9 @@ Processing-MuAgent run --config $CFG
 Processing-MuAgent approve plan_review --config $CFG
 Processing-MuAgent run --config $CFG
 Processing-MuAgent approve qc_review --config $CFG
-Processing-MuAgent run --config $CFG
-Processing-MuAgent approve resolution_review --config $CFG
-Processing-MuAgent run --config $CFG
+Processing-MuAgent run --config $CFG   # runs S4 → S8 → manifest, no further pause
 
-# Option B — pre-seed all three checkpoints (unattended Snakemake; you still review outputs):
+# Option B — pre-seed both checkpoints (unattended Snakemake; you still review outputs):
 Processing-MuAgent run --config $CFG --auto-approve
 
 # Option C — unattended except one gate (example: keep QC review interactive):
@@ -425,12 +414,10 @@ Processing-MuAgent supervisor-restart --config $CFG
 ### Optional debugging
 
 ```bash
-Processing-MuAgent revise s7_clustering s7_clustering.rna.resolution=1.2 --config $CFG
-Processing-MuAgent resolution-compare --config $CFG --rna 1.0,1.2 --atac 0.6,0.8
+Processing-MuAgent revise s7_clustering s7_clustering.rna_resolution=1.2 --config $CFG
 Processing-MuAgent run --config $CFG --no-context
 Processing-MuAgent hpc-info
 Processing-MuAgent propose post_qc_review --config $CFG
-Processing-MuAgent propose s7_clustering --config $CFG
 ```
 
 ## Environment

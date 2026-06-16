@@ -5,8 +5,10 @@ Rule DAG: p1_context -> s0_ingest (load + validate + assemble plan + QC explore 
           s3_doublets -> post_qc_review -> s4_rna_norm -> s5_atac_spectral ->
           s6_neighbors -> s7_clustering -> s8_umap -> manifest
 
-Each stage has a _propose / _execute pair (see rules/*.smk); the execute rule
-depends on checkpoints/<stage>.approved written by `Processing-MuAgent approve <stage>`.
+Each stage has a _propose / _execute pair (see rules/*.smk). The two human-gate
+stages (plan_review, post_qc_review) block their downstream execute rules on
+checkpoints/<stage>.approved, written by `Processing-MuAgent approve <stage>`;
+all other stages (incl. s7_clustering at fixed resolutions) run automatically.
 
 Direct-write layout:
     INTERNAL     = <run_dir>/internal               — artifacts, proposals, checkpoints,
@@ -17,7 +19,7 @@ Direct-write layout:
                                                        context_summary.md, plan_review_<run>.md)
       FIGURES    = deliverables/figures             — all pipeline figures (PNG + PDF)
       CHECKPOINTS = deliverables/checkpoints        — intermediate review reports
-                                                      (qc_review/, resolution_review/)
+                                                      (qc_review/)
       RESULTS    = deliverables/results             — final results (data, notebook,
                                                       manifest; no figures)
 Rule outputs land directly at their canonical location; no mirroring.

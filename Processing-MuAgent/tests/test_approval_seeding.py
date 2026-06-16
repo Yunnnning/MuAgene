@@ -62,9 +62,9 @@ class SeedApprovalsIdempotencyTests(unittest.TestCase):
             run_dir = Path(tmp)
             _init_run(tmp)
             seeded = cli._seed_approvals(
-                run_dir, ("s7_clustering",), note="auto-approved (submit)")
-            self.assertEqual(seeded, ["s7_clustering"])
-            self.assertTrue(approval.is_approved(run_dir, "s7_clustering"))
+                run_dir, ("post_qc_review",), note="auto-approved (submit)")
+            self.assertEqual(seeded, ["post_qc_review"])
+            self.assertTrue(approval.is_approved(run_dir, "post_qc_review"))
 
     def test_protection_flag_set_even_when_nothing_freshly_seeded(self):
         # All gates already approved → nothing seeded, but PMA_AUTO_APPROVE must
@@ -86,10 +86,10 @@ class SeedApprovalsIdempotencyTests(unittest.TestCase):
             run_dir = Path(tmp)
             _init_run(tmp)
             seeded = cli._seed_approvals(
-                run_dir, ("post_qc_review", "s7_clustering"),
-                note="auto-approved (submit)", kept={"s7_clustering"})
+                run_dir, ("post_qc_review", "plan_review"),
+                note="auto-approved (submit)", kept={"plan_review"})
             self.assertEqual(seeded, ["post_qc_review"])
-            self.assertFalse(approval.is_approved(run_dir, "s7_clustering"))
+            self.assertFalse(approval.is_approved(run_dir, "plan_review"))
 
 
 if __name__ == "__main__":

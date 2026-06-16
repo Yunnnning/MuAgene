@@ -17,15 +17,11 @@ Top-level layout (direct-write; external inputs referenced via symlinks):
           qc_review/                  QC review checkpoint (summaries only)
             qc_review_<run>.md
             qc_summary_<run>.html
-          resolution_review/          S7 resolution checkpoint (reports only)
-            resolution_summary.md
-            resolution_review.{ipynb,html}
         results/                    final deliverables (data + manifest; no figures)
           review_processed_h5mu.{ipynb,py}
           processed.h5mu              (paired branch)
           rna_processed.h5ad          (separate / rna_only branches)
           atac_processed.h5ad         (separate / atac_only branches)
-          qc_summary.md               ← manifest rule
           run_manifest.json           ← manifest rule (handoff artifact)
           layout.json                 ← layout.finalize (manifest of deliverables)
       internal/                     canonical pipeline state (not user-facing)
@@ -125,11 +121,6 @@ class RunPaths:
     def deliv_qc_review(self) -> Path:
         """checkpoints/qc_review/ — QC review reports (md/html only)."""
         return self.deliv_checkpoints / "qc_review"
-
-    @property
-    def deliv_resolution_review(self) -> Path:
-        """checkpoints/resolution_review/ — S7 summary and review notebook."""
-        return self.deliv_checkpoints / "resolution_review"
 
     @property
     def deliv_results(self) -> Path:
@@ -245,22 +236,6 @@ class RunPaths:
         return self.qc_review_summary_md
 
     @property
-    def resolution_summary_md(self) -> Path:
-        return self.deliv_resolution_review / "resolution_summary.md"
-
-    @property
-    def resolution_review_ipynb(self) -> Path:
-        return self.deliv_resolution_review / "resolution_review.ipynb"
-
-    @property
-    def resolution_review_html(self) -> Path:
-        return self.deliv_resolution_review / "resolution_review.html"
-
-    @property
-    def qc_summary_md(self) -> Path:
-        return self.deliv_results / "qc_summary.md"
-
-    @property
     def run_manifest_json(self) -> Path:
         return self.deliv_results / "run_manifest.json"
 
@@ -318,7 +293,7 @@ class RunPaths:
             self.deliv_qc_review / "figures" / f"{stem}.{ext}",
             self.deliv_qc_review / f"{stem}.{ext}",
             d / "checkpoint" / "resolution_review" / f"{stem}.{ext}",
-            self.deliv_resolution_review / f"{stem}.{ext}",
+            self.deliv_checkpoints / "resolution_review" / f"{stem}.{ext}",
             d / "post_run" / f"{stem}.{ext}",
             self.deliv_results / f"{stem}.{ext}",
         )
@@ -344,7 +319,7 @@ class RunPaths:
             self.deliverables / "checkpoints" / "qc_review" / "figures",
             self.deliverables / "checkpoints" / "qc_review",
             self.deliverables / "checkpoint" / "resolution_review",
-            self.deliv_resolution_review,
+            self.deliv_checkpoints / "resolution_review",
             self.deliverables / "post_run",
             self.deliv_results,
         )

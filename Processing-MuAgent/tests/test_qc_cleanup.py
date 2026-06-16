@@ -69,8 +69,8 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
             self.assertTrue(s2_json.exists())
 
     def test_preserves_qc_metrics_parquets(self):
-        """The s1/s2 qc_metrics parquets must survive: the final S8 manifest's
-        qc_summary.write() reads qc_metrics_post.parquet."""
+        """The s1/s2 qc_metrics parquets must survive cleanup: they are the durable
+        QC-metrics record consumed by the QC-review summary."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = _init_run(tmp)
             _touch(paths.artifact("s1_rna_qc", "rna_qc.h5ad"))

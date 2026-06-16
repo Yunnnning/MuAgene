@@ -413,13 +413,12 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         })
 
     # 6. Clustering
-    grid = param("s7_clustering", "leiden_resolution_grid")
-    rna_tilt = param("s7_clustering", "rna_tilt")
-    atac_tilt = param("s7_clustering", "atac_tilt")
+    rna_res = param("s7_clustering", "rna_resolution")
+    atac_res = param("s7_clustering", "atac_resolution")
     items.append({
         "label": "Clustering strategy",
-        "value": f"Leiden sweep {grid.get('value', [])} → stable-region knee (RNA={rna_tilt.get('value', '?')}, ATAC={atac_tilt.get('value', '?')})",
-        "reason": "Per-modality resolution picked from a stability plateau, not a single-metric optimum.",
+        "value": f"Leiden at fixed resolutions (RNA={rna_res.get('value', '?')}, ATAC={atac_res.get('value', '?')})",
+        "reason": "Fixed per-modality defaults; clustering runs automatically with no resolution checkpoint.",
         "certainty": "needs confirmation",
     })
 

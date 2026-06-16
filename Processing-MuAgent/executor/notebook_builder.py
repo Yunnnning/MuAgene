@@ -10,10 +10,12 @@ remains portable if the run directory is relocated.
 
 Design goals:
     - Concise, user-friendly, no debugging noise.
-    - Four sections only: load data, inspect, reproduce plots, resolution review.
-    - Show pre-rendered deliverable figures inline AND reproduce UMAPs from the
-      loaded object so the user can verify reproducibility.
-    - Surface the resolution sweep as a numeric table (figures intentionally omitted).
+    - Three sections only: load data, inspect contents, clustering.
+    - Reproduce the per-cluster UMAP from the loaded object (QC / ambient figures
+      are NOT reproduced here — they already live in deliverables/figures/ and the
+      QC-review checkpoint).
+    - Surface the fixed per-modality clustering resolutions, and let the user
+      re-cluster at a different resolution and regenerate the coloured UMAP.
 """
 from __future__ import annotations
 
@@ -74,7 +76,7 @@ import yaml
 import matplotlib.pyplot as plt
 import mudata as mu
 import anndata as ad
-from IPython.display import Image, display
+from IPython.display import display
 
 RUN_DIR = Path(os.environ.get("PMA_RUN_DIR", "__BAKED_RUN_DIR__"))
 PROCESSED_DIR = RUN_DIR / "deliverables" / "results"
@@ -143,80 +145,6 @@ if atac_cluster_col:
 """
 
 
-_CELL_SHOW_HELPER = """\
-def _show_qc(stem: str) -> None:
-    p = RUN_DIR / "deliverables" / "figures" / f"{stem}.png"
-    if not p.is_file():
-        legacy = RUN_DIR / "deliverables" / "figure" / f"{stem}.png"
-        if legacy.is_file():
-            p = legacy
-        else:
-            legacy = RUN_DIR / "deliverables" / "checkpoints" / "qc_review" / "figures" / f"{stem}.png"
-            if legacy.is_file():
-                p = legacy
-            else:
-                legacy_flat = RUN_DIR / "deliverables" / "checkpoints" / "qc_review" / f"{stem}.png"
-                if legacy_flat.is_file():
-                    p = legacy_flat
-                else:
-                    legacy_ckpt = RUN_DIR / "deliverables" / "checkpoint" / "qc_review" / "figures" / f"{stem}.png"
-                    if legacy_ckpt.is_file():
-                        p = legacy_ckpt
-    if p.is_file():
-        display(Image(filename=str(p)))
-    else:
-        print(f"(missing: {p})")
-
-def _show_umap(stem: str) -> None:
-    p = RUN_DIR / "deliverables" / "figures" / f"{stem}.png"
-    if not p.is_file():
-        legacy = RUN_DIR / "deliverables" / "post_run" / f"{stem}.png"
-        if legacy.is_file():
-            p = legacy
-        else:
-            legacy_results = RUN_DIR / "deliverables" / "results" / f"{stem}.png"
-            if legacy_results.is_file():
-                p = legacy_results
-    if p.is_file():
-        display(Image(filename=str(p)))
-    else:
-        print(f"(missing: {p})")
-"""
-
-
-_CELL_QC_FIGS = """\
-# Ambient RNA correction (S1a) — shown only when the stage actually ran.
-_show_qc("s1a_ambient_counts_before_after")
-
-# RNA QC plots (pre + post filter)
-_show_qc("s1_rna_qc_violin_pre")
-_show_qc("s1_rna_qc_violin_post")
-
-# ATAC fragment-size distribution (sanity check for nucleosome periodicity)
-_show_qc("s2_atac_qc_fragment_size_distribution")
-_show_qc("s2_atac_qc_tss_enrichment_profile")
-"""
-
-
-_CELL_AMBIENT_INSPECT = """\
-# Ambient RNA contamination summary (per-cell rho).
-if "rna" in mdata.mod and "ambient_contamination" in mdata["rna"].obs.columns:
-    rho = mdata["rna"].obs["ambient_contamination"].to_numpy()
-    if rho.size:
-        print(f"Median contamination: {np.median(rho):.3f}")
-        print(f"P90 contamination:    {np.quantile(rho, 0.90):.3f}")
-        print(f"Cells with rho>0.20:  {int((rho > 0.20).sum())} / {rho.size}")
-    if "counts_raw" in mdata["rna"].layers:
-        pre = np.asarray(mdata["rna"].layers["counts_raw"].sum(axis=1)).ravel()
-        post = np.asarray(mdata["rna"].layers["counts"].sum(axis=1)).ravel()
-        print(f"Total counts pre:  {int(pre.sum()):,}")
-        print(f"Total counts post: {int(post.sum()):,} "
-              f"({100*(1 - post.sum()/max(pre.sum(),1)):.1f}% removed)")
-else:
-    print("(no ambient correction: plan method=none or atac_only branch)")
-"""
-
-
 _CELL_UMAP_REPRO = """\
 def _plot_umap_from_obj(ad_, coord_key: str, label_col: str, title: str) -> None:
     if coord_key not in ad_.obsm or label_col not in ad_.obs:
@@ -257,22 +185,58 @@ if atac_cluster_col:
 """
 
 
-_CELL_SWEEP_TABLE = """\
-sweep_path = RUN_DIR / "internal" / "artifacts" / "s7_clustering" / "sweep.parquet"
+_CELL_RESOLUTIONS = """\
 params_path = RUN_DIR / "internal" / "parameters.yaml"
-
-sweep = pd.read_parquet(sweep_path)
 params = yaml.safe_load(params_path.read_text())
-rna_res = params.get("s7_clustering.rna.resolution", {}).get("value")
-atac_res = params.get("s7_clustering.atac.resolution", {}).get("value")
+rna_res = params.get("s7_clustering.rna_resolution", {}).get("value")
+atac_res = params.get("s7_clustering.atac_resolution", {}).get("value")
 
-for modality, chosen in [("rna", rna_res), ("atac", atac_res)]:
-    sub = sweep[sweep["modality"] == modality]
-    if sub.empty:
-        continue
-    print(f"\\n=== {modality.upper()} sweep (chosen: {chosen}) ===")
-    cols = ["resolution", "n_clusters", "silhouette", "seed_stability_ari"]
-    print(sub[cols].to_string(index=False))
+print("Leiden clustering ran at fixed per-modality resolutions:")
+if rna_res is not None:
+    print(f"  RNA  (leiden_rna):  resolution = {rna_res}")
+if atac_res is not None:
+    print(f"  ATAC (leiden_atac): resolution = {atac_res}")
+"""
+
+
+_CELL_RECLUSTER = """\
+# Try a DIFFERENT clustering resolution and regenerate the coloured UMAP.
+#
+# The UMAP embedding is fixed by the latent representation (RNA: X_pca,
+# ATAC: X_spectral) — changing the resolution only changes the cluster *labels*,
+# so we recompute Leiden on the stored latent and recolour the existing UMAP.
+# This is an exploratory tool; it does not overwrite the pipeline's labels unless
+# you pass `save_to=`.
+import scanpy as sc
+
+def recluster(modality="rna", resolution=0.7, *, save_to=None):
+    if modality not in mdata.mod:
+        print(f"(modality {modality!r} not present)"); return
+    adata = mdata[modality]
+    rep = "X_pca" if modality == "rna" else (
+        "X_spectral" if "X_spectral" in adata.obsm else "X_lsi")
+    if rep not in adata.obsm:
+        print(f"(latent representation {rep!r} missing for {modality}; cannot re-cluster)")
+        return
+    sc.pp.neighbors(adata, use_rep=rep)
+    key = f"leiden_{modality}_res{resolution}"
+    sc.tl.leiden(adata, resolution=resolution, key_added=key)
+    n = adata.obs[key].nunique()
+    print(f"{modality.upper()} @ resolution={resolution}: {n} clusters")
+    umap_key = f"X_umap_{modality}" if f"X_umap_{modality}" in adata.obsm else "X_umap"
+    _plot_umap_from_obj(adata, umap_key, key, f"{modality.upper()} UMAP — Leiden res={resolution}")
+    display(adata.obs[key].value_counts().sort_index()
+            .rename_axis(key).reset_index(name="n_cells"))
+    if save_to is not None:
+        mdata.write(str(save_to))
+        print(f"Saved updated object with new labels → {save_to}")
+    return adata.obs[key]
+
+# Edit the resolution and re-run this cell. Examples:
+recluster("rna", resolution=0.7)
+# recluster("atac", resolution=0.5)
+# Persist a new labelling to a separate file (does NOT touch processed.h5mu):
+# recluster("rna", resolution=1.0, save_to=PROCESSED_DIR / "processed_reclustered.h5mu")
 """
 
 
@@ -292,21 +256,13 @@ def _cells(run_dir: str) -> list[dict[str, Any]]:
         _code(_CELL_INSPECT),
         _md("### Cluster sizes"),
         _code(_CELL_CLUSTER_SIZES),
-        _md("### Ambient RNA correction (S1a)"),
-        _code(_CELL_AMBIENT_INSPECT),
-        _md("## 3. Reproduce user-facing plots"),
-        _code(_CELL_SHOW_HELPER),
-        _md("### Ambient correction + RNA + ATAC QC figures"),
-        _code(_CELL_QC_FIGS),
-        _md("### UMAPs — pre-rendered deliverables"),
-        _code("""\
-_show_umap("s8_umap_rna_by_leiden")
-_show_umap("s8_umap_atac_by_leiden")
-"""),
-        _md("### UMAPs — reproduced from `processed.h5mu`"),
+        _md("## 3. Clustering"),
+        _md("### Resolutions used"),
+        _code(_CELL_RESOLUTIONS),
+        _md("### UMAPs — coloured by cluster (reproduced from `processed.h5mu`)"),
         _code(_CELL_UMAP_REPRO),
-        _md("## 4. Clustering resolution review"),
-        _code(_CELL_SWEEP_TABLE),
+        _md("### Try a different resolution"),
+        _code(_CELL_RECLUSTER),
     ]
 
 

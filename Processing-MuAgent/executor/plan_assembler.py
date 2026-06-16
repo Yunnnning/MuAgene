@@ -263,20 +263,11 @@ def assemble_plan(
         },
         "s7_clustering": {
             "parameters": {
-                # Backwards-compat single grid (used if per-modality grids are absent).
-                "leiden_resolution_grid": p([0.4, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2], "default",
-                                             "Project standard grid (legacy; superseded by per-modality grids).", "high"),
-                # Per-modality grids: ATAC is shifted to a lower range per the atac_tilt=lower policy.
-                "leiden_resolution_grid_rna":  p([0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2], "default",
-                                                  "RNA grid; tolerates finer granularity (0.4 dropped; 1.1 added to close the 1.0→1.2 gap).", "high"),
-                "leiden_resolution_grid_atac": p([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0], "default",
-                                                  "ATAC grid; shifted lower to match atac_tilt=lower and avoid over-fragmentation.", "high"),
-                "seeds": p([0, 1, 2], "default", "Three seeds for stability ARI.", "high"),
-                "stability_floor": p(0.85, "default", "Minimum seed-pairwise ARI for stable region.", "medium"),
-                "rna_tilt": p("higher", "default",
-                               "RNA tolerates finer granularity per project policy.", "high"),
-                "atac_tilt": p("lower", "default",
-                               "ATAC prefers broader clusters to avoid over-fragmentation.", "high"),
+                # Fixed per-modality Leiden resolutions (no sweep / no user checkpoint).
+                # ATAC sits lower than RNA to avoid over-fragmentation.
+                "rna_resolution":  p(0.7, "default", "Fixed Leiden resolution for RNA clustering.", "high"),
+                "atac_resolution": p(0.5, "default", "Fixed Leiden resolution for ATAC clustering.", "high"),
+                "random_state": p(0, "default", "Leiden random seed.", "high"),
             }
         },
         "s8_umap": {

@@ -28,15 +28,16 @@ detected modality set still raise. Surface the report verbatim per hard rule 3.
 P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
 ```
 
-### User checkpoints (3)
+### User checkpoints (2)
 
 1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `plan/summary/plan_review_<run>.md`.
 2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `checkpoints/qc_review/qc_review_<run>.md` (figures embedded; raw plots in `deliverables/figures/`). If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
-3. **Clustering resolution review** (`s7_clustering`) — after S6 PCA (RNA) + neighbor graph (`s6_neighbors`), before S8. Review `checkpoints/resolution_review/`. **Separate / single-modality:** resolutions set **final** cluster labels. **Paired:** **diagnostic** per-modality labels for UMAP only (not joint embedding).
+
+After QC approval, S4→S8 run automatically with no further pause. **S7 clustering** uses fixed per-modality Leiden resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`) — no sweep and no resolution checkpoint. Separate / single-modality branches: these become the **final** `leiden_rna` / `leiden_atac` labels. Paired: diagnostic per-modality labels for UMAP only (not joint embedding). To change them, `revise s7_clustering.rna_resolution=<x>` at plan review.
 
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
 - S3 (`s3_doublets`) runs before QC review and is normally auto-approved.
-- S4 and S5 are gated on `post_qc_review.approved`; S8 is gated on `s7_clustering.approved`.
+- S4 and S5 are gated on `post_qc_review.approved`; S6→S8 (incl. clustering) then run automatically.
 - All other stages may be auto-approved unless the user overrides.
 
 For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out of the plan and DAG automatically; you never schedule them.
@@ -77,10 +78,7 @@ Files at user checkpoints and at the hard stop:
 
 - `deliverables/checkpoints/qc_review/qc_review_<run>.md` (QC review checkpoint #2)
 - `deliverables/checkpoints/qc_review/qc_summary_<run>.html` (rendered QC report)
-- `deliverables/figures/` (all pipeline figures — QC, resolution compare, UMAP)
-- `deliverables/checkpoints/resolution_review/resolution_summary.md` (resolution review #3)
-- `deliverables/checkpoints/resolution_review/resolution_review.{html,ipynb}`
-- `deliverables/results/qc_summary.md` (final QC summary, written at manifest)
+- `deliverables/figures/` (all pipeline figures — QC, UMAP)
 - `deliverables/results/run_manifest.json` (handoff artifact)
 - `deliverables/results/` (processed data, review_processed_h5mu.ipynb)
 

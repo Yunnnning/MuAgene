@@ -20,16 +20,12 @@ MONITOR_PIPELINE: tuple[str, ...] = (
     "s4_rna_norm",
     "s5_atac_spectral",
     "s6_neighbors",
-    "s7_sweep",
-    "resolution_review",
-    "s7_labels",
+    "s7_clustering",
     "s8_umap",
 )
 
-RESOLUTION_REVIEW_STAGE = "s7_clustering"
-
 HUMAN_GATES: frozenset[str] = frozenset({
-    "plan_review", "post_qc_review", RESOLUTION_REVIEW_STAGE,
+    "plan_review", "post_qc_review",
 })
 
 MONITOR_LABELS: dict[str, str] = {
@@ -42,9 +38,7 @@ MONITOR_LABELS: dict[str, str] = {
     "s4_rna_norm": "S4",
     "s5_atac_spectral": "S5",
     "s6_neighbors": "S6",
-    "s7_sweep": "S7",
-    "resolution_review": "resolution_review",
-    "s7_labels": "S7-labels",
+    "s7_clustering": "S7",
     "s8_umap": "S8",
 }
 
@@ -58,9 +52,7 @@ MONITOR_TASKS: dict[str, str] = {
     "s4_rna_norm": "RNA normalization",
     "s5_atac_spectral": "ATAC spectral embedding",
     "s6_neighbors": "PCA (RNA) + neighbor graph",
-    "s7_sweep": "Resolution sweep",
-    "resolution_review": "Resolution review",
-    "s7_labels": "Cluster label assignment",
+    "s7_clustering": "Clustering",
     "s8_umap": "UMAP and final outputs",
 }
 
@@ -76,13 +68,8 @@ EXECUTE_MARKERS: dict[str, str] = {
     "s8_umap": "s8_done.txt",
 }
 
-S7_SWEEP_MARKER = "sweep.parquet"
-
 QC_EXECUTE_STAGES: tuple[str, ...] = (
     "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-)
-POST_QC_EXECUTE_STAGES: tuple[str, ...] = (
-    "s4_rna_norm", "s5_atac_spectral", "s6_neighbors",
 )
 
 _RULE_ERROR_RE = re.compile(r"Error in rule ([A-Za-z0-9_]+):")
@@ -107,8 +94,7 @@ _RULE_TO_MONITOR_ID: dict[str, str] = {
     "s4_rna_norm_execute": "s4_rna_norm",
     "s5_atac_spectral_execute": "s5_atac_spectral",
     "s6_neighbors_execute": "s6_neighbors",
-    "s7_clustering_propose": "s7_sweep",
-    "s7_clustering_execute": "s7_labels",
+    "s7_clustering_execute": "s7_clustering",
     "s8_umap_execute": "s8_umap",
     "plan_review_propose": "plan_review",
     "post_qc_review_propose": "post_qc_review",
@@ -125,12 +111,6 @@ def monitor_task(monitor_id: str) -> str:
 
 def snakemake_rules_for_monitor(monitor_id: str) -> tuple[str, ...]:
     """Snakemake rule names whose logs indicate success/failure for a monitor row."""
-    if monitor_id == "s7_sweep":
-        return ("s7_clustering_propose",)
-    if monitor_id == "s7_labels":
-        return ("s7_clustering_execute",)
-    if monitor_id == "resolution_review":
-        return ()
     if monitor_id in HUMAN_GATES:
         return (f"{monitor_id}_propose",)
     if monitor_id in EXECUTE_MARKERS:
@@ -142,13 +122,7 @@ def _branch_stages(paths: RunPaths) -> set[str]:
     return _stages_for_branch(current_branch(paths.parameters_yaml))
 
 
-def _s7_applies(branch_stages: set[str]) -> bool:
-    return RESOLUTION_REVIEW_STAGE in branch_stages
-
-
 def _applies(monitor_id: str, branch_stages: set[str]) -> bool:
-    if monitor_id in ("s7_sweep", "resolution_review", "s7_labels"):
-        return _s7_applies(branch_stages)
     if monitor_id in HUMAN_GATES:
         return True
     return monitor_id in branch_stages
@@ -160,11 +134,6 @@ def execute_artifact(paths: RunPaths, stage: str) -> Path:
 
 def execute_done(paths: RunPaths, stage: str) -> bool:
     return execute_artifact(paths, stage).exists()
-
-
-
-def _s7_sweep_done(paths: RunPaths) -> bool:
-    return paths.artifact(RESOLUTION_REVIEW_STAGE, S7_SWEEP_MARKER).exists()
 
 
 def _log_indicates_failure(text: str) -> bool:
@@ -242,11 +211,7 @@ def collect_failed_snakemake_rules(paths: RunPaths) -> frozenset[str]:
 
 
 def _monitor_outputs_done(paths: RunPaths, monitor_id: str) -> bool:
-    if monitor_id == "s7_sweep":
-        return _s7_sweep_done(paths)
-    if monitor_id == "s7_labels":
-        return execute_done(paths, RESOLUTION_REVIEW_STAGE)
-    if monitor_id in HUMAN_GATES or monitor_id == "resolution_review":
+    if monitor_id in HUMAN_GATES:
         return False
     return execute_done(paths, monitor_id)
 
@@ -351,8 +316,6 @@ def _human_gate_state(
         return "awaiting_approval"
     if stage == "post_qc_review" and paths.qc_review_summary_md.exists():
         return "awaiting_approval"
-    if stage == RESOLUTION_REVIEW_STAGE and _s7_sweep_done(paths):
-        return "awaiting_approval"
     if stage == "plan_review" and paths.plan_review_md.exists():
         return "awaiting_approval"
     if _monitor_failed(paths, stage, failed_rules):
@@ -391,24 +354,6 @@ def _monitor_state(
     failed_rules: frozenset[str],
     killed_monitor_ids: frozenset[str],
 ) -> str:
-    if monitor_id == "resolution_review":
-        return _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules, killed_monitor_ids)
-
-    if monitor_id == "s7_sweep":
-        return _automated_state(
-            paths, monitor_id, RESOLUTION_REVIEW_STAGE, branch_stages, failed_rules,
-            killed_monitor_ids,
-        )
-
-    if monitor_id == "s7_labels":
-        gate = _human_gate_state(paths, RESOLUTION_REVIEW_STAGE, failed_rules, killed_monitor_ids)
-        if gate != "approved":
-            return "pending"
-        return _automated_state(
-            paths, monitor_id, RESOLUTION_REVIEW_STAGE, branch_stages, failed_rules,
-            killed_monitor_ids,
-        )
-
     if monitor_id in HUMAN_GATES:
         return _human_gate_state(paths, monitor_id, failed_rules, killed_monitor_ids)
 
@@ -452,23 +397,23 @@ def stage_states(paths: RunPaths) -> list[tuple[str, str, str]]:
 def infer_resume_target(run_dir: Path | str) -> str:
     """Pick the Snakemake target as the current phase's terminus.
 
-    Each compute phase ends at a human review gate, and each gate is armed by a
-    ``*_propose`` localrule that is *downstream* of the phase's execute stages
-    (its inputs are the last execute stage's outputs). Targeting that propose
-    rule makes Snakemake pull the whole phase's execute stages in as
-    dependencies AND run the gate-arming localrule at the end — so one head-job
-    submission runs the entire phase *and* arms the gate. Targeting the last
-    execute stage instead truncated the phase one rule early, leaving the gate
-    unarmed and the run waiting for a signal that never came. Snakemake reruns
-    any missing/failed upstream execute stage before the localrule, so this also
-    covers partial-resume.
+    The pipeline has two human review gates (plan_review, post_qc_review). Each
+    gated phase is armed by a ``*_propose`` localrule that is *downstream* of the
+    phase's execute stages (its inputs are the last execute stage's outputs).
+    Targeting that propose rule makes Snakemake pull the whole phase's execute
+    stages in as dependencies AND run the gate-arming localrule at the end — so
+    one head-job submission runs the entire phase *and* arms the gate. The final
+    phase (S4→S8→manifest) has no gate, so it targets ``all`` and runs straight
+    through to the final results in one submission. Snakemake reruns any
+    missing/failed upstream stage before the target, so this also covers
+    partial-resume.
     """
     paths = RunPaths(run_dir)
 
     # Planning phase terminus = plan_review_propose (pulls P1 → s0_ingest_execute
     # → P2 as dependencies). When S0 has not run, Snakemake resolves the full
     # chain. When S0 is done but the gate is unarmed, only the cheap localrule
-    # runs. Matches the established QC / resolution pattern.
+    # runs. Matches the established QC pattern.
     if not paths.approved_sentinel("plan_review").exists():
         return "plan_review_propose"
 
@@ -476,16 +421,12 @@ def infer_resume_target(run_dir: Path | str) -> str:
     if not paths.approved_sentinel("post_qc_review").exists():
         return "post_qc_review_propose"
 
-    # Mid phase terminus = the resolution-review gate-arming localrule
-    # (pulls s4→s6, then runs the resolution sweep that arms the gate).
-    if not paths.approved_sentinel(RESOLUTION_REVIEW_STAGE).exists():
-        return "s7_clustering_propose"
-
-    # Final phase: no gate follows, so execute targets are correct here.
-    if not execute_done(paths, RESOLUTION_REVIEW_STAGE):
-        return "s7_clustering_execute"
-    if not execute_done(paths, "s8_umap"):
-        return "s8_umap_execute"
+    # Final phase: no gate follows post_qc_review, so target ``all`` (the manifest).
+    # Snakemake pulls the entire remaining DAG — S4→S5→S6→S7 (clustering at fixed
+    # resolutions) → S8 → manifest — so a single submission runs straight through
+    # to the final results (run_manifest.json, review notebook, layout.json).
+    # Targeting s8_umap_execute instead would stop one rule short and
+    # leave results generation unrun. Idempotent once everything is built.
     return "all"
 
 
@@ -541,9 +482,8 @@ def required_human_approvals(target: str) -> tuple[str, ...]:
         return ()
     base = ("plan_review",)
     qc_targets = {f"{s}_execute" for s in QC_EXECUTE_STAGES} | {"post_qc_review_propose"}
-    mid_targets = {f"{s}_execute" for s in POST_QC_EXECUTE_STAGES} | {"s7_clustering_propose"}
     if target in qc_targets:
         return base
-    if target in mid_targets:
-        return base + ("post_qc_review",)
-    return base + ("post_qc_review", RESOLUTION_REVIEW_STAGE)
+    # Everything from S4 onward (incl. S7 clustering + S8) runs after the QC gate;
+    # there is no further checkpoint, so they all require both upstream gates.
+    return base + ("post_qc_review",)

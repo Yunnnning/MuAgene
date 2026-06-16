@@ -34,11 +34,12 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 >
 > - **P1 biological context** (mandatory) — you provide organism/tissue/assay or opt out explicitly.
 >
-> Three user checkpoints during preprocessing:
+> Two user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan before heavy compute.
 > 2. **QC review** — inspect QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run>.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the union doublet removal policy.
-> 3. **Resolution review** — choose Leiden resolution from sweep metrics. On **separate**, this sets final cluster labels; on **paired**, diagnostic labels for UMAP only.
+>
+> After QC approval the rest runs automatically: clustering uses fixed Leiden resolutions (RNA 0.7 / ATAC 0.5) and the pipeline proceeds through UMAP to the final outputs.
 >
 > Ready to send me the paths?
 
@@ -48,11 +49,12 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 >
 > - **P1 biological context** (mandatory) — you provide organism/tissue/assay or opt out explicitly.
 >
-> Three user checkpoints during preprocessing:
+> Two user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan.
 > 2. **QC review** — inspect QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run>.md`; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
-> 3. **Resolution review** — choose resolution for final cluster labels in the processed output.
+>
+> After QC approval the rest runs automatically: clustering uses a fixed Leiden resolution and the pipeline proceeds through UMAP to the final processed output.
 >
 > Ready to send me the paths?
 

@@ -26,7 +26,7 @@ Before you answer, one other thing I'll need: a run directory — a writable fol
 
 Mandatory approval points depend on the branch:
 
-- All branches: (1) biological context, (2) the full preprocessing plan, (3) **QC review** (after quality filtering and doublet removal, before dimensionality reduction), (4) clustering resolution.
+- All branches: (1) biological context, (2) the full preprocessing plan, (3) **QC review** (after quality filtering and doublet removal, before dimensionality reduction). After QC review, the pipeline runs straight through dimensionality reduction, clustering (fixed resolutions), and UMAP to the final outputs — no further pause.
 - On **paired** multiome, the QC review summary also documents the **union doublet removal policy** for confirmation — there is no separate S3 user gate.
 - `separate` / `rna_only` / `atac_only`: S3 runs automatically — each modality's doublets are filtered by its own detector with no cross-modal reconciliation; no pause unless you ask for per-stage review.
 
@@ -260,7 +260,7 @@ If marker genes were stored at this step, confirm the stored gene list in one li
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
 - **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `checkpoints/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/checkpoints/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies. **Hard rule — close the marker-gene loop here:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"** (this is the second chance when the check was deferred or skipped at plan review), you **must** relay that notice verbatim and obtain an explicit user decision — provide genes → run `executor marker-gene-check --config $CFG <genes...>` (plots before/after and refreshes the QC report), or explicitly decline — **before** approving QC. Do not auto-approve `post_qc_review` past an unaddressed "strongly recommended" notice. Follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact procedure. Never supply gene names yourself.
-- **`s7_clustering`** (all branches): resolution review checkpoint **#3**. Review `checkpoints/resolution_review/`. **Separate / single-modality:** resolutions set **final** labels in processed outputs. **Paired:** **diagnostic** per-modality labels for UMAP only.
+- **`s7_clustering`** (all branches): **not a user checkpoint.** Leiden clustering runs automatically at fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5). Separate / single-modality: these are the **final** `leiden_rna` / `leiden_atac` labels; paired: diagnostic labels for UMAP only. If the user wants different values, `executor revise s7_clustering s7_clustering.rna_resolution=<x>` at plan review.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
 (For other stages, auto-approve silently unless the user asked for per-stage review.)
@@ -278,7 +278,7 @@ Approve, revise, or abort?"
    - Loop:
      a. Run `executor status --config $CFG` to see which stage is currently `awaiting_approval`.
      b. Read `<run_dir>/internal/proposals/<stage>.yaml` — the structured proposal.
-     c. If the stage has a linked summary in `deliverables/checkpoints/resolution_review/` (e.g., `resolution_summary.md` for s7), read that too and surface both.
+     c. If the stage has a linked summary under `deliverables/checkpoints/` (e.g., `qc_review_<run>.md` for post_qc_review), read that too and surface both.
      d. Based on user decision:
         - Approve → `executor approve <stage> --config $CFG`.
         - Revise → if the current stage is `post_qc_review`, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
@@ -288,7 +288,7 @@ Approve, revise, or abort?"
 
 2. When `manifest` finishes:
    - Read `deliverables/results/run_manifest.json` and extract `workflow_branch`, `outputs`.
-   - Point the user at `deliverables/results/qc_summary.md`, the UMAP figures in `deliverables/figures/`, and the handoff artifact `run_manifest.json`.
+   - Point the user at the review notebook `deliverables/results/review_processed_h5mu.ipynb` (load + inspect + re-cluster at a custom resolution), the UMAP figures in `deliverables/figures/`, and the handoff artifact `run_manifest.json`. The QC summary lives at `deliverables/checkpoints/qc_review/qc_review_<run>.md`.
 
 ### WHAT_TO_SURFACE_BACK
 
@@ -346,17 +346,14 @@ and fallback rules (empty partition lists, unreachable files) are in
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S3 | Cluster head-job via `submit` | report `hpc-status`; wait for gate signal |
 | Checkpoint **#2** | post_qc_review | — | Review QC |
-| PCA + neighbors + clustering | S4 → S7 (sweep) | Cluster head-job via `submit` | report `hpc-status`; wait for gate signal |
-| Checkpoint **#3** | s7_clustering | — | Review resolution |
-| Finish | S7 (labels) → S8 → manifest | Cluster head-job via `submit` | — |
+| Finish | S4 → S5 → S6 → S7 (clustering) → S8 → manifest | Cluster head-job via `submit` | — |
 
 After plan review approval, `source deliverables/plan/config/hpc.env`, then:
 
-- **QC batch:** `executor submit --config $CFG --executor pbs|slurm --auto-approve --auto-approve-except post_qc_review --auto-approve-except s7_clustering`
-- **After QC approval:** same submit with `--auto-approve-except s7_clustering` only
-- **After resolution approval:** `executor submit --config $CFG --executor pbs|slurm`
+- **QC batch:** `executor submit --config $CFG --executor pbs|slurm --auto-approve --auto-approve-except post_qc_review`
+- **After QC approval:** `executor submit --config $CFG --executor pbs|slurm` — runs S4→S8→manifest to completion (target `all`, no further gate)
 
-Each compute phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC, `s7_clustering_propose` for the resolution sweep), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. The gate `<stage>` becomes `awaiting_approval` when the propose localrule runs. You never need to run `propose` by hand to surface a gate.
+Each gated phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. The gate `<stage>` becomes `awaiting_approval` when the propose localrule runs. The final phase (S4→S8→manifest) has no gate, so it targets `all` and runs straight through to the final results in one submission. You never need to run `propose` by hand to surface a gate.
 
 `monitor.pid` removal means the **daemon has stopped** — it is the signal that this phase's compute is over. It *usually* arrives together with the gate sentinel, but not always: if the head job's workflow finishes but its process lingers (an orchestrator that won't exit), the Execution-MuAgent daemon cancels the leftover job and stops, so `monitor.pid` removal may arrive shortly after the gate is already armed. Treat the two as independent signals — which is exactly what the report-and-repoll rule below already does (it drives the next checkpoint on **either** `monitor.pid` gone **or** a gate `awaiting_approval`).
 
@@ -376,7 +373,6 @@ Behaviour matches local mode until plan review is approved. Beyond the report-an
 rule above, the HPC-specific surfacing is:
 
 - **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path, then follow the report-and-repoll rule.
-- **When `s7_clustering` becomes `awaiting_approval`**, surface the path to `resolution_review.html` (the primary review artifact) and `resolution_review.ipynb` (for power users who want to re-cluster at custom resolutions interactively), and paste `resolution_summary.md` verbatim plus the proposal's `review_artifacts` block.
 - **On approve/revise**, run the appropriate CLI, then `submit` again.
 
 ### Site variables (user confirms after `hpc-info`)
