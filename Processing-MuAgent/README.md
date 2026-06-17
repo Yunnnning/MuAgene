@@ -76,7 +76,7 @@ Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipp
   - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`qc_review/qc_review_<run>.md`).
 - **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large QC-only working files are automatically deleted to free storage (~2 GB/run): the QC matrices `rna_qc.h5ad`, `atac_qc.h5ad`, `atac_snap.h5ad`, the `qc_explore/atac_snap_explore.h5ad` import, the chr-normalised fragment caches `atac_fragments_cbf[_chrnorm].tsv.gz` (the single biggest artifact — reused across QC re-runs but dead once approved), and the S1a recompute caches (`tsne_coords_cache.parquet`, `cell_totals.parquet`). None is a declared Snakemake output or read by a post-gate stage, so deletion never triggers a re-run. Preserved: `qc_summary.json` markers, the QC-metrics parquets (the final S8 manifest reads `qc_metrics_post.parquet`), `rna_decontaminated.h5ad`, and all S3+ artifacts. (Per-stage scratch dirs — `_work_soupx`/`_work_decontx`, `macs3_tmp` — are removed by their own stage as soon as it finishes, not here.)
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
-- **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → `snap.tl.spectral` (Laplacian eigenmaps with IDF feature weights; not classical TF-IDF + SVD LSI). In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
+- **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → spectral embedding. In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
   1. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
   2. **ARC peak matrix** — pre-called peaks from a combined Cell Ranger ARC `.h5` detected at S0 (`arc_h5` mode).
   3. **S2 pre-called peaks** — BED file written by S2 ATAC QC (MACS3 or ARC-derived) reused here; no redundant peak calling (`s2_peaks_macs3` / `s2_peaks_arc` mode).
@@ -139,7 +139,7 @@ Processing-MuAgent/
 │   ├── Snakefile        # localrules for planning + propose + manifest
 │   ├── resources.smk    # per-stage mem/runtime/cpus + PROGRESS_TIMEOUT_HINT
 │   ├── rules/           # per-stage propose/execute rule pairs + manifest
-│   ├── envs/            # conda env (mirrors `grn`)
+│   ├── envs/            # CPU env (processing.yaml -> muagene) + GPU container (muagene-gpu.def)
 │   └── profiles/
 │       ├── pbs/         # PBS Pro snakemake profile
 │       └── slurm/       # SLURM snakemake profile
@@ -150,7 +150,7 @@ Processing-MuAgent/
 
 On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode. Platform settings are gathered once per run via `configure-execution` and stored in `site.config` (the single source of truth); `hpc.env` is generated from it automatically. Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
 
-**Execution-MuAgent is a hard dependency for cluster submission.** `Processing-MuAgent submit` delegates rendering, submission, and monitoring to the sibling `Execution-MuAgent` package. If it is absent the command fails loudly. Install it first: `pip install -e Execution-MuAgent/`.
+**Execution-MuAgent is a hard dependency for cluster submission.** `Processing-MuAgent submit` delegates rendering, submission, and monitoring to the sibling `Execution-MuAgent` package. If it is absent the command fails loudly. The **Install** bootstrap above (`init-machine`) installs it into the `muagene` env for you; on a machine set up some other way, `pip install -e Execution-MuAgent/` into the same env.
 
 ### One-time setup per run
 
@@ -171,7 +171,21 @@ Processing-MuAgent configure-execution --config $CFG --mode pbs \
 # SLURM:
 Processing-MuAgent configure-execution --config $CFG --mode slurm \
   --slurm-partition <partition> --slurm-account <account> --confirmed-by-user
+
+# SLURM on GPU (the device axis is orthogonal to the scheduler; non-GPU stages still run on CPU):
+Processing-MuAgent configure-execution --config $CFG --mode slurm \
+  --slurm-partition <cpu-partition> --slurm-account <account> \
+  --device gpu --gpu-partition gpu --gpu-gres gpu:A5000:1 --gpu-conda-env muagene-gpu \
+  --confirmed-by-user
+# (--singularity-module, --gpu-image-uri, env manager etc. auto-fill from ~/.muagene/machine.config
+#  if you ran init-machine; pass them explicitly to override.)
+# Optional: --scratch <path> binds an extra node-local/fast path into the GPU container
+#  (exported as PMA_GPU_BIND). The run directory and repo root are always bound.
 ```
+
+GPU-capable stages run as child jobs inside `singularity exec --nv $image`, which binds
+**both** the repo root (for the `executor` package) and the run directory (for
+`internal/artifacts/…` I/O) — see the bind contract in `workflow/profiles/*/{slurm,pbs}-submit.sh`.
 
 This writes:
 
@@ -325,12 +339,18 @@ Commands below use `$CFG` = `<run_dir>/deliverables/plan/config/run.yaml` (writt
 
 ### Install
 
+MuAgene is set up on a fresh machine by **Execution-MuAgent** (it owns infrastructure). Clone both repos as siblings, then run one bootstrap command — it creates the `muagene` CPU env from the committed conda-lock lock and installs **both** packages into it. Do **not** create the conda env by hand.
+
 ```bash
-cd /path/to/Processing-MuAgent
-micromamba env create -n grn -f workflow/envs/processing.yaml   # once per machine
-micromamba activate grn
-pip install -e .
+# With Processing-MuAgent and Execution-MuAgent cloned as siblings:
+mamba create -n muagene-exec python=3.11 pip -y                       # minimal bootstrap env
+mamba run -n muagene-exec pip install -e /path/to/Execution-MuAgent
+mamba run -n muagene-exec Execution-MuAgent init-machine \
+  --processing-repo /path/to/Processing-MuAgent --device cpu          # creates `muagene`, installs both pkgs
+conda activate muagene
 ```
+
+For GPU (`--device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag>`) and the `~/.muagene/machine.config` profile, see `Execution-MuAgent/README.md`.
 
 ### Configure and scaffold a run
 
@@ -420,11 +440,18 @@ Processing-MuAgent propose post_qc_review --config $CFG
 
 ## Environment
 
-Recreate the canonical conda env:
+Environment setup/management is owned by **Execution-MuAgent** (it owns the non-scientific runtime layer). This repo only *authors* the definitions in `workflow/envs/`: `processing.yaml` (CPU source-of-truth → the committed conda-lock lock `processing.linux-64.lock`) and `muagene-gpu.def` (the GPU container recipe). The per-device provider + paths live in one committed file, `workflow/envs/manifest.yaml`, read by both agents; `site.config`'s `environments:` section is generated from it. There is no manual `conda env create` step — the env is provisioned from the lock.
+
+On a fresh machine, `Execution-MuAgent init-machine` does the whole setup (see **Install** above and `Execution-MuAgent/README.md`). Then:
+
+- **CPU env** = the conda-lock lock — **linux-only** (a non-linux host fails loud with `platform_unsupported`, never a silent solve). Edited `processing.yaml`? Regenerate the lock and commit it: `Processing-MuAgent regenerate-locks` (needs `pip install '.[dev]'`). `validate-env`/`submit` fail loud (`lock_stale_vs_yaml`) when the YAML is newer than the lock.
+- **GPU env** = a pinned container image **pulled** from a registry — built + published centrally from `muagene-gpu.def` (see `scripts/build_and_push_gpu_image.sh`), **never built on a target machine**.
+- `submit` auto-provisions a missing/stale env before launching (policy=auto) and never submits a GPU job to a CPU-only env.
+
+Per-run provisioning/validation is optional once the machine is bootstrapped (`init-machine` already did it); to (re)provision for a specific run's `site.config`:
 
 ```bash
-micromamba env create -n grn -f workflow/envs/processing.yaml
-micromamba activate grn
-pip install -e .
+Execution-MuAgent provision-env --site-config <run>/deliverables/plan/config/site.config --repo-root . --device both
+Execution-MuAgent validate-env  --site-config <run>/deliverables/plan/config/site.config --repo-root .
 ```
 

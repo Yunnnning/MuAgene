@@ -115,6 +115,31 @@ Remove `monitor.pid` in a `finally` block, same as `execute-spec --watch`.
 
 ---
 
+## Triggered by: `init-machine` / `provision-env` / `validate-env` (operator-facing)
+
+These are the **infrastructure-ownership** commands — the exception to "never contact the user" (see system_prompt Hard rule 1). At machine-setup time there is no Processing agent and no run dir, so they print structured results to stdout and exit non-zero on error.
+
+### `init-machine` (fresh-machine bootstrap)
+
+The first command run on a new machine. In order:
+1. `probe_capabilities()` → env manager, container runtime, scheduler, gpu_present.
+2. Write `~/.muagene/machine.config` (manager, container_runtime, singularity_module, gpu_image, pinned `gpu_image_uri`, policy, `processing_repo`, env names, detected scheduler/gpu_present).
+3. Provision the **CPU env** from the committed conda-lock lock (no science site.config needed — the recipe is synthesized from machine.config + `<processing-repo>/workflow/envs/manifest.yaml`).
+4. `pip install -e` **both** agent packages (Processing-MuAgent and Execution-MuAgent) into the CPU env, so `Processing-MuAgent submit` can spawn `python -m execution_muagent` from that env.
+5. If `--device` includes gpu: **pull** the pinned image to the local `.sif` (never build). Requires `--gpu-image-uri`.
+6. `validate_env` per device; print a readiness report. Fail loud on any error.
+
+### `provision-env` / `validate-env`
+
+Idempotent per-device make/verify. `--site-config` is optional: with it, the run's `environments:` section drives provisioning (backward compatible); without it, the recipe is synthesized from machine.config + the manifest. CPU = conda-lock create; GPU = pull a pinned image. `validate-env` import-checks the declared modules and never silently degrades.
+
+### Failure handling (fail-loud, actionable)
+
+- GPU image not pullable / `image_uri` missing → `gpu_image_unavailable` (CPU stays ready; no local-build fallback).
+- Non-linux host with a linux-64 lock → `platform_unsupported` (never a silent cross-platform solve).
+- `processing.yaml` newer than the lock → `lock_stale_vs_yaml` (run `Processing-MuAgent regenerate-locks`).
+- No env manager on PATH → reported by `init-machine`/`doctor`.
+
 ## Reporting back to Processing-MuAgent
 
 All state — including structured `findings` (list of `{severity, code, message}`) and `kill_action` — is persisted STRUCTURALLY in `internal/hpc_monitor/latest_snapshot.json`, not only rendered in `latest_report.md`. `latest_report.md` is a daemon-internal debug/audit log only. Processing-MuAgent reads `latest_snapshot.json` (via one-shot `hpc-status`):
@@ -132,3 +157,16 @@ All state — including structured `findings` (list of `{severity, code, message
 | `filesystem_hang_suspected` | D-state / storage-degraded hang (job killed) | Report to human; fix; resubmit |
 | `output_missing` | Declared output missing/empty/corrupt after COMPLETED | Report to human; fix; resubmit |
 | Clean exit | No findings; job completed normally | Continue normal pipeline flow |
+
+**Environment-preflight findings** (from `execute-spec` preflight, `provision-env`, `validate-env`, `init-machine`):
+
+| Finding code | Meaning | Processing-MuAgent action |
+|---|---|---|
+| `env_missing` | Device env not provisioned on this machine | Relay; provisioning is auto unless policy=manual (then run the printed `provision-env`) |
+| `provision_failed` | conda-lock create / image pull failed | Relay the stderr tail to the human; fix; re-run |
+| `gpu_image_unavailable` | GPU `image_uri` missing or not pullable (no local-build fallback) | Relay verbatim; set/fix the registry `image_uri`, then re-run |
+| `lock_stale_vs_yaml` | `processing.yaml` is newer than the lock | Relay; run `Processing-MuAgent regenerate-locks`, commit, re-run |
+| `platform_unsupported` | CPU lock is linux-64 but the host is not | Relay; use a linux host or a container (MuAgene CPU env is linux-only) |
+| `import_failed` | Env present but a declared module failed to import | Relay; re-provision / fix the env definition |
+| `gpu_import_needs_node` (warning) | GPU imports unverifiable on a non-GPU login node | Informational; the real check runs on the GPU node |
+| `env_stale` (warning) | Lock/image fingerprint drifted from what was provisioned | Informational; next submit re-provisions (policy=auto) |

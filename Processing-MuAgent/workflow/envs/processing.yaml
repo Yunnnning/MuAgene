@@ -1,12 +1,13 @@
-# Canonical conda env for Processing-MuAgent — mirrors the working `grn` env
-# used during development. In v1 the runner wrapper activates the existing
-# `grn` env directly (set PMA_CONDA_ENV to override the name); this file is
-# the durable spec for re-creating it on a fresh site.
+# Canonical CPU conda env for Processing-MuAgent. This YAML is the human SOURCE OF TRUTH
+# for the CPU env; what actually installs is the conda-lock lock generated from it
+# (workflow/envs/processing.linux-64.lock, linux-only). Execution-MuAgent provisions the
+# env from that lock — `init-machine` (fresh machine) or `provision-env --device cpu` —
+# its name comes from configure-execution --conda-env (default `muagene`). Do NOT create
+# the env by hand. The GPU env is a separate, pull-only container (muagene-gpu.def).
 #
-# Recreate:
-#   micromamba env create -n grn -f workflow/envs/processing.yaml
-#   micromamba activate grn
-#   pip install -e .              # Processing-MuAgent itself
+# Edited this file? Regenerate + commit the lock (else validate-env/submit fail loud with
+# lock_stale_vs_yaml):
+#   Processing-MuAgent regenerate-locks        # runs conda-lock; needs: pip install '.[dev]'
 #
 # Notes:
 # - Snakemake + the generic cluster executor plugin live here so the runner wrapper
@@ -19,9 +20,9 @@
 # - SoupX 1.6.2 (r-soupx) imports Seurat::Read10X in its NAMESPACE, so r-seurat
 #   must be installed even though our soupx.R wrapper never calls Read10X.
 #   If conda's env-solve OOM's, install r-seurat + r-ggplot2 + r-farver separately
-#   via `mamba install -n grn -c conda-forge r-seurat r-ggplot2 r-farver --no-deps`
+#   via `mamba install -n muagene -c conda-forge r-seurat r-ggplot2 r-farver --no-deps`
 #   after a minimal env create, then install transitive R deps as needed.
-name: grn
+name: muagene
 channels:
   - conda-forge
   - bioconda

@@ -60,6 +60,34 @@ def _fmt_upper_removal(val, skip_above: float, prefix: str) -> str:
     return f"{prefix}{_fmt(val)}"
 
 
+def _fmt_lower_removal(val, skip_at_or_below: float = 0.0) -> str:
+    """Express a keep-if-above threshold as a removal condition.
+
+    Returns "not applied" when val <= skip_at_or_below (user disabled the filter),
+    otherwise "< {fmt(val)}".
+    """
+    if val is None or float(val) <= skip_at_or_below:
+        return "not applied"
+    return f"< {_fmt(val)}"
+
+
+def frip_removal_condition(
+    frip_min,
+    *,
+    peak_source: str | None = None,
+    runtime_note: bool = False,
+) -> str:
+    """FRiP removal-condition label for QC / plan tables."""
+    base = _fmt_lower_removal(frip_min)
+    if base == "not applied":
+        return base
+    if runtime_note:
+        return f"{base} _(computed at runtime)_"
+    if not peak_source:
+        return f"{base} _(not applied — no peaks available)_"
+    return base
+
+
 # One-line, user-facing explanations of each metric / shortcode for the optional
 # "note" column. Keys match the parameter-column values used below.
 NOTES: dict[str, str] = {
@@ -136,6 +164,8 @@ def atac_removal_table(
     include_note: bool = False,
     frip_threshold_display: str | None = None,
     frip_removed: Any = "",
+    peak_source: str | None = None,
+    frip_runtime_note: bool = False,
 ) -> str:
     """Render the ATAC QC removal table.
 
@@ -143,11 +173,18 @@ def atac_removal_table(
     ``tss_enrichment_min/max``, ``nucleosome_signal_max``, ``frip_min``.
     ``frip_threshold_display`` overrides the FRiP removal-condition cell (e.g.
     "< 0.20 _(computed at runtime)_"); ``frip_removed`` is the FRiP removal
-    count (or ``"—"`` when FRiP was not applied).
+    count (or ``"—"`` when FRiP was not applied). When ``frip_threshold_display``
+    is omitted, ``frip_removal_condition`` derives the label from ``frip_min``,
+    honoring user skip (``frip_min=0`` → "not applied") and optional peak /
+    runtime annotations.
     """
     th = thresholds
     if frip_threshold_display is None:
-        frip_threshold_display = f"< {_fmt(th.get('frip_min'))}"
+        frip_threshold_display = frip_removal_condition(
+            th.get("frip_min"),
+            peak_source=peak_source,
+            runtime_note=frip_runtime_note,
+        )
     rows = [
         _row("n_fragments",
              _fmt_range_removal(th.get("n_fragments_min"), th.get("n_fragments_max"), SKIP_ABOVE_COUNTS),

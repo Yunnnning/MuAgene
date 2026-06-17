@@ -92,7 +92,7 @@ def _run_rscript(script: Path, args: list[str], *, log_file: Path | None = None)
     rscript = rscript_path()
     if rscript is None:
         raise AmbientUnavailable(
-            "Rscript is not on PATH; activate the grn env "
+            "Rscript is not on PATH; activate the muagene env "
             "(workflow/envs/processing.yaml)."
         )
     cmd = [rscript, "--vanilla", str(script), *args]

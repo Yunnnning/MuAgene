@@ -17,7 +17,7 @@ executor: cluster-generic
 
 cluster-generic-submit-cmd: >-
   ${PMA_REPO_ROOT}/workflow/profiles/pbs/pbs-submit.sh
-  {rule} {jobid} {threads} {resources.mem_mb} {resources.runtime}
+  {rule} {jobid} {threads} {resources.mem_mb} {resources.runtime} {resources.gpu}
 
 cluster-generic-status-cmd: ${PMA_REPO_ROOT}/workflow/profiles/pbs/pbs-status.sh
 
@@ -57,9 +57,12 @@ rerun-triggers:
 default-resources:
   - mem_mb=4000
   - runtime=120
+  # GPU count for rules that don't request one. GPU-capable rules override this
+  # from RESOURCES[stage]["gpu"] (see workflow/resources.smk).
+  - gpu=0
 
 # Conda envs are not managed by snakemake in v1. The head-job runs inside the
-# project env (`grn`); child rule jobs self-activate it because pbs-submit.sh
+# project env (`muagene`); child rule jobs self-activate it because pbs-submit.sh
 # injects a `conda activate "$PMA_CONDA_ENV"` block into each generated jobscript
 # (see executor.hpc.inject_conda_activation_text). Without that, qsub -V would
 # propagate env *variables* but not the activated env, leaving env-local tools

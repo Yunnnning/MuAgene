@@ -101,17 +101,22 @@ Once the user answers, in order:
    ```
    If the user gave only a path to an existing filled template, read the file and pass its content to `context_mapper.write_report(run_dir, content)` so it lands at the canonical location. If the user gave nothing, leave the blank template — the Phase 1 gate will block and give them a second chance, or they can explicitly opt out with `executor run --no-context`.
 
-4. **Configure execution mode — confirm with the user first; never auto-default.**
+4. **Configure execution mode + device — confirm with the user first; never auto-default.**
    This is a mandatory one-time gate: `executor run`/`submit` hard-refuse to launch
    any compute until the user's choice is recorded with `--confirmed-by-user`. Ask
    even when local seems obvious — do not assume local just because you're on this
-   machine.
+   machine. The gate carries **two independent choices**: *where* to run
+   (`--mode local|pbs|slurm`) and *what device* the heavy GPU-capable stages use
+   (`--device cpu|gpu`, default cpu, orthogonal to mode). Explore the available
+   resources and ask the user both — full procedure in `inputs_intake.md` Section 4.
+   Only offer GPU when you have actually detected one (cluster GPU partition via
+   `hpc-info`, or a local GPU via `nvidia-smi -L`); never assume or silently pick it.
    - If the user explicitly chose **local**: `executor configure-execution --config $CFG --mode local --confirmed-by-user`. **Do not run this until the user has actually said local** — there is no "no preference → local" shortcut.
    - If the user said **HPC** (or you're on a login node with `qsub`/`sbatch` and the dataset is large):
-     a. Run `executor hpc-info` (parse silently) and measure file sizes with `ls -la` on the input paths the user already provided.
+     a. Run `executor hpc-info` (parse silently) and measure file sizes with `ls -la` on the input paths the user already provided. Read its GPU fields (`slurm.gpu_partitions` / `suggested_gpu_partition` / `suggested_gpu_gres`) to learn whether GPU is available.
      b. Apply the file-size → scale heuristic from `inputs_intake.md` Section 4 to derive a recommended `PMA_RESOURCES_SCALE`. Select `suggested_partition` / `suggested_account` from `hpc-info` as the candidate values.
-     c. Present ONE concrete recommendation (partition + account + scale) with a brief rationale and invite confirmation or override. Do not enumerate the full partition list.
-     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ... --confirmed-by-user` (or `--slurm-partition` / `--slurm-account`). `--confirmed-by-user` records that the user approved the mode; without it, `run`/`submit` will refuse to launch. This records `execution.mode` + `execution.user_confirmed` in `parameters.yaml` and writes `deliverables/plan/config/hpc.env`.
+     c. Present ONE concrete recommendation (partition + account + scale, **plus a device cpu/gpu choice when a GPU was detected**) with a brief rationale and invite confirmation or override. Do not enumerate the full partition list.
+     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ... --confirmed-by-user` (or `--slurm-partition` / `--slurm-account`); **add `--device gpu --gpu-gres <suggested_gpu_gres> --gpu-conda-env muagene-gpu` (SLURM) or `--device gpu --pbs-gpu-select-extra 'ngpus=1' --gpu-conda-env muagene-gpu` (PBS) if the user chose GPU** — see Section 4 for the loud-fail prerequisites. `--confirmed-by-user` records that the user approved the mode; without it, `run`/`submit` will refuse to launch. This records `execution.mode` + `compute.device` + `execution.user_confirmed` in `parameters.yaml` and writes `deliverables/plan/config/hpc.env`.
    - Do not invent partition/account names — use `hpc-info` results. If `hpc-info` returns empty lists or a file is unreachable, see fallback rules in `inputs_intake.md` Section 4.
 
 5. Invoke `executor declare-branch <paired|separate|rna_only|atac_only> --config $CFG`.
@@ -143,7 +148,7 @@ Once the user answers, in order:
 
 - Confirm `executor init` wrote `deliverables/plan/config/run.yaml` and `biological_context.md`.
 - If context was supplied, confirm it was written (`deliverables/plan/config/biological_context.md`).
-- If HPC mode was configured, confirm `execution.mode` and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume.
+- If HPC mode was configured, confirm `execution.mode`, the `compute.device` (cpu/gpu) recorded, and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume. When device=gpu, also confirm the GPU partition/gres (SLURM) or select-extra (PBS) and the GPU conda env.
 - After `executor run --target s0_ingest_execute`, surface `deliverables/plan/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
 
 See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the canonical Step 2 script and the per-context-form handling details.
@@ -406,6 +411,7 @@ These are written to `deliverables/plan/config/hpc.env` by `configure-execution`
 - **S0 OOMs / is Killed / hits walltime in HPC mode** — S0 already runs as a supervised cluster job, so this is a resource-sizing issue, not a location one. Raise `PMA_RESOURCES_SCALE` via `executor configure-execution --config $CFG --mode pbs|slurm --resources-scale N ...`, then `executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute` again. (Re-config of the *same* mode preserves the existing user confirmation — no `--confirmed-by-user` needed for a resource-only change.) **In local mode**, an S0 OOM means the machine is too small — switch to HPC (`configure-execution --mode slurm|pbs`) and submit. There is no automatic local→cluster retry.
 - **A stage execute fails at runtime** — relay the failure (HPC: read it from one-shot `executor hpc-status --config $CFG`, which renders the daemon's structured findings; local: snakemake stderr). Do not retry silently; root-cause first. If the user insists on retry, re-`executor submit --executor pbs|slurm --target <stage>_execute` (HPC) or `executor run --config $CFG --target <stage>_execute` (local only).
 - **Execution-MuAgent reports `submit_rejected_policy`** — the scheduler rejected the job as a policy error (invalid partition, account, or walltime over the site limit). One-shot `executor hpc-status --config $CFG` renders the scheduler's exact message from the daemon's structured findings. Tell the user which field to correct: partition/account via `executor configure-execution --mode <scheduler> ...` (rewrites `site.config`), or walltime by reducing `PMA_RESOURCES_SCALE`. Then `executor submit` again.
+- **Execution-MuAgent reports an environment-preflight error at submit** — provisioning is owned by Execution-MuAgent; `submit` auto-provisions a missing/stale env (policy=auto) but fails loud rather than degrade. Relay the finding verbatim and the fix: `gpu_image_unavailable` → the GPU registry `image_uri` is missing/unreachable (set/fix it; the image is pulled, never built locally); `lock_stale_vs_yaml` → `workflow/envs/processing.yaml` is newer than the lock — run `Processing-MuAgent regenerate-locks` (needs `pip install '.[dev]'`) and commit; `platform_unsupported` → the CPU env is linux-only and this host isn't linux (use a linux host/container); `provision_failed`/`import_failed` → the create/pull or an import failed (relay the stderr tail). On a brand-new machine that was never bootstrapped, run `Execution-MuAgent init-machine --processing-repo <repo>` first.
 - **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/stage_meta/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.
 - **`hpc-status` shows "Supervisor: not running" alongside a RUNNING or PENDING scheduler state** — the supervision daemon has died but the cluster job is still active. Without the daemon, stalled jobs will not be auto-cancelled. Restart the daemon: `executor supervisor-restart --config $CFG`. This resumes the full watch loop (stall detection, kill-on-hang) against the already-running job without resubmitting. Tell the user what happened and what you did.
 - **Supervision daemon crashes on a site with KillUserProcesses=yes** — when the user's SSH session ends, systemd kills all their processes including the daemon. The cluster job keeps running, but protection is gone. For the current run, tell them to use `supervisor-restart` as soon as they reconnect. Going forward, suggest running `submit` inside a `tmux` or `screen` session on that cluster.

@@ -57,6 +57,84 @@ SNAKEMAKE_SHARED_FS_USAGE: tuple[str, ...] = (
 )
 
 
+# The env-definition paths live in ONE committed file — workflow/envs/manifest.yaml —
+# read by BOTH agents (here, and Execution-MuAgent's machine.py) so the path list is
+# never duplicated. Env *identity* (the conda env name, the GPU registry image_uri) is
+# per-machine and lives in machine.config / configure-execution, not in the manifest.
+ENV_MANIFEST: Path = REPO_ROOT / "workflow" / "envs" / "manifest.yaml"
+
+# Machine-local default location for the GPU image (.sif). Sourced from the manifest's
+# defaults; this constant is the fallback if the manifest omits it.
+DEFAULT_GPU_IMAGE = "~/.muagene/images/muagene-gpu.sif"
+
+
+def load_env_manifest(path: Path | str = ENV_MANIFEST) -> dict:
+    """Load the committed env-definition manifest — the single source of the per-device
+    provider + definition/lock/imports paths."""
+    import yaml  # type: ignore[import]
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"env manifest missing: {p}")
+    return yaml.safe_load(p.read_text()) or {}
+
+
+def machine_config_path() -> Path:
+    return Path(os.path.expanduser("~/.muagene/machine.config"))
+
+
+def load_machine_config(path: Path | str | None = None) -> dict:
+    """Read ~/.muagene/machine.config (written by Execution-MuAgent `init-machine`).
+
+    Returns {} when absent. The repos cannot import each other, so this reads the
+    on-disk YAML contract directly, letting `configure-execution` auto-fill the machine
+    knobs (manager / container runtime / singularity module / gpu image / policy / env
+    names) the operator set once at bootstrap — so they aren't re-typed per run.
+    """
+    import yaml  # type: ignore[import]
+    p = Path(path) if path else machine_config_path()
+    if not p.exists():
+        return {}
+    try:
+        return yaml.safe_load(p.read_text()) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def build_environments_section(settings: dict[str, str | None]) -> dict[str, object]:
+    """Assemble the site.config `environments:` provisioning recipe (the WHAT-Execution-
+    needs-to-build contract), sourced from the committed env manifest. Env *identity*
+    stays in common.conda_env/gpu_conda_env; this section only says, per device, the
+    provider + in-repo definition + lock/image(+image_uri).
+    """
+    man = load_env_manifest()
+    cpu = dict(man.get("cpu") or {})
+    gpu = dict(man.get("gpu") or {})
+    defaults = dict(man.get("defaults") or {})
+    gpu_image = settings.get("gpu_image") or os.path.expanduser(
+        defaults.get("gpu_image") or DEFAULT_GPU_IMAGE)
+    return {
+        "manager": settings.get("env_manager"),                 # None -> Execution detects
+        "container_runtime": settings.get("container_runtime"),  # None -> Execution detects
+        "singularity_module": settings.get("singularity_module"),
+        "policy": settings.get("env_policy") or "auto",
+        "cpu": {
+            "provider": settings.get("cpu_env_provider") or cpu.get("provider") or "lock",
+            "definition": cpu.get("definition"),
+            "lock": cpu.get("lock"),
+            "imports": cpu.get("imports"),
+        },
+        "gpu": {
+            # GPU image is PULLED from a pinned registry reference (image_uri); no
+            # machine builds it locally. `definition` is the central-build recipe.
+            "provider": settings.get("gpu_env_provider") or gpu.get("provider") or "container",
+            "definition": gpu.get("definition"),
+            "image": gpu_image,
+            "image_uri": settings.get("gpu_image_uri"),
+            "imports": gpu.get("imports"),
+        },
+    }
+
+
 # Marker bracketing the conda-activation block we inject into child jobscripts.
 # Used to keep injection idempotent across repeated sanitize passes.
 PMA_ACTIVATION_MARKER = "# >>> PMA conda activation (injected) >>>"
@@ -505,6 +583,38 @@ def _parse_slurm_accounts(text: str) -> list[str]:
     return sorted(set(accounts))
 
 
+def _parse_slurm_gpu(sinfo_text: str) -> tuple[list[str], str | None]:
+    """Parse ``sinfo -h -o '%P|%G'`` into ``(gpu_partitions, suggested_gres)``.
+
+    A partition is GPU-capable when its GRES column names a gpu resource
+    (e.g. ``gpu:A5000:4(S:0-1)``). The suggested gres requests a single GPU of
+    the first type seen (``gpu:A5000:1``), or the generic ``gpu:1`` when the
+    type is unnamed. Pure function so the detection logic is unit-testable.
+    """
+    partitions: list[str] = []
+    suggested: str | None = None
+    for line in sinfo_text.splitlines():
+        if "|" not in line:
+            continue
+        part_raw, gres = line.split("|", 1)
+        part = part_raw.strip().rstrip("*")
+        gres = gres.strip()
+        if not gres or gres.lower() == "(null)" or "gpu" not in gres.lower():
+            continue
+        if part and part not in partitions:
+            partitions.append(part)
+        if suggested is None:
+            token = gres.split("(", 1)[0].strip()  # e.g. gpu:A5000:4
+            fields = token.split(":")
+            if len(fields) >= 3:
+                suggested = f"{fields[0]}:{fields[1]}:1"
+            elif len(fields) == 2 and fields[1].isdigit():
+                suggested = f"{fields[0]}:1"
+            else:
+                suggested = "gpu:1"
+    return partitions, suggested
+
+
 def discover_site() -> dict[str, object]:
     """Probe the login node for scheduler type, queues/partitions, and accounts.
 
@@ -518,7 +628,9 @@ def discover_site() -> dict[str, object]:
         "user": user,
         "current_env": env_diagnostics(),
         "pbs": {"queues": [], "projects": [], "suggested_queue": None, "suggested_project": None},
-        "slurm": {"partitions": [], "accounts": [], "suggested_partition": None, "suggested_account": None},
+        "slurm": {"partitions": [], "accounts": [], "suggested_partition": None,
+                  "suggested_account": None, "gpu_partitions": [],
+                  "suggested_gpu_partition": None, "suggested_gpu_gres": None},
     }
 
     if detected == "pbs":
@@ -561,6 +673,14 @@ def discover_site() -> dict[str, object]:
         part_text = _run_cmd(["sinfo", "-h", "-o", "%P"])
         partitions = _parse_slurm_partitions(part_text)
         slurm["partitions"] = partitions
+
+        # GPU capability: which partitions expose a gpu gres, and a 1-GPU request
+        # suggestion (e.g. gpu:A5000:1) the user can pass to --gpu-gres.
+        gpu_text = _run_cmd(["sinfo", "-h", "-o", "%P|%G"])
+        gpu_partitions, suggested_gres = _parse_slurm_gpu(gpu_text)
+        slurm["gpu_partitions"] = gpu_partitions
+        slurm["suggested_gpu_partition"] = gpu_partitions[0] if gpu_partitions else None
+        slurm["suggested_gpu_gres"] = suggested_gres
 
         for key in ("PMA_SLURM_PARTITION", "SLURM_PARTITION"):
             val = os.environ.get(key)
@@ -610,11 +730,20 @@ def write_site_config(path: Path | str, *, mode: Executor, settings: dict[str, s
             "partition": settings.get("slurm_partition"),
             "account": settings.get("slurm_account"),
             "qos": None,
+            # GPU routing: child jobs that request a GPU land on this partition
+            # with this gres (e.g. gpu:A5000:1). None keeps the normal partition.
+            "gpu_partition": settings.get("slurm_gpu_partition"),
+            "gpu_gres": settings.get("slurm_gpu_gres"),
         }
     elif mode == "pbs":
         scheduler_section["pbs"] = {
             "queue": settings.get("pbs_queue"),
             "project": settings.get("pbs_project"),
+            # GPU routing: appended to the select chunk (e.g. "ngpus=1" or
+            # "ngpus=1:gpu_type=a100"); optional separate GPU queue. PBS GPU
+            # syntax is site-variable, hence a free-form template.
+            "gpu_select_extra": settings.get("pbs_gpu_select_extra"),
+            "gpu_queue": settings.get("pbs_gpu_queue"),
         }
     try:
         scale = int(float(settings["resources_scale"])) if settings.get("resources_scale") else 1
@@ -623,13 +752,22 @@ def write_site_config(path: Path | str, *, mode: Executor, settings: dict[str, s
     config: dict[str, object] = {
         "schema_version": "1",
         "scheduler": mode,
+        # Compute device is top-level (orthogonal to scheduler). cpu is the default
+        # and keeps the existing CPU-only behaviour for site.configs that omit it.
+        "device": settings.get("device") or "cpu",
         **scheduler_section,
         "common": {
             "resources_scale": scale,
             "conda_env": settings.get("conda_env"),
+            "gpu_conda_env": settings.get("gpu_conda_env"),
             "container": None,
-            "scratch": None,
+            # Optional node-local/fast scratch path. When set, it is exported as
+            # PMA_GPU_BIND and appended to the GPU container's binds (see the bind
+            # contract in workflow/profiles/*/{slurm,pbs}-submit.sh).
+            "scratch": settings.get("scratch"),
         },
+        # Provisioning recipe consumed by Execution-MuAgent provision-env/validate-env.
+        "environments": build_environments_section(settings),
     }
     path.write_text(yaml.safe_dump(config, default_flow_style=False, sort_keys=False))
     return path
@@ -650,12 +788,19 @@ def write_hpc_env(path: Path | str, site_config_path: Path | str) -> Path:
 
     Derives all values from site.config so the two files cannot drift — hpc.env
     is always a shell-variable projection of site.config, not a parallel source.
+
+    Note: the run directory (PMA_RUN_DIR) is deliberately NOT exported here. It is a
+    runtime path, not a site.config field; launch_runner.sh derives it live from the
+    config so a stale copy cannot drift. PMA_GPU_BIND (an optional extra container
+    bind) IS exported below, sourced from site.config's common.scratch.
     """
     cfg = load_site_config(site_config_path)
     mode = cfg.get("scheduler", "local")
     common = cfg.get("common", {}) or {}
     slurm = cfg.get("slurm", {}) or {}
     pbs = cfg.get("pbs", {}) or {}
+    envs = cfg.get("environments", {}) or {}
+    gpu_env = envs.get("gpu", {}) or {}
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -666,12 +811,27 @@ def write_hpc_env(path: Path | str, site_config_path: Path | str) -> Path:
         "",
     ]
     exports: dict[str, str | None] = {
-        "PMA_PBS_QUEUE":        pbs.get("queue"),
-        "PMA_PBS_PROJECT":      pbs.get("project"),
-        "PMA_SLURM_PARTITION":  slurm.get("partition"),
-        "PMA_SLURM_ACCOUNT":    slurm.get("account"),
-        "PMA_RESOURCES_SCALE":  str(common["resources_scale"]) if common.get("resources_scale") else None,
-        "PMA_CONDA_ENV":        common.get("conda_env"),
+        "PMA_PBS_QUEUE":            pbs.get("queue"),
+        "PMA_PBS_PROJECT":          pbs.get("project"),
+        "PMA_PBS_GPU_SELECT_EXTRA": pbs.get("gpu_select_extra"),
+        "PMA_PBS_GPU_QUEUE":        pbs.get("gpu_queue"),
+        "PMA_SLURM_PARTITION":      slurm.get("partition"),
+        "PMA_SLURM_ACCOUNT":        slurm.get("account"),
+        "PMA_SLURM_GPU_PARTITION":  slurm.get("gpu_partition"),
+        "PMA_SLURM_GPU_GRES":       slurm.get("gpu_gres"),
+        "PMA_RESOURCES_SCALE":      str(common["resources_scale"]) if common.get("resources_scale") else None,
+        "PMA_CONDA_ENV":            common.get("conda_env"),
+        "PMA_CONDA_ENV_GPU":        common.get("gpu_conda_env"),
+        "PMA_DEVICE":               cfg.get("device"),
+        # GPU env provider/runtime — read by the child-job submit scripts to choose
+        # `singularity exec --nv $image` (container) vs `conda activate` (conda env).
+        "PMA_GPU_PROVIDER":         gpu_env.get("provider"),
+        "PMA_GPU_IMAGE":            gpu_env.get("image"),
+        "PMA_SINGULARITY_MODULE":   envs.get("singularity_module"),
+        # Optional extra bind appended into the GPU container (e.g. node-local
+        # scratch). Sourced from site.config common.scratch; consumed by the
+        # child-job submit scripts' bind contract.
+        "PMA_GPU_BIND":             common.get("scratch"),
     }
     for env_key, val in exports.items():
         if val:

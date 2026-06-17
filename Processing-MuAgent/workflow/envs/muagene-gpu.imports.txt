@@ -1,0 +1,9 @@
+# Modules Execution-MuAgent `validate-env` imports to confirm the GPU env is usable
+# before submitting a GPU job. rapids_singlecell + cupy are the GPU-distinguishing
+# checks; a CPU-only env will fail these loudly (never silently degrade to CPU).
+rapids_singlecell
+cupy
+scanpy
+anndata
+snapatac2
+snakemake

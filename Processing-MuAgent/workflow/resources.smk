@@ -83,10 +83,35 @@ _BASE_RUNTIME_MIN: dict[str, int] = {
 }
 
 
+# GPU routing ----------------------------------------------------------------
+# _GPU_CAPABLE is the SINGLE SOURCE OF TRUTH for which stages have a GPU code path.
+# A stage requests a GPU only when the operator selected compute.device=gpu
+# (exported as PMA_DEVICE onto the head job) AND the stage is listed here; every
+# other stage stays on CPU regardless of device. The routing below (gpu_for + the
+# profile submit scripts) is fully generic, so growing GPU coverage is exactly TWO
+# edits and no more:
+#   1. Add the stage name to this set — gates the GPU *resource request* (gres/partition).
+#   2. Give the stage a `compute.use_gpu()` branch dispatching its heavy op to a
+#      rapids-singlecell drop-in — gates the actual *code path*. See
+#      executor/stages/s3_doublets.py (_rna_scrublet_gpu) for the reference pattern.
+# Keep the two in lockstep: a name here without a use_gpu() branch wastes a GPU
+# allocation; a use_gpu() branch for a stage not named here never receives a GPU.
+_GPU_CAPABLE: set[str] = {"s3_doublets"}
+
+
+def _device() -> str:
+    return (os.environ.get("PMA_DEVICE", "cpu") or "cpu").strip().lower()
+
+
+def gpu_for(stage: str) -> int:
+    """GPUs to request for a stage: 1 when device=gpu and the stage is GPU-capable, else 0."""
+    return 1 if (_device() == "gpu" and stage in _GPU_CAPABLE) else 0
+
+
 # Public API ----------------------------------------------------------------
 
 RESOURCES: dict[str, dict[str, int]] = {
-    name: {"cpus": v["cpus"], "mem_mb": _scaled_mem(v["mem_mb"])}
+    name: {"cpus": v["cpus"], "mem_mb": _scaled_mem(v["mem_mb"]), "gpu": gpu_for(name)}
     for name, v in _BASE_RESOURCES.items()
 }
 

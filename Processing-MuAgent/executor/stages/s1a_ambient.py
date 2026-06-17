@@ -9,7 +9,7 @@ Whether correction runs is dataset- and plan-driven:
 
 R / DecontX / SoupX are required dependencies (`workflow/envs/processing.yaml`).
 If they are missing when correction is requested, the stage raises and the run
-fails — install or recreate the `grn` env rather than silently skipping.
+fails — install or recreate the `muagene` env rather than silently skipping.
 """
 from __future__ import annotations
 

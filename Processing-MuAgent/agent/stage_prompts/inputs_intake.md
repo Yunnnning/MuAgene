@@ -120,15 +120,34 @@ to launch any compute until the user's choice is recorded with `--confirmed-by-u
 (this gate fires on fresh runs and resume sessions alike). It is a one-time gate:
 once confirmed, the rest of the pipeline runs automatically.
 
+**This gate carries two independent choices — explore the resources, then ask the user
+both:**
+- **Where to run** — `--mode local | pbs | slurm` (always ask; never auto-default).
+- **What device the heavy stages use** — `--device cpu | gpu` (default `cpu`). `gpu`
+  routes only the GPU-capable stages (currently S3 doublets; the set lives in
+  `workflow/resources.smk` `_GPU_CAPABLE`) to a GPU; every other stage stays on CPU.
+  Device is **orthogonal to mode** — GPU is offerable for both local and HPC. Only
+  offer `gpu` when you have actually *detected* a GPU (see below); never assume one,
+  and never silently pick it.
+
 **Local** (only after the user explicitly chooses it — do not assume local just
 because you're on this machine):
 ```
 executor configure-execution --config $CFG --mode local --confirmed-by-user
 ```
+To offer GPU locally, first probe for a visible GPU with a read-only `nvidia-smi -L`
+(and confirm the GPU conda env exists). If one is present and the user wants it, append
+`--device gpu --gpu-conda-env muagene-gpu`. With no GPU detected, stay on CPU — do not
+pass `--device gpu`.
 
 **HPC (PBS or SLURM):**
 
 1. Run `executor hpc-info`. Parse the JSON silently — do not dump the raw JSON to the user.
+   Also read the **GPU** fields: `slurm.gpu_partitions`, `slurm.suggested_gpu_partition`,
+   `slurm.suggested_gpu_gres` (SLURM). A non-empty `gpu_partitions` / a `suggested_gpu_gres`
+   means GPU is available on this cluster — surface it as a device choice in step 4. (PBS GPU
+   syntax is site-variable, so `hpc-info` does not auto-suggest a PBS GPU select; ask the user
+   for the `ngpus=…` form if they want GPU on PBS.)
 
 2. Measure input file sizes. For every path the user already provided this turn, run:
    ```bash
@@ -163,15 +182,21 @@ executor configure-execution --config $CFG --mode local --confirmed-by-user
    - `hpc-info` returns empty `pbs.queues` / `slurm.partitions` → note "no partitions detected", ask the user to supply the value directly.
    - `hpc-info` returns no `suggested_account` / `suggested_project` → omit from recommendation; ask if the site requires one.
 
-4. Present ONE concrete recommendation to the user. Example format:
+4. Present ONE concrete recommendation to the user. Include a **Device** line whenever
+   `hpc-info` showed GPU availability — present cpu vs gpu as an explicit choice; do not
+   default to gpu. Example format:
    > Based on your RNA input (~180 MB, ~10–50 k cells), I recommend:
-   > - **Partition:** gpu (detected from your cluster)
+   > - **Partition:** cpu (detected from your cluster)
    > - **Account:** project_abc (detected from environment)
    > - **Scale:** `PMA_RESOURCES_SCALE=2`
+   > - **Device:** your cluster has a GPU partition (`gpu`, `gpu:A5000:1`). The doublet
+   >   stage (S3) has a GPU path; do you want to run it on **GPU**, or keep everything on **CPU**?
    >
    > Does this look right, or would you like to change any of these?
 
-   Adapt the wording to what was actually detected. Do not enumerate the full partition or account list unless the user asks — just state the chosen values with a one-line rationale.
+   Adapt the wording to what was actually detected. Omit the Device line entirely when no GPU
+   was detected. Do not enumerate the full partition or account list unless the user asks —
+   just state the chosen values with a one-line rationale.
 
 5. Write settings once the user confirms (or overrides):
    ```
@@ -180,6 +205,19 @@ executor configure-execution --config $CFG --mode local --confirmed-by-user
    ```
    (or `--mode slurm --slurm-partition ... --slurm-account ... --confirmed-by-user`).
    `--confirmed-by-user` records the user's approval; without it `run`/`submit` refuse to launch.
+
+   **If the user chose GPU**, add the device flags (sourced from `hpc-info`'s GPU fields):
+   ```
+   executor configure-execution --config $CFG --mode slurm \
+       --slurm-partition <cpu_partition> --slurm-account <account> \
+       --device gpu --gpu-partition <suggested_gpu_partition> --gpu-gres <suggested_gpu_gres> \
+       --gpu-conda-env muagene-gpu --confirmed-by-user
+   ```
+   (PBS: `--device gpu --pbs-gpu-select-extra 'ngpus=1' [--gpu-queue <q>] --gpu-conda-env muagene-gpu`.)
+   `configure-execution` fails loud on missing prerequisites — pre-empt them: SLURM `--device gpu`
+   **requires** `--gpu-gres`; without `--gpu-conda-env` it warns that GPU jobs would fall back to the
+   CPU env (which lacks rapids-singlecell); PBS defaults to `ngpus=1` if you omit the select-extra.
+   Add `--singularity-module <module>` when the site needs `module load` for singularity.
 
 Do **not** invent partition/account names — use `hpc-info` results only. If `hpc-info` returns empty lists, ask the user for the values directly.
 
@@ -240,7 +278,7 @@ After `executor init`: confirm the canonical config path and blank context templ
 
 After biological-context write (cases a/b/c): confirm the file exists at `deliverables/plan/config/biological_context.md` and that you populated the fields the user told you about.
 
-After `configure-execution`: confirm `execution.mode` and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume.
+After `configure-execution`: confirm `execution.mode` **and `compute.device` (cpu/gpu)** and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume. When device=gpu, also confirm the GPU partition/gres (SLURM) or select-extra (PBS) and the GPU conda env that were recorded.
 
 After `executor run --target s0_ingest_execute`:
 

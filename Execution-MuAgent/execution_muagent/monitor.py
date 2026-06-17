@@ -80,6 +80,12 @@ WORKFLOW_COMPLETE_MARKERS = (
 # life. (MaxRSS is monotonic and a poor liveness signal, so memory is collected for
 # diagnostics only and is not used to judge life.)
 CPU_ACTIVE_DELTA_S = 1.0      # CPU-seconds accumulated between checks
+# GPU utilisation (%) above which a device=gpu job is judged actively computing — an
+# extra POSITIVE liveness signal mirroring the CPU-delta check (a busy GPU with an
+# idle CPU is normal mid-kernel). Never a kill criterion: when the cluster's
+# accounting doesn't expose gpu TRES, GPU liveness simply doesn't contribute and the
+# job stays supervised by the heartbeat / CPU / filesystem signals.
+GPU_ACTIVE_UTIL_PCT = 5.0
 
 SCHEDULER_FAILED_STATES = {
     "BOOT_FAIL",
@@ -139,6 +145,7 @@ class Submission:
     submitted_at: str
     spec_path: str | None = None
     progress_timeout_hint: float | None = None
+    device: str = "cpu"   # cpu | gpu — enables GPU-utilisation liveness probing
 
 
 @dataclass
@@ -177,6 +184,19 @@ class SiteConfig:
     conda_env: str | None = None
     container: str | None = None
     scratch: str | None = None
+    # Compute device + GPU routing (cpu default). The head job is always CPU; these
+    # are exported onto it so Snakemake's child-job submit scripts can route
+    # GPU-capable stages to the GPU partition/gres and the GPU conda env.
+    device: str = "cpu"
+    gpu_partition: str | None = None      # slurm GPU partition
+    gpu_gres: str | None = None           # slurm gres, e.g. gpu:A5000:1
+    gpu_select_extra: str | None = None   # pbs select-chunk suffix, e.g. ngpus=1
+    gpu_queue: str | None = None          # pbs GPU queue
+    gpu_conda_env: str | None = None      # conda env for GPU child jobs
+    # Environment provisioning recipe (the `environments:` section). Authoritative
+    # for HOW each device's env is built/validated; env *identity* stays in
+    # conda_env/gpu_conda_env above. Empty for pre-contract site.configs.
+    environments: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -222,6 +242,13 @@ def load_site_config(path: Path | str) -> SiteConfig:
         conda_env=common.get("conda_env"),
         container=common.get("container"),
         scratch=common.get("scratch"),
+        device=str(data.get("device") or "cpu"),
+        gpu_partition=sched_section.get("gpu_partition"),
+        gpu_gres=sched_section.get("gpu_gres"),
+        gpu_select_extra=sched_section.get("gpu_select_extra"),
+        gpu_queue=sched_section.get("gpu_queue"),
+        gpu_conda_env=common.get("gpu_conda_env"),
+        environments=data.get("environments") or {},
     )
 
 
@@ -399,7 +426,7 @@ def render_submission_script(
     walltime_min = spec.resources.get("walltime_min", 60)
     cpus = spec.resources.get("cpus", 1)
     mem_mb = spec.resources.get("mem_mb", 4000)
-    conda_env = site_config.conda_env or "grn"
+    conda_env = site_config.conda_env or "muagene"
 
     if site_config.scheduler == "slurm":
         hh, mm = divmod(walltime_min, 60)
@@ -443,16 +470,39 @@ def render_submission_script(
     # --default-resources when it detects the cluster profile.
     if conda_env:
         lines.append(f"export PMA_CONDA_ENV={conda_env}")
+    # Compute device + GPU routing. Consumed by workflow/resources.smk (which stages
+    # request a GPU) and the child-job submit scripts (gres/partition/env). The head
+    # job itself stays CPU — these only steer the GPU-capable child jobs.
+    lines.append(f"export PMA_DEVICE={site_config.device or 'cpu'}")
+    if site_config.gpu_conda_env:
+        lines.append(f"export PMA_CONDA_ENV_GPU={site_config.gpu_conda_env}")
+    # GPU env provider/runtime so the child submit scripts pick container vs conda env.
+    _envs = site_config.environments or {}
+    _gpu_env = _envs.get("gpu", {}) or {}
+    if _gpu_env.get("provider"):
+        lines.append(f"export PMA_GPU_PROVIDER={_gpu_env['provider']}")
+    if _gpu_env.get("image"):
+        lines.append(f"export PMA_GPU_IMAGE={_gpu_env['image']}")
+    if _envs.get("singularity_module"):
+        lines.append(f"export PMA_SINGULARITY_MODULE={_envs['singularity_module']}")
     if site_config.scheduler == "slurm":
         if site_config.partition:
             lines.append(f"export PMA_SLURM_PARTITION={site_config.partition}")
         if site_config.account:
             lines.append(f"export PMA_SLURM_ACCOUNT={site_config.account}")
+        if site_config.gpu_partition:
+            lines.append(f"export PMA_SLURM_GPU_PARTITION={site_config.gpu_partition}")
+        if site_config.gpu_gres:
+            lines.append(f"export PMA_SLURM_GPU_GRES={site_config.gpu_gres}")
     elif site_config.scheduler == "pbs":
         if site_config.queue:
             lines.append(f"export PMA_PBS_QUEUE={site_config.queue}")
         if site_config.project:
             lines.append(f"export PMA_PBS_PROJECT={site_config.project}")
+        if site_config.gpu_select_extra:
+            lines.append(f'export PMA_PBS_GPU_SELECT_EXTRA="{site_config.gpu_select_extra}"')
+        if site_config.gpu_queue:
+            lines.append(f"export PMA_PBS_GPU_QUEUE={site_config.gpu_queue}")
     lines.append("")
 
     profile = repo_root / "workflow" / "profiles" / site_config.scheduler
@@ -1325,6 +1375,53 @@ def _probe_sstat(executor: str, job_id: str, timeout_s: int = 5) -> dict[str, An
     return {"ave_cpu_s": ave_cpu_s, "max_rss_mb": max_rss_mb}
 
 
+def _parse_mem_token(tok: str, prev: float | None) -> float | None:
+    """Parse a SLURM memory token (e.g. '512M', '2G', '1048576K', bytes) to MB."""
+    tok = tok.strip().upper()
+    try:
+        if tok.endswith("K"):
+            v = float(tok[:-1]) / 1024.0
+        elif tok.endswith("M"):
+            v = float(tok[:-1])
+        elif tok.endswith("G"):
+            v = float(tok[:-1]) * 1024.0
+        else:
+            v = float(tok) / (1024.0 * 1024.0)
+    except ValueError:
+        return prev
+    return v if prev is None else max(prev, v)
+
+
+def _probe_gpu(executor: str, job_ids: list[str], timeout_s: int = 5) -> dict[str, Any]:
+    """Best-effort GPU utilisation for the GPU child job(s) via SLURM sstat TRES.
+
+    Returns {"gpu_util": float|None, "gpu_mem_mb": float|None}. None when the cluster's
+    accounting doesn't expose gpu TRES (common) — GPU liveness then simply doesn't
+    contribute. SLURM only; the GPU work lives in the child jobs, so probe those.
+    """
+    if executor != "slurm" or not shutil.which("sstat") or not job_ids:
+        return {"gpu_util": None, "gpu_mem_mb": None}
+    best_util: float | None = None
+    best_mem: float | None = None
+    for jid in job_ids:
+        rc, out, _ = _run_cmd(
+            ["sstat", "-j", f"{_normalize_job_id(jid)}.batch",
+             "--format=TRESUsageInAve%200", "-n", "-P"], timeout_s)
+        if rc != 0 or not out.strip():
+            continue
+        for field in out.strip().replace("|", ",").split(","):
+            field = field.strip()
+            if field.startswith("gres/gpuutil="):
+                try:
+                    val = float(field.split("=", 1)[1])
+                    best_util = val if best_util is None else max(best_util, val)
+                except ValueError:
+                    pass
+            elif field.startswith("gres/gpumem="):
+                best_mem = _parse_mem_token(field.split("=", 1)[1], best_mem)
+    return {"gpu_util": best_util, "gpu_mem_mb": best_mem}
+
+
 def _probe_filesystem(path: str | Path, timeout_s: float = 5.0) -> bool:
     """True if os.stat(path) returns within timeout_s (filesystem is responsive)."""
     result = [False]
@@ -1365,6 +1462,12 @@ def investigate_suspect(
     child_ids = list(snapshot.get("child_job_ids") or [])
     hung_children = _child_storage_hang_ids(submission, child_ids, scheduler_timeout_s)
 
+    # GPU utilisation is an extra liveness signal for device=gpu runs (probe the GPU
+    # child jobs, where the GPU work runs). Skipped entirely for CPU runs.
+    gpu = ({"gpu_util": None, "gpu_mem_mb": None}
+           if getattr(submission, "device", "cpu") != "gpu"
+           else _probe_gpu(submission.executor, child_ids or [submission.job_id], scheduler_timeout_s))
+
     return {
         "scheduler_state": scheduler_state,
         "error_markers": error_markers,
@@ -1373,6 +1476,8 @@ def investigate_suspect(
         "sstat_error": sstat.get("error"),
         "filesystem_responsive": fs_responsive,
         "child_storage_hang_ids": hung_children,
+        "gpu_util": gpu.get("gpu_util"),
+        "gpu_mem_mb": gpu.get("gpu_mem_mb"),
     }
 
 
@@ -1422,6 +1527,13 @@ def classify_investigation(evidence: dict[str, Any]) -> tuple[str, str]:
     # 5. CPU time advanced since last investigation — job is actively computing
     if cpu_delta is not None and cpu_delta > CPU_ACTIVE_DELTA_S:
         return "recovered", f"compute_active cpu_delta_s={cpu_delta:.1f}"
+
+    # 5b. GPU utilisation indicates active compute — a positive sign of life for GPU
+    # jobs (a busy GPU with an idle CPU is normal mid-kernel). Best-effort: only fires
+    # when the cluster exposes gpu TRES, so it never *causes* a kill, only prevents one.
+    gpu_util = evidence.get("gpu_util")
+    if gpu_util is not None and gpu_util > GPU_ACTIVE_UTIL_PCT:
+        return "recovered", f"gpu_active util_pct={gpu_util:.0f}"
 
     # 6. Filesystem responsive + scheduler RUNNING + a CPU sample that did NOT advance
     # (rule 5 already ruled out activity). Silence confirmed against a working

@@ -50,12 +50,13 @@ class AtacTableTests(unittest.TestCase):
     def test_default_frip_display(self):
         t = qc_tables.atac_removal_table(
             ATAC_TH, ATAC_RM, value_label="value", include_note=False,
+            peak_source="user_peaks",
             frip_removed=ATAC_RM["frip_min"],
         )
         self.assertIn("| parameter | value | cells removed |", t)
         # Removal-condition format
         self.assertIn("| nucleosome_signal | ≥ 3 | 1 |", t)
-        self.assertIn("| frip | < 0.2 | 6 |", t)
+        self.assertIn("| frip | < 0.20 | 6 |", t)
         self.assertIn("| n_fragments | < 1500 or > 100000 | 4 |", t)
 
     def test_custom_frip_display_runtime(self):
@@ -123,6 +124,24 @@ class SkipDisplayTests(unittest.TestCase):
         th = {**ATAC_TH, "nucleosome_signal_max": 999}
         t = qc_tables.atac_removal_table(th, ATAC_RM, frip_removed=0)
         self.assertIn("| nucleosome_signal | not applied |", t)
+
+    def test_atac_frip_disabled(self):
+        th = {**ATAC_TH, "frip_min": 0}
+        t = qc_tables.atac_removal_table(th, ATAC_RM, frip_removed=0)
+        self.assertIn("| frip | not applied |", t)
+
+    def test_atac_frip_disabled_overrides_runtime_note(self):
+        th = {**ATAC_TH, "frip_min": 0}
+        t = qc_tables.atac_removal_table(
+            th, ATAC_RM, frip_runtime_note=True, frip_removed=0,
+        )
+        self.assertIn("| frip | not applied |", t)
+        self.assertNotIn("computed at runtime", t)
+
+    def test_atac_frip_no_peaks_when_enabled(self):
+        th = {**ATAC_TH, "frip_min": 0.2}
+        t = qc_tables.atac_removal_table(th, ATAC_RM, peak_source=None, frip_removed=0)
+        self.assertIn("| frip | < 0.20 _(not applied — no peaks available)_ |", t)
 
     def test_normal_values_unchanged(self):
         t = qc_tables.rna_removal_table(RNA_TH, RNA_RM)
