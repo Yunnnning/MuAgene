@@ -18,14 +18,30 @@ rule s1a_ambient_propose:
     params:
         run_dir = str(RUN_DIR),
     run:
-        import yaml
+        import json, yaml
         from pathlib import Path
+        plan = json.loads(Path(input.plan).read_text())
+        method_val = (plan.get("stages", {}).get("s1a_ambient", {})
+                          .get("parameters", {}).get("method", {}).get("value", "auto"))
+        # User revisions made at plan review take precedence over the frozen plan.
+        params_path = Path(params.run_dir) / "internal" / "parameters.yaml"
+        if params_path.exists():
+            pdata = yaml.safe_load(params_path.read_text()) or {}
+            override = pdata.get("s1a_ambient", {}).get("method", {}).get("value")
+            if override:
+                method_val = override
+        _DESCRIPTIONS = {
+            "auto":    "auto-select (SoupX if raw matrix present, else DecontX)",
+            "decontx": "DecontX — filtered counts only (explicit)",
+            "soupx":   "SoupX — raw + filtered counts (explicit)",
+            "none":    "none — pass-through (ambient correction disabled)",
+        }
+        action = "Ambient RNA correction: " + _DESCRIPTIONS.get(
+            str(method_val).lower(), str(method_val)
+        )
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s1a_ambient",
-            "action": (
-                "Ambient RNA correction per plan (auto: SoupX if raw matrix present, "
-                "else DecontX; none = pass-through; confirm method at plan review)"
-            ),
+            "action": action,
         }))
 
 

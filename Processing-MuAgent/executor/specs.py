@@ -25,7 +25,7 @@ _SCIENCE_DESCRIPTIONS: dict[str, str] = {
     "s4_rna_norm":      "Normalize RNA counts and select highly variable genes",
     "s5_atac_spectral": "Compute ATAC spectral embedding from peak-by-cell matrix",
     "s6_neighbors":     "Build RNA PCA and shared nearest-neighbor graph",
-    "s7_clustering":    "Sweep Leiden clustering resolutions and select stable communities",
+    "s7_clustering":    "Run Leiden clustering at fixed per-modality resolutions (RNA=0.7, ATAC=0.5)",
     "s8_umap":          "Project RNA and ATAC embeddings to 2D UMAP for visualization",
 }
 

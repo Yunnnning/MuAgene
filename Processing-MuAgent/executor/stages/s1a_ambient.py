@@ -202,11 +202,27 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     _io.write_parquet_safe(pd.DataFrame({"barcode": result.barcodes,
                   "contamination": contam}), art / "contamination.parquet")
 
+    if method_choice in ("decontx", "soupx"):
+        _prov_source = "user"
+        _prov_rationale = (
+            f"Explicit {result.method} choice from run.yaml/plan; "
+            "per-cell rho written to obs['ambient_contamination'] and contamination.parquet."
+        )
+    else:  # method_choice == "auto"
+        _prov_source = "derived"
+        if chosen == "soupx":
+            _prov_rationale = (
+                f"Auto-selected {result.method} (raw RNA matrix present); "
+                "per-cell rho written to obs['ambient_contamination'] and contamination.parquet."
+            )
+        else:
+            _prov_rationale = (
+                f"Auto-selected {result.method} (no raw matrix — filtered counts only); "
+                "per-cell rho written to obs['ambient_contamination'] and contamination.parquet."
+            )
     _prov.set_param(params_path, "s1a_ambient.method", result.method.lower(),
-                    source="derived", confidence="high",
-                    rationale=(f"Auto-selected {result.method} based on "
-                                "presence of a raw matrix; per-cell rho written to "
-                                "obs['ambient_contamination'] and contamination.parquet."),
+                    source=_prov_source, confidence="high",
+                    rationale=_prov_rationale,
                     method={"name": f"ambient.run_{result.method.lower()}",
                             "code_ref": "executor/methods/ambient.py"})
     _prov.set_param(params_path, "s1a_ambient.median_contamination",
