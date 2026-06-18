@@ -54,8 +54,10 @@ rerun-triggers:
 default-resources:
   - mem_mb=4000
   - runtime=120
-  # GPU count for rules that don't request one (i.e. every CPU stage). GPU-capable
-  # rules override this from RESOURCES[stage]["gpu"] (see workflow/resources.smk).
+  # GPU fallback for rules that do NOT declare their own `gpu=` resource (every CPU
+  # stage). A GPU-capable rule must declare `gpu=RESOURCES["<stage>"]["gpu"]` in its
+  # own resources: block — Snakemake default-resources cannot key off the rule name,
+  # so this default applies only to rules that omit it. See workflow/resources.smk.
   - gpu=0
 
 # Conda envs are not managed by snakemake in v1. The head-job runs inside the

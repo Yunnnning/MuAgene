@@ -1,11 +1,14 @@
 """Compute-device resolution + GPU capability gate for stage code.
 
-The operator selects ``compute.device`` (cpu|gpu) once; the submit path exports
-``PMA_DEVICE`` onto each GPU-capable child job. Which stages are GPU-capable is
-declared in ONE place — ``_GPU_CAPABLE`` in workflow/resources.smk (which also
-documents the two-edit contract for adding a stage); this module is stage-agnostic
-and keeps no second list. Stage code calls :func:`use_gpu` to branch a heavy op to
-its rapids-singlecell drop-in, then records the device actually used in provenance.
+The operator selects ``compute.device`` (cpu|gpu) once. Which stages are GPU-capable
+is declared in ONE place — ``_GPU_CAPABLE`` in workflow/resources.smk (which also
+documents the three-edit contract for adding a stage); this module is stage-agnostic
+and keeps no second list. The lockstep is carried by ``PMA_DEVICE``: the submit
+scripts set ``PMA_DEVICE=gpu`` only for a stage that requested a GPU (one in
+``_GPU_CAPABLE``) and force ``PMA_DEVICE=cpu`` for every other stage, so :func:`use_gpu`
+reading ``PMA_DEVICE`` returns False for a non-GPU-capable stage without re-checking the
+set. Stage code calls :func:`use_gpu` to branch a heavy op to its rapids-singlecell
+drop-in, then records the device actually used in provenance.
 
 Never silently degrade (see the team's execution-vs-scientific-errors rule): if gpu
 is requested but unavailable at runtime, raise loudly so it is fixed at the env/

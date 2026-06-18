@@ -33,7 +33,7 @@ def _run(script, gpu, env):
             **env,
         }
         return subprocess.run(
-            ["bash", str(script), "s3_doublets", "1", "2", "8000", "60", str(gpu), str(js)],
+            ["bash", str(script), "integration_stage", "1", "2", "8000", "60", str(gpu), str(js)],
             capture_output=True, text=True, env=full,
         )
 
@@ -53,7 +53,11 @@ class SlurmGpuRoutingTests(unittest.TestCase):
         self.assertNotIn("PMA_DEVICE=gpu", out)
         self.assertNotIn("--bind", out)  # no container wrapper for CPU jobs
 
-    def test_gpu_conda_provider_routes_partition_gres_env(self):
+    def test_gpu_job_routes_partition_gres_and_ignores_conda_env(self):
+        # Container is the only SLURM GPU provider: a GPU job routes to the GPU
+        # partition/gres with PMA_DEVICE=gpu, and PMA_CONDA_ENV_GPU is NOT routed into
+        # the job env (the conda-env GPU exec path was removed). The container wrapper
+        # (asserted separately) supplies python+rapids.
         out = _submit(SLURM, 1, {
             "PMA_SLURM_PARTITION": "cpu", "PMA_SLURM_ACCOUNT": "vaquerizas",
             "PMA_SLURM_GPU_PARTITION": "gpu", "PMA_SLURM_GPU_GRES": "gpu:A5000:1",
@@ -62,7 +66,14 @@ class SlurmGpuRoutingTests(unittest.TestCase):
         self.assertIn("--partition gpu", out)
         self.assertIn("--gres gpu:A5000:1", out)
         self.assertIn("PMA_DEVICE=gpu", out)
-        self.assertIn("PMA_CONDA_ENV=muagene-gpu", out)
+        self.assertNotIn("PMA_CONDA_ENV=", out)
+
+    def test_cpu_job_forces_pma_device_cpu_when_head_is_gpu(self):
+        out = _submit(SLURM, 0, {
+            "PMA_SLURM_PARTITION": "cpu", "PMA_SLURM_ACCOUNT": "vaquerizas",
+            "PMA_DEVICE": "gpu",
+        })
+        self.assertIn("PMA_DEVICE=cpu", out)
 
     def test_gpu_container_binds_repo_root_and_run_dir(self):
         out = _submit(SLURM, 1, {

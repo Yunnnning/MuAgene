@@ -14,6 +14,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 export PMA_REPO_ROOT="${PMA_REPO_ROOT:-$REPO_ROOT}"
 
+# Put the repo on PYTHONPATH so `import executor` resolves from source in EVERY job tier —
+# this process AND the child jobs snakemake submits (they inherit it via sbatch/qsub
+# --export=ALL). The head job already finds executor via cwd=repo_root and GPU child jobs
+# via the container wrapper's --env PYTHONPATH; this closes the CPU child-job gap so a
+# submit-time auto-provisioned env (created from the lock, no `pip install -e`) still
+# imports executor. init-machine's editable install remains for interactive console scripts.
+export PYTHONPATH="${PMA_REPO_ROOT}:${PYTHONPATH:-}"
+
 # Activate the project conda env. Identity comes from PMA_CONDA_ENV (set by
 # configure-execution); `muagene` is the canonical default for a fresh install.
 CONDA_ENV="${PMA_CONDA_ENV:-muagene}"

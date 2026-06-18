@@ -53,6 +53,18 @@ def _stage_imports() -> set[str]:
                 mods.update(a.name.split(".")[0] for a in node.names)
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 mods.add(node.module.split(".")[0])  # absolute imports only
+            elif isinstance(node, ast.Call):
+                # Dynamic-import probes count as uses: compute.gpu_capable() soft-checks
+                # the GPU env via importlib.util.find_spec("rapids_singlecell") instead of
+                # a hard `import` (the CPU env lacks it). Catch find_spec(...) /
+                # import_module("...") string args so such a module isn't flagged dead.
+                fn = node.func
+                fname = (fn.attr if isinstance(fn, ast.Attribute)
+                         else fn.id if isinstance(fn, ast.Name) else None)
+                if fname in {"find_spec", "import_module"} and node.args:
+                    a0 = node.args[0]
+                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                        mods.add(a0.value.split(".")[0])
     return mods
 
 

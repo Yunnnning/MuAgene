@@ -3,6 +3,7 @@ threshold derivation, and plan-review table/figure embedding."""
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -271,8 +272,15 @@ class AppendixBlockTests(unittest.TestCase):
             self.assertIn("total_removed", block)
             # marginal count surfaced
             self.assertIn("100", block)
-            # relative figure reference into deliverables/figures
-            self.assertIn(f"../../figures/{qc_explore.S1_FIGURE_STEM}.png", block)
+            # Relative figure reference into deliverables/figures. plan_review.md lives
+            # at deliverables/plan/, so the code's os.path.relpath yields ../figures/… .
+            # Match one-or-more ../ so this won't go stale if that depth changes again
+            # (the previous hard-coded ../../ broke when output migration moved the md up).
+            self.assertRegex(
+                block,
+                rf"!\[s1_rna_qc QC exploration\]\((?:\.\./)+figures/"
+                rf"{re.escape(qc_explore.S1_FIGURE_STEM)}\.png\)",
+            )
 
     def test_render_plan_appendix_replaces_bullets(self):
         with tempfile.TemporaryDirectory() as d:

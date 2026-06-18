@@ -172,20 +172,21 @@ Processing-MuAgent configure-execution --config $CFG --mode pbs \
 Processing-MuAgent configure-execution --config $CFG --mode slurm \
   --slurm-partition <partition> --slurm-account <account> --confirmed-by-user
 
-# SLURM on GPU (the device axis is orthogonal to the scheduler; non-GPU stages still run on CPU):
+# SLURM on GPU (cluster-only, for integration subagent — preprocessing is CPU-only):
 Processing-MuAgent configure-execution --config $CFG --mode slurm \
   --slurm-partition <cpu-partition> --slurm-account <account> \
-  --device gpu --gpu-partition gpu --gpu-gres gpu:A5000:1 --gpu-conda-env muagene-gpu \
+  --device gpu --gpu-partition gpu --gpu-gres gpu:A5000:1 \
   --confirmed-by-user
-# (--singularity-module, --gpu-image-uri, env manager etc. auto-fill from ~/.muagene/machine.config
-#  if you ran init-machine; pass them explicitly to override.)
+# SLURM --device gpu REQUIRES --gpu-image-uri (the GPU env is a container PULLED from that pinned
+#  reference). It + --singularity-module + env manager auto-fill from ~/.muagene/machine.config if
+#  you ran init-machine — otherwise pass --gpu-image-uri docker://<registry>/muagene-gpu:<tag>.
 # Optional: --scratch <path> binds an extra node-local/fast path into the GPU container
 #  (exported as PMA_GPU_BIND). The run directory and repo root are always bound.
 ```
 
-GPU-capable stages run as child jobs inside `singularity exec --nv $image`, which binds
-**both** the repo root (for the `executor` package) and the run directory (for
-`internal/artifacts/…` I/O) — see the bind contract in `workflow/profiles/*/{slurm,pbs}-submit.sh`.
+GPU cluster infrastructure (container pull, partition/gres routing, bind contract) is
+in place for the **integration subagent** (future). **Processing-MuAgent preprocessing
+is CPU-only** — `_GPU_CAPABLE` in `workflow/resources.smk` is empty.
 
 This writes:
 
@@ -214,19 +215,18 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 
 **Execution mode must be user-confirmed before any compute runs.** Both `run` and `submit` hard-refuse to launch until `execution.user_confirmed=true` is recorded (via `configure-execution ... --confirmed-by-user`). This is a one-time gate enforced on fresh runs and resume sessions alike — the agent must confirm local vs HPC with the user and never auto-default. `run` additionally refuses when the mode is `pbs`/`slurm` (use `submit`). Once confirmed, the pipeline proceeds automatically.
 
-**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `s0_ingest_execute` as the planning target and dispatches it as the first cluster job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, S0 runs in the foreground on this machine via `run`.
+**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `plan_review_propose` as the planning target, which pulls P1 → S0 as dependencies and arms the plan-review gate in one head-job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, run `run --target plan_review_propose` on this machine.
 
 Each heavy stage runs as its own scheduler job, and only the two checkpoints above need `approve`. After `submit`, a background monitor is the sole watcher of your job; Processing-MuAgent follows **report-and-repoll** — it reports one-shot `hpc-status`, then re-polls on a non-blocking scheduled wakeup (~295s, the cadence printed on the `Next check:` line) and re-reports only when the state changes, until the job finishes or a review gate arms. You never have to ask for status by hand.
 
 ### Submit workflow
 
-Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. `**submit` auto-infers the Snakemake target** from run state — you do not need to pick `s0_ingest_execute`, `post_qc_review_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
+Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` (not `run`) to dispatch the Snakemake head-job. `**submit` auto-infers the Snakemake target** from run state — you do not need to pick `plan_review_propose`, `post_qc_review_propose`, or `all` manually. After each approval, run `submit` again and it stops at the next gate:
 
 
 | Run state                                 | Inferred target          | Runs through                                                              |
 | ----------------------------------------- | ------------------------ | ------------------------------------------------------------------------- |
-| planning not done                         | `s0_ingest_execute`      | load + validate + assemble plan + QC explore, then pauses for plan review |
-| planning done, `plan_review` not approved | `plan_review_propose`    | renders the plan-review deliverable, then pauses                          |
+| `plan_review` not approved                | `plan_review_propose`    | Fresh run: P1 → S0 → plan assembly + QC explore, then arms gate. Resume after S0: only the cheap propose rule runs. |
 | `post_qc_review` not approved             | `post_qc_review_propose` | S1a → S3 + QC summary, then pauses                                        |
 | `post_qc_review` approved                 | `all`                    | S4 → S6 → S7 clustering → S8 → manifest → final results (no further pause) |
 
@@ -251,8 +251,8 @@ Processing-MuAgent configure-execution --config $CFG --mode slurm \
 
 source <run_dir>/deliverables/plan/config/hpc.env
 
-# Submit the planning job (load + validate + plan + QC explore) via Execution-MuAgent;
-# `submit` with no --target infers `s0_ingest_execute` as the planning target:
+# Submit the planning head-job via Execution-MuAgent (P1 → S0 → gate-arming);
+# `submit` with no --target infers `plan_review_propose`:
 Processing-MuAgent submit --config $CFG --executor slurm
 # When it completes, render the plan-review deliverable and approve:
 Processing-MuAgent plan-review --config $CFG  # also writes internal/stage_meta/
@@ -446,7 +446,7 @@ On a fresh machine, `Execution-MuAgent init-machine` does the whole setup (see *
 
 - **CPU env** = the conda-lock lock — **linux-only** (a non-linux host fails loud with `platform_unsupported`, never a silent solve). Edited `processing.yaml`? Regenerate the lock and commit it: `Processing-MuAgent regenerate-locks` (needs `pip install '.[dev]'`). `validate-env`/`submit` fail loud (`lock_stale_vs_yaml`) when the YAML is newer than the lock.
 - **GPU env** = a pinned container image **pulled** from a registry — built + published centrally from `muagene-gpu.def` (see `scripts/build_and_push_gpu_image.sh`), **never built on a target machine**.
-- `submit` auto-provisions a missing/stale env before launching (policy=auto) and never submits a GPU job to a CPU-only env.
+- `submit` auto-provisions a missing/stale env before launching (policy=auto). GPU env is for the integration subagent (future); preprocessing is CPU-only.
 
 Per-run provisioning/validation is optional once the machine is bootstrapped (`init-machine` already did it); to (re)provision for a specific run's `site.config`:
 

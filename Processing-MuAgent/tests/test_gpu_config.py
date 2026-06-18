@@ -96,5 +96,76 @@ class SiteConfigGpuRoundTripTests(unittest.TestCase):
             self.assertEqual(cfg["pbs"]["gpu_queue"], "gpuq")
 
 
+class ConfigureExecutionLocalGpuTests(unittest.TestCase):
+    def test_local_mode_rejects_device_gpu(self):
+        import yaml
+        from click.testing import CliRunner
+        from executor import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            draft = Path(tmp) / "draft.yaml"
+            draft.write_text(yaml.safe_dump({"run_dir": str(run_dir)}))
+            runner = CliRunner()
+            assert runner.invoke(cli.main, ["init", "--config", str(draft)]).exit_code == 0
+            cfg = run_dir / "deliverables" / "plan" / "config" / "run.yaml"
+            res = runner.invoke(cli.main, [
+                "configure-execution", "--config", str(cfg),
+                "--mode", "local", "--device", "gpu", "--confirmed-by-user",
+            ])
+            self.assertNotEqual(res.exit_code, 0)
+            self.assertIn("cluster-only", res.output)
+
+
+class ConfigureExecutionGpuImageUriTests(unittest.TestCase):
+    """SLURM --device gpu must fail loud at configure time when no image_uri is
+    resolvable — container is the only SLURM GPU provider and the image is PULLED from
+    the pinned reference, so a missing one is caught now, not at provision/submit."""
+
+    def _init_run(self, tmp):
+        import yaml
+        from click.testing import CliRunner
+        from executor import cli
+        run_dir = Path(tmp) / "run"
+        draft = Path(tmp) / "draft.yaml"
+        draft.write_text(yaml.safe_dump({"run_dir": str(run_dir)}))
+        runner = CliRunner()
+        assert runner.invoke(cli.main, ["init", "--config", str(draft)]).exit_code == 0
+        cfg = run_dir / "deliverables" / "plan" / "config" / "run.yaml"
+        return runner, cli, cfg
+
+    def test_slurm_gpu_without_image_uri_fails_loud(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, cli, cfg = self._init_run(tmp)
+            # No image_uri anywhere: machine.config empty + env var blanked.
+            with mock.patch("executor.hpc.load_machine_config", return_value={}), \
+                 mock.patch.dict("os.environ", {"PMA_GPU_IMAGE_URI": ""}):
+                res = runner.invoke(cli.main, [
+                    "configure-execution", "--config", str(cfg),
+                    "--mode", "slurm", "--slurm-partition", "cpu",
+                    "--slurm-account", "vaquerizas", "--conda-env", "muagene",
+                    "--device", "gpu", "--gpu-gres", "gpu:A5000:1", "--confirmed-by-user",
+                ])
+            self.assertNotEqual(res.exit_code, 0)
+            self.assertIn("--gpu-image-uri", res.output)
+
+    def test_slurm_gpu_with_image_uri_succeeds(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, cli, cfg = self._init_run(tmp)
+            with mock.patch("executor.hpc.load_machine_config", return_value={}), \
+                 mock.patch.dict("os.environ", {"PMA_GPU_IMAGE_URI": ""}):
+                res = runner.invoke(cli.main, [
+                    "configure-execution", "--config", str(cfg),
+                    "--mode", "slurm", "--slurm-partition", "cpu",
+                    "--slurm-account", "vaquerizas", "--conda-env", "muagene",
+                    "--device", "gpu", "--gpu-gres", "gpu:A5000:1",
+                    "--gpu-image-uri", "docker://example/muagene-gpu:test",
+                    "--confirmed-by-user",
+                ])
+            self.assertEqual(res.exit_code, 0, res.output)
+
+
 if __name__ == "__main__":
     unittest.main()

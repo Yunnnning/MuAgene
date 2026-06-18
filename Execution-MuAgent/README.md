@@ -145,8 +145,11 @@ Liveness is judged by **CPU activity between checks**, not mere presence: a fini
 3. Child RUNNING + "Storing output in storage." → `fs_hang`
 4. Filesystem probe timed out → `fs_hang`
 5. CPU advancing since the last check → `recovered`
+5b. GPU utilisation > 5% (`device=gpu`, best-effort) → `recovered` — a busy GPU with an idle CPU is normal mid-kernel; only fires when the cluster exposes GPU TRES, so it prevents a kill but never causes one
 6. Filesystem responsive + scheduler RUNNING + a measured-flat CPU sample → `confirmed_dead` (catches a lingering/deadlocked process)
 7. No prior sample yet / no reading → `recovered` (conservative default; a kill needs two samples)
+
+GPU child jobs are discovered, hang-detected, and killed-on-hang by the **same** daemon and rules as CPU jobs; the only GPU-specific signal is rule 5b. Two refinements are deferred to the integration effort (when GPU stages actually run): treating CPU-idle as non-fatal for a `device=gpu` job when GPU TRES is *unavailable* (today rule 6 could still fire), and PBS GPU supervision (the probe is SLURM-only).
 
 ### Output verification (per step + terminal)
 
@@ -157,7 +160,7 @@ Output verification is proper — not a folder/size check. `verify_output_file` 
 
 Because stages write outputs atomically (`/tmp` stage + fsync + `os.rename`), a file present at its final path is complete, so a valid signature plus non-zero size is a strong correctness signal.
 
-**Per step (normal progress):** on every check the monitor verifies each spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage (e.g. a planning `s0_ingest_execute` submission), so a clean head-job exit still emits this finding instead of leaving `verified_stages` empty. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
+**Per step (normal progress):** on every check the monitor verifies each spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage (e.g. a planning `plan_review_propose` submission), so a clean head-job exit still emits this finding instead of leaving `verified_stages` empty. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
 
 **Terminal:** when the head-job reaches COMPLETED, `validate_terminal_outputs` runs the same verifier over every `internal/stage_meta/<stage>.yaml` (excluding `head_job.yaml`). Any missing, empty, or corrupt output is reported as `output_missing` — a COMPLETED scheduler state with an unverifiable output is treated as a failure.
 

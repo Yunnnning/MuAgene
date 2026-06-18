@@ -48,10 +48,6 @@ rule s3_doublets_execute:
     resources:
         mem_mb=lambda wc, attempt: mem_mb_for("s3_doublets", attempt),
         runtime=RUNTIME["s3_doublets"],
-        # 1 when compute.device=gpu (RNA Scrublet runs on rapids-singlecell), else 0.
-        # The profile passes {resources.gpu} to the submit script, which routes the
-        # child job to the GPU partition/gres + GPU env when >0.
-        gpu=RESOURCES["s3_doublets"]["gpu"],
     run:
         import json
         from pathlib import Path

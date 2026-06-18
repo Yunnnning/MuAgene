@@ -108,7 +108,7 @@ md = context_mapper.build_report_from_chat(dois=["10.xxxx/...", "10.yyyy/..."])
 context_mapper.write_report(run_dir, md)
 ```
 
-P1 will fetch abstracts for each DOI during `executor run --target s0_ingest_execute` (the planning target — it runs P1 → S0 and assembles the plan in-process).
+P1 will fetch abstracts for each DOI during the planning phase (`executor run --target plan_review_propose` locally, or `executor submit` on HPC — both pull P1 → S0 and assemble the plan in-process).
 
 **(d) Nothing supplied** — leave the blank template. Warn the user that the Phase 1 gate will block them and they'll need to either paste context later or opt out explicitly with `executor run --config $CFG --no-context`. Don't opt out silently on their behalf.
 
@@ -120,25 +120,19 @@ to launch any compute until the user's choice is recorded with `--confirmed-by-u
 (this gate fires on fresh runs and resume sessions alike). It is a one-time gate:
 once confirmed, the rest of the pipeline runs automatically.
 
-**This gate carries two independent choices — explore the resources, then ask the user
-both:**
+**This gate carries two choices — explore the resources, then ask the user:**
 - **Where to run** — `--mode local | pbs | slurm` (always ask; never auto-default).
-- **What device the heavy stages use** — `--device cpu | gpu` (default `cpu`). `gpu`
-  routes only the GPU-capable stages (currently S3 doublets; the set lives in
-  `workflow/resources.smk` `_GPU_CAPABLE`) to a GPU; every other stage stays on CPU.
-  Device is **orthogonal to mode** — GPU is offerable for both local and HPC. Only
-  offer `gpu` when you have actually *detected* a GPU (see below); never assume one,
-  and never silently pick it.
+- **What device (HPC only, integration subagent)** — `--device cpu | gpu` (default `cpu`).
+  Preprocessing stages are **CPU-only** (`_GPU_CAPABLE` is empty). `--device gpu` on HPC
+  prepares cluster GPU infrastructure (container pull, partition/gres routing) for the
+  **integration subagent** to use later — it does not accelerate preprocessing today.
 
 **Local** (only after the user explicitly chooses it — do not assume local just
 because you're on this machine):
 ```
 executor configure-execution --config $CFG --mode local --confirmed-by-user
 ```
-To offer GPU locally, first probe for a visible GPU with a read-only `nvidia-smi -L`
-(and confirm the GPU conda env exists). If one is present and the user wants it, append
-`--device gpu --gpu-conda-env muagene-gpu`. With no GPU detected, stay on CPU — do not
-pass `--device gpu`.
+Do not pass `--device gpu` with local mode — `configure-execution` rejects it.
 
 **HPC (PBS or SLURM):**
 
@@ -189,8 +183,9 @@ pass `--device gpu`.
    > - **Partition:** cpu (detected from your cluster)
    > - **Account:** project_abc (detected from environment)
    > - **Scale:** `PMA_RESOURCES_SCALE=2`
-   > - **Device:** your cluster has a GPU partition (`gpu`, `gpu:A5000:1`). The doublet
-   >   stage (S3) has a GPU path; do you want to run it on **GPU**, or keep everything on **CPU**?
+   > - **Device:** your cluster has a GPU partition (`gpu`, `gpu:A5000:1`). GPU is for
+   >   the **integration subagent** (future) — preprocessing stays on CPU. Do you want
+   >   to configure GPU routing now (`--device gpu`), or keep everything on **CPU**?
    >
    > Does this look right, or would you like to change any of these?
 
@@ -211,12 +206,13 @@ pass `--device gpu`.
    executor configure-execution --config $CFG --mode slurm \
        --slurm-partition <cpu_partition> --slurm-account <account> \
        --device gpu --gpu-partition <suggested_gpu_partition> --gpu-gres <suggested_gpu_gres> \
-       --gpu-conda-env muagene-gpu --confirmed-by-user
+       --gpu-image-uri docker://<registry>/muagene-gpu:<tag> --confirmed-by-user
    ```
-   (PBS: `--device gpu --pbs-gpu-select-extra 'ngpus=1' [--gpu-queue <q>] --gpu-conda-env muagene-gpu`.)
+   (PBS GPU is deferred — still uses a GPU conda env: `--device gpu --pbs-gpu-select-extra 'ngpus=1' [--gpu-queue <q>] --gpu-conda-env muagene-gpu`.)
    `configure-execution` fails loud on missing prerequisites — pre-empt them: SLURM `--device gpu`
-   **requires** `--gpu-gres`; without `--gpu-conda-env` it warns that GPU jobs would fall back to the
-   CPU env (which lacks rapids-singlecell); PBS defaults to `ngpus=1` if you omit the select-extra.
+   **requires** `--gpu-gres` and `--gpu-image-uri` (the SLURM GPU env is a container PULLED from that
+   pinned reference — or set `gpu_image_uri` once in `~/.muagene/machine.config` via init-machine);
+   PBS defaults to `ngpus=1` if you omit the select-extra.
    Add `--singularity-module <module>` when the site needs `module load` for singularity.
 
 Do **not** invent partition/account names — use `hpc-info` results only. If `hpc-info` returns empty lists, ask the user for the values directly.
@@ -231,27 +227,35 @@ This writes `plan.workflow_branch_declared` to `parameters.yaml` as a `source=us
 
 ### 6. Run to the plan-review gate
 
-The planning target is **`s0_ingest_execute`**. It runs P1 → S0 and assembles the
-preprocessing plan in-process (the former separate `p2_plan` rule was merged into
-S0 — there is no `p2_plan_execute` rule; requesting it raises `MissingRuleException`).
-A single `s0_ingest_execute` run produces the ingest h5ad, `validation_report.json`,
-`preprocessing_plan.json`, and the `qc_explore` artifacts the plan review consumes.
+The planning target is **`plan_review_propose`** (auto-inferred by `submit` when
+`--target` is omitted). `plan_review_propose` depends on `s0_ingest_execute`, so
+Snakemake runs P1 → S0 → plan assembly → gate-arming in one invocation — the
+`plan_review` gate is armed at the end without a separate step. Do **not** target
+`s0_ingest_execute` alone: that stops one rule early and leaves the gate unarmed.
+
+S0 (merged planning compute: load + validate + pair + QC explore) runs inside that
+dependency chain. The former separate `p2_plan` rule was merged into S0 — there is no
+`p2_plan_execute` rule; requesting it raises `MissingRuleException`. A successful
+planning run produces the ingest h5ad, `validation_report.json`,
+`preprocessing_plan.json`, `qc_explore` artifacts, and `plan_review.awaiting_approval`.
+
 S0 execution location is determined by the configured mode. **`run` is local-only;
 `submit` is cluster-only** — Processing-MuAgent never submits cluster jobs itself.
 Both refuse to start until execution mode is user-confirmed (Section 4) — so do not
 reach this step before the user has chosen local vs HPC.
 
-**HPC mode (`execution.mode` is `pbs` or `slurm`) — submit S0 as a supervised cluster job:**
+**HPC mode (`execution.mode` is `pbs` or `slurm`) — submit the planning head-job:**
 
 ```
 source deliverables/plan/config/hpc.env
-executor submit --config $CFG --executor pbs|slurm --target s0_ingest_execute
+executor submit --config $CFG --executor pbs|slurm
 executor hpc-status --config $CFG             # one-shot: report, then re-poll on a scheduled wakeup
 ```
 
-S0's QC exploration needs 100+ GB, so it must run on a compute node (never the login
-node). `submit` routes through Execution-MuAgent (kill-on-hang, survives SSH disconnect)
-and returns in ≤90 s. After `submit`, follow **report-and-repoll** (see
+Omit `--target` — `submit` auto-infers `plan_review_propose`. S0's QC exploration
+needs 100+ GB, so it runs on a compute node inside the head-job (never the login
+node). `submit` routes through Execution-MuAgent (kill-on-hang, survives SSH
+disconnect) and returns in ≤90 s. After `submit`, follow **report-and-repoll** (see
 `interaction_flow.md`): report one-shot `hpc-status`, then re-poll on a non-blocking
 scheduled wakeup (~295s, per the `Next check:` line) — reporting only when the `State:`
 fingerprint changes — until `monitor.pid` is removed or `plan_review` becomes
@@ -260,15 +264,15 @@ fingerprint changes — until `monitor.pid` is removed or `plan_review` becomes
 **Local mode (`execution.mode` is `local`) — run everything locally:**
 
 ```
-executor run --config $CFG --target s0_ingest_execute
+executor run --config $CFG --target plan_review_propose
 ```
 
-Runs P1 → S0 (+ plan assembly) and stops before `plan_review`. Small inputs: ~30s.
+Runs P1 → S0 (+ plan assembly + gate-arming). Small inputs: ~30s.
 
 **If S0 OOMs:** in HPC mode, raise `PMA_RESOURCES_SCALE` (`configure-execution
---resources-scale N`) and `submit` again. In local mode, the machine is too small —
-switch to HPC (`configure-execution --mode slurm|pbs`) and submit. There is no
-automatic local→cluster retry.
+--resources-scale N`) and `submit` again (no `--target`). In local mode, the machine
+is too small — switch to HPC (`configure-execution --mode slurm|pbs`) and submit.
+There is no automatic local→cluster retry.
 
 Do **not** cluster-retry logic errors (pairing ambiguous, path missing, branch mismatch). Relay and let the user fix inputs or `declare-branch`.
 
@@ -280,7 +284,7 @@ After biological-context write (cases a/b/c): confirm the file exists at `delive
 
 After `configure-execution`: confirm `execution.mode` **and `compute.device` (cpu/gpu)** and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume. When device=gpu, also confirm the GPU partition/gres (SLURM) or select-extra (PBS) and the GPU conda env that were recorded.
 
-After `executor run --target s0_ingest_execute`:
+After the planning phase completes (`plan_review_propose` — local `run` or HPC `submit`):
 
 - If `deliverables/plan/context_summary.md` exists, paste its content back verbatim. Any conflicts (e.g. "report says mouse, file fingerprint says human") surface here and must be resolved before Step 3.
 - If `executor run` errored:

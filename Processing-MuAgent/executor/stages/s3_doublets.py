@@ -17,28 +17,9 @@ import scipy.sparse as sp
 import scrublet as scr
 
 from ..methods import doublet_policy as _pol
-from .. import compute as _compute
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
-
-
-def _rna_scrublet_gpu(counts: Any, expected_rate: float) -> np.ndarray:
-    """GPU Scrublet via rapids-singlecell — drop-in for ``scrublet.Scrublet`` on the
-    same count matrix. Returns the per-cell doublet score. Only called when
-    compute.use_gpu() is True (the GPU env is present); the exact rapids API is
-    pinned by verify_gpu_scrublet.py (Phase-0 parity check)."""
-    import rapids_singlecell as rsc
-
-    a = ad.AnnData(X=counts.copy())
-    # Move to GPU (function namespace moved across rapids-singlecell versions).
-    mover = getattr(getattr(rsc, "get", None), "anndata_to_GPU", None) \
-        or getattr(getattr(rsc, "utils", None), "anndata_to_GPU", None)
-    if mover is not None:
-        mover(a)
-    rsc.pp.scrublet(a, expected_doublet_rate=expected_rate, random_state=0)
-    col = "doublet_score" if "doublet_score" in a.obs else "scrublet_score"
-    return np.asarray(a.obs[col].to_numpy(), dtype=float)
 
 
 def _resolve_doublet_rate(value: Any, n_cells: int) -> tuple[float, str]:
@@ -195,30 +176,17 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
                                    "scrublet_score above this value are flagged."),
                         method={"name": "s3.rna_doublet_score_threshold",
                                 "code_ref": "executor/stages/s3_doublets.py"})
-        # Device dispatch: GPU runs rapids-singlecell's pp.scrublet, CPU runs Scrublet.
-        # use_gpu() raises loudly if gpu was requested but unavailable (never silently
-        # degrade) — let that propagate; it is an env/allocation error to fix.
-        use_gpu = _compute.use_gpu(run_dir=run_dir, stage="s3_doublets")
         try:
-            if use_gpu:
-                scores = _rna_scrublet_gpu(counts, expected_rate)
-            else:
-                sd = scr.Scrublet(counts, expected_doublet_rate=expected_rate, random_state=0)
-                scores, _ = sd.scrub_doublets(verbose=False)
+            sd = scr.Scrublet(counts, expected_doublet_rate=expected_rate, random_state=0)
+            scores, _ = sd.scrub_doublets(verbose=False)
             scores = np.asarray(scores, dtype=float)
             flags = scores > rna_score_threshold
         except Exception as e:
-            log_event(run_dir, {"stage": "s3_doublets", "event": "scrublet_failed",
-                                "error": str(e), "device": _compute.device_used(use_gpu)})
+            log_event(run_dir, {"stage": "s3_doublets", "event": "scrublet_failed", "error": str(e)})
             scores = np.zeros(rna.n_obs)
             flags = np.zeros(rna.n_obs, dtype=bool)
         rna.obs["scrublet_score"] = scores
         rna.obs["scrublet_is_doublet"] = flags.astype(bool)
-        _prov.set_param(params_path, "s3_doublets.rna_doublet_device",
-                        _compute.device_used(use_gpu), source="derived", confidence="high",
-                        rationale=("RNA Scrublet ran on " + _compute.device_used(use_gpu)
-                                   + " (rapids-singlecell pp.scrublet on GPU; scrublet.Scrublet on CPU)."),
-                        method={"name": "compute.use_gpu", "code_ref": "executor/compute.py"})
 
     # ---- ATAC path (SnapATAC2 native scrublet + filter_doublets) ---------
     atac = None

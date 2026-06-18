@@ -70,19 +70,28 @@ def execute_spec(
         )
 
     # Environment preflight: make the run's env(s) real + valid before submitting.
-    # CPU env always (head job + CPU stages); GPU env too when device=gpu (the GPU
-    # child jobs). policy=auto provisions a missing/stale env; never silently
-    # degrade — a missing/invalid GPU env aborts the submit (it would fail mid-run
-    # otherwise). Old site.configs without an `environments:` section reconcile to
+    # CPU env always (head job + CPU stages). GPU env too, but ONLY when device=gpu AND
+    # this run actually has a GPU-capable stage (spec.gpu_stages_present, set by Processing
+    # from _GPU_CAPABLE) — otherwise a device=gpu preprocessing run (no GPU consumer) would
+    # pull the multi-GB container for nothing. Deliberate eager prep stays available via an
+    # explicit `provision-env --device gpu`. policy=auto provisions a missing/stale env;
+    # never silently degrade — a missing/invalid GPU env aborts the submit (it would fail
+    # mid-run otherwise). Old site.configs without an `environments:` section reconcile to
     # "ok" without action, so existing CPU runs are unaffected.
     from . import environment
-    devices = ["cpu"] + (["gpu"] if (site_cfg.device or "cpu") == "gpu" else [])
+    gpu_needed = (site_cfg.device or "cpu") == "gpu" and getattr(spec, "gpu_stages_present", False)
+    devices = ["cpu"] + (["gpu"] if gpu_needed else [])
     env_errors: list[str] = []
     for dev in devices:
         try:
             rec = environment.reconcile(site_cfg, repo_root, dev)
-        except Exception as exc:  # a probe/tooling bug must not silently pass — warn
-            click.echo(f"env preflight [{dev}] warning: {exc}", err=True)
+        except Exception as exc:
+            # A crashed reconcile (corrupt env_state.json, probe/subprocess failure)
+            # must NOT be downgraded to a warning — that would submit a job against an
+            # unverified env (silent degrade). Record it as a hard preflight error so
+            # the `if env_errors` check below aborts before submit_from_spec.
+            env_errors.append(f"{dev}: env preflight crashed: {exc}")
+            click.echo(f"env preflight [{dev}] error: {exc}", err=True)
             continue
         if rec.get("provision"):
             click.echo(f"env preflight [{dev}]: "

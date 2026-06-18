@@ -371,8 +371,9 @@ def hpc_info() -> None:
               help="Memory/walltime scale factor (PMA_RESOURCES_SCALE).")
 @click.option("--conda-env", default=None, help="Conda env name for cluster jobs (PMA_CONDA_ENV).")
 @click.option("--device", type=click.Choice(["cpu", "gpu"]), default="cpu", show_default=True,
-              help="Compute device for GPU-capable stages (compute.device). 'gpu' routes those "
-                   "stages to the GPU partition/gres and the GPU conda env; CPU stages are unaffected.")
+              help="Compute device for GPU-capable stages (compute.device). 'gpu' is cluster-only "
+                   "(--mode pbs|slurm + submit): routes those stages to the GPU partition/gres and "
+                   "container; local mode (--mode local) is always CPU.")
 @click.option("--gpu-partition", default=None,
               help="SLURM GPU partition for GPU-capable stages (PMA_SLURM_GPU_PARTITION).")
 @click.option("--gpu-gres", default=None,
@@ -437,10 +438,14 @@ def configure_execution(
         rationale=f"Execution backend set via configure-execution --mode {mode}.",
     )
 
-    # Compute device is orthogonal to the execution backend: cpu (default) keeps
-    # the existing behaviour; gpu routes GPU-capable stages to the GPU partition/
-    # gres and the GPU conda env (see workflow/resources.smk _GPU_CAPABLE). Stages
-    # that are not GPU-capable always run on CPU regardless of this setting.
+    if mode == "local" and device == "gpu":
+        raise click.ClickException(
+            "GPU is cluster-only: --device gpu requires --mode pbs or slurm (use submit). "
+            "Local runs use --mode local with the default --device cpu.")
+
+    # On HPC, gpu routes GPU-capable stages to the GPU partition/gres and container
+    # (see workflow/resources.smk _GPU_CAPABLE). Stages that are not GPU-capable
+    # always run on CPU regardless of this setting. Local mode is CPU-only.
     provenance.set_param(
         params_path,
         "compute.device", device,
@@ -532,15 +537,26 @@ def configure_execution(
         raise click.ClickException(
             "SLURM mode requires --slurm-partition or PMA_SLURM_PARTITION in the environment.")
 
-    # GPU routing prerequisites. Fail loud rather than silently submitting a GPU
-    # stage to a CPU partition or a CPU env (see feedback: never silently degrade).
+    # GPU routing prerequisites (cluster-only; preprocessing stages are CPU-only —
+    # _GPU_CAPABLE is empty until the integration subagent adds stages). Fail loud
+    # rather than silently submitting with a misconfigured partition/env.
     if device == "gpu":
-        if not settings["gpu_conda_env"]:
-            click.echo(
-                "NOTE: --device gpu set without --gpu-conda-env; GPU child jobs would fall back to "
-                "the CPU conda env, which lacks rapids-singlecell. Set --gpu-conda-env (e.g. muagene-gpu).",
-                err=True,
-            )
+        click.echo(
+            "NOTE: --device gpu prepares cluster GPU routing for the integration "
+            "subagent (future). Processing-MuAgent preprocessing is CPU-only.",
+            err=True,
+        )
+        # SLURM GPU is container-only: the job runs inside the PULLED image, so fail
+        # loud now if the pinned image reference is missing rather than writing
+        # image_uri: null and only discovering it at provision/submit
+        # (gpu_image_unavailable). PBS GPU is deferred — it keeps a conda-env fallback
+        # for now; apply the same check when PBS goes container-only.
+        if mode == "slurm" and not settings["gpu_image_uri"]:
+            raise click.ClickException(
+                "SLURM --device gpu requires --gpu-image-uri — a pinned registry reference the GPU "
+                "image is PULLED from (e.g. docker://<registry>/muagene-gpu:<tag>) — or gpu_image_uri "
+                "in ~/.muagene/machine.config (set once via `Execution-MuAgent init-machine`). "
+                "No machine builds the image locally.")
         if mode == "slurm" and not settings["slurm_gpu_gres"]:
             raise click.ClickException(
                 "SLURM --device gpu requires --gpu-gres (e.g. gpu:A5000:1). Run `hpc-info` to discover "
@@ -1265,8 +1281,8 @@ def _prepare_submit_approvals(
                    "For local foreground runs use `run` (which is local-only).")
 @click.option("--target", default=None,
               help="Override the Snakemake target. Omit to auto-infer the first "
-                   "incomplete step (e.g. s0_ingest_execute for planning, "
-                   "s2_atac_qc_execute, post_qc_review_propose, all).")
+                   "incomplete step (e.g. plan_review_propose for planning, "
+                   "post_qc_review_propose, all).")
 @click.option("--no-context", is_flag=True,
               help="Explicit user choice to proceed without biological context (planning "
                    "submissions only); fields marked status=missing.")

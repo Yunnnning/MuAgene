@@ -752,8 +752,8 @@ def write_site_config(path: Path | str, *, mode: Executor, settings: dict[str, s
     config: dict[str, object] = {
         "schema_version": "1",
         "scheduler": mode,
-        # Compute device is top-level (orthogonal to scheduler). cpu is the default
-        # and keeps the existing CPU-only behaviour for site.configs that omit it.
+        # Compute device (cpu default). gpu is cluster-only — routes GPU-capable
+        # child jobs on HPC; local mode is always CPU.
         "device": settings.get("device") or "cpu",
         **scheduler_section,
         "common": {

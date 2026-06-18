@@ -72,6 +72,9 @@ if [ "${gpu}" != "0" ] && [ -n "${gpu}" ]; then
     else
         env_opts+=(-v "PMA_DEVICE=gpu${PMA_CONDA_ENV_GPU:+,PMA_CONDA_ENV=${PMA_CONDA_ENV_GPU}}")
     fi
+else
+    # Non-GPU rule: force CPU dispatch when the head job was configured device=gpu.
+    env_opts+=(-v "PMA_DEVICE=cpu")
 fi
 
 declare -a opts=(

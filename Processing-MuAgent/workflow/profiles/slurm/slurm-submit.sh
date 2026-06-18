@@ -11,12 +11,9 @@
 #   $7  jobscript path
 #
 # GPU routing (when $6 > 0): land on $PMA_SLURM_GPU_PARTITION (falls back to the
-# normal partition) with --gres=$PMA_SLURM_GPU_GRES, and provide the GPU env per
-# provider:
-#   PMA_GPU_PROVIDER=container -> run the jobscript inside `singularity exec --nv
-#                                 $PMA_GPU_IMAGE` (the image carries python+rapids)
-#   else (conda-env provider)  -> export PMA_CONDA_ENV=$PMA_CONDA_ENV_GPU so the
-#                                 injected `conda activate` brings up the GPU env
+# normal partition) with --gres=$PMA_SLURM_GPU_GRES, and run the jobscript inside
+# `singularity exec --nv $PMA_GPU_IMAGE` — the pulled container is the only GPU
+# provider (the image carries python+rapids). PMA_DEVICE=gpu selects the GPU path.
 #
 # PMA_SUBMIT_DRY_RUN=1 prints the resolved sbatch command (and any container
 # wrapper) and exits 0 without submitting — used by render/parity tests.
@@ -55,16 +52,17 @@ partition="${PMA_SLURM_PARTITION:-}"
 declare -a gpu_opts=()
 is_gpu=0
 if [ "${gpu}" != "0" ] && [ -n "${gpu}" ]; then
+    # GPU job: land on the GPU partition/gres and run inside the pulled container
+    # (the only GPU provider — the wrapper below exec's the jobscript in the image).
+    # PMA_DEVICE=gpu selects the GPU code path.
     is_gpu=1
     [ -n "${PMA_SLURM_GPU_PARTITION:-}" ] && partition="$PMA_SLURM_GPU_PARTITION"
     [ -n "${PMA_SLURM_GPU_GRES:-}" ] && gpu_opts+=(--gres "$PMA_SLURM_GPU_GRES")
-    if [ "${PMA_GPU_PROVIDER:-}" = "container" ]; then
-        export_spec="ALL,PMA_DEVICE=gpu"
-    else
-        # conda-env GPU provider: override PMA_CONDA_ENV so the injected activation
-        # brings up the GPU env instead of the inherited CPU env.
-        export_spec="ALL,PMA_DEVICE=gpu${PMA_CONDA_ENV_GPU:+,PMA_CONDA_ENV=${PMA_CONDA_ENV_GPU}}"
-    fi
+    export_spec="ALL,PMA_DEVICE=gpu"
+else
+    # Non-GPU rule: force CPU dispatch even when the head job was configured with
+    # device=gpu (PMA_DEVICE=gpu would otherwise inherit via --export=ALL).
+    export_spec="ALL,PMA_DEVICE=cpu"
 fi
 
 declare -a opts=(

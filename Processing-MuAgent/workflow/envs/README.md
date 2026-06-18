@@ -62,5 +62,13 @@ Execution-MuAgent init-machine --processing-repo <Processing-MuAgent> --device b
 Execution-MuAgent provision-env --site-config <site.config> --repo-root <Processing-MuAgent> --device both
 ```
 
+**`executor` importability does not depend on `pip install -e`.** Every job tier puts the repo
+on the path: the head job runs `python -m snakemake` from the repo root (cwd on `sys.path`); CPU
+child jobs inherit `PYTHONPATH=$PMA_REPO_ROOT` (exported by `scripts/launch_runner.sh`) via
+`sbatch`/`qsub --export=ALL`; GPU child jobs get it from the container wrapper's `--env PYTHONPATH`.
+So a submit-time auto-provisioned env (created from the lock, no editable install) still imports
+`executor` in child jobs. `init-machine`'s `pip install -e` is for the interactive
+`Processing-MuAgent`/`executor` console scripts.
+
 Whether S1a runs correction vs pass-through is set in the preprocessing plan
 (`s1a_ambient.method`: default `auto`). See `executor/plan_assembler.py` and `plan_review.md`.

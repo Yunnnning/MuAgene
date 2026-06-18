@@ -209,6 +209,10 @@ class StageSpec:
     inputs: dict[str, str]
     outputs: dict[str, str]
     progress_timeout_hint: float
+    # True iff the run's stages include a GPU-capable one (set by Processing from
+    # _GPU_CAPABLE). execute-spec gates the GPU env preflight on this. Defaults False
+    # for backward-compat with specs written before the field existed.
+    gpu_stages_present: bool = False
 
 
 def utc_now() -> str:
@@ -265,6 +269,7 @@ def load_stage_spec(path: Path | str) -> StageSpec:
         inputs=dict(data.get("inputs") or {}),
         outputs=dict(data.get("outputs") or {}),
         progress_timeout_hint=float(data.get("progress_timeout_hint", 90)),
+        gpu_stages_present=bool(data.get("gpu_stages_present", False)),
     )
 
 
@@ -367,7 +372,7 @@ def verify_stage_outputs(submission: Submission) -> dict[str, dict[str, tuple[bo
     Returns {stage: {output_name: (ok, reason)}}. Only specs that declare outputs
     are checked; a spec with no declared outputs is skipped. The head_job spec is
     verified like any other when Processing-MuAgent has populated it with the
-    target stage's outputs (e.g. a planning ``s0_ingest_execute`` submission), so a
+    target stage's outputs (e.g. a planning ``plan_review_propose`` submission), so a
     clean head-job exit still emits ``stage_output_verified``.
     """
     stage_meta_dir = Path(submission.run_dir) / "internal" / "stage_meta"
@@ -485,6 +490,11 @@ def render_submission_script(
         lines.append(f"export PMA_GPU_IMAGE={_gpu_env['image']}")
     if _envs.get("singularity_module"):
         lines.append(f"export PMA_SINGULARITY_MODULE={_envs['singularity_module']}")
+    # Optional extra GPU-container bind (site.config common.scratch). The child submit
+    # scripts append it after the repo-root + run-dir binds; without this export it would
+    # only reach the container in manual `source hpc.env` flows, never the delegated path.
+    if site_config.scratch:
+        lines.append(f"export PMA_GPU_BIND={site_config.scratch}")
     if site_config.scheduler == "slurm":
         if site_config.partition:
             lines.append(f"export PMA_SLURM_PARTITION={site_config.partition}")
