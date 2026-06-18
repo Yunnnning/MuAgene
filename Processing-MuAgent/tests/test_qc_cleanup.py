@@ -11,12 +11,16 @@ from executor.cli import _cleanup_qc_intermediates
 from executor.run_paths import RunPaths
 
 
-def _init_run(tmp: str) -> RunPaths:
+def _init_run(tmp: str, *, run_config: dict | None = None) -> RunPaths:
     paths = RunPaths(tmp)
     paths.ensure()
     paths.parameters_yaml.write_text(
         yaml.safe_dump({"plan": {"workflow_branch": "paired"}})
     )
+    if run_config is not None:
+        cfg_path = paths.deliv_config / "run.yaml"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(yaml.safe_dump(run_config))
     return paths
 
 
@@ -86,18 +90,44 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
             for p in kept:
                 self.assertTrue(p.exists(), f"Expected {p} to be preserved")
 
-    def test_deletes_cbf_fragment_caches(self):
-        """The chr-normalised fragment caches (both variants + tabix index, in
-        either qc_explore/ or s2_atac_qc/) are the biggest QC artifact and become
-        dead once QC is approved; S5 reads only their recorded filename, not the
-        file. They must be deleted."""
+    def _make_fragment_caches(self, paths: RunPaths) -> list[Path]:
+        caches: list[Path] = []
+        for stage in ("qc_explore", "s2_atac_qc"):
+            for name in ("atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz"):
+                caches.append(_touch(paths.artifact(stage, name), b"data"))
+                caches.append(_touch(paths.artifact(stage, name + ".tbi"), b"idx"))
+        return caches
+
+    def test_retains_cbf_fragment_caches_by_default(self):
+        """Default (retain_for_integration unset/true): the chr-normalised fragment
+        caches are KEPT past the gate — Integration-MuAgent re-counts them against a
+        consensus peak set, reading their contents, not just the recorded filename."""
         with tempfile.TemporaryDirectory() as tmp:
-            paths = _init_run(tmp)
-            caches = []
-            for stage in ("qc_explore", "s2_atac_qc"):
-                for name in ("atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz"):
-                    caches.append(_touch(paths.artifact(stage, name), b"data"))
-                    caches.append(_touch(paths.artifact(stage, name + ".tbi"), b"idx"))
+            paths = _init_run(tmp)  # no run.yaml -> default retain
+            caches = self._make_fragment_caches(paths)
+
+            deleted = _cleanup_qc_intermediates(Path(tmp))
+
+            for p in caches:
+                self.assertTrue(p.exists(), f"Expected {p} to be retained")
+                self.assertNotIn(str(p), deleted)
+
+    def test_retains_cbf_fragment_caches_when_flag_true(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp, run_config={"retain_for_integration": True})
+            caches = self._make_fragment_caches(paths)
+
+            _cleanup_qc_intermediates(Path(tmp))
+
+            for p in caches:
+                self.assertTrue(p.exists(), f"Expected {p} to be retained")
+
+    def test_deletes_cbf_fragment_caches_when_opted_out(self):
+        """A single-sample-and-done run can set retain_for_integration: false to
+        delete the (large) fragment caches and reclaim disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp, run_config={"retain_for_integration": False})
+            caches = self._make_fragment_caches(paths)
 
             deleted = _cleanup_qc_intermediates(Path(tmp))
 

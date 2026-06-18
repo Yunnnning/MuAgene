@@ -38,6 +38,7 @@ STAGES = [
     "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
     "post_qc_review",
     "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
+    "s_handoff",
 ]
 
 
@@ -57,6 +58,7 @@ include: "rules/s6_neighbors.smk"
 include: "rules/s7_clustering.smk"
 include: "rules/s8_umap.smk"
 include: "rules/manifest.smk"
+include: "rules/s_handoff.smk"
 
 
 # Rules that always run on the orchestrator host (login node or runner head-job),
@@ -83,8 +85,10 @@ localrules:
     s7_clustering_propose,
     s8_umap_propose,
     manifest,
+    s_handoff,
 
 
 rule all:
     input:
         str(RESULTS / "run_manifest.json"),
+        str(RESULTS / "post_qc_manifest.json"),

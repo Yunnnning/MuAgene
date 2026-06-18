@@ -29,7 +29,8 @@ CLUSTER_EXECUTOR_CHOICE = click.Choice(["pbs", "slurm"])
 STAGES = ["p1_context", "plan_review", "s0_ingest",
           "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
           "post_qc_review",
-          "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap"]
+          "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
+          "s_handoff"]
 
 HUMAN_CHECKPOINT_STAGES = ("plan_review", "post_qc_review")
 STAGE_ALIASES = {
@@ -105,6 +106,24 @@ _S1A_REGEN_CACHES = [
 ]
 
 
+def _run_config(run_dir: Path) -> dict:
+    """Best-effort load of the run's canonical run.yaml (returns {} on any failure)."""
+    try:
+        return yaml.safe_load(RunPaths(run_dir).run_yaml.read_text()) or {}
+    except Exception:
+        return {}
+
+
+def _retain_for_integration(run_dir: Path) -> bool:
+    """Whether to KEEP the prepared ATAC fragment caches past the post_qc gate.
+
+    Default True: Integration-MuAgent re-counts fragments against a consensus peak
+    set, so the caches must survive approval. A single-sample-and-done run can set
+    `retain_for_integration: false` in run.yaml to delete them and reclaim the disk.
+    """
+    return bool(_run_config(run_dir).get("retain_for_integration", True))
+
+
 def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
     """Remove large QC-only working files after post_qc_review is approved.
 
@@ -120,10 +139,11 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
         QC, no longer needed once QC is approved).
       - atac_fragments_cbf[_chrnorm].tsv.gz (+ .tbi) — the chr-normalised fragment
         caches written by io.prepare_fragments_for_snapatac. These are the single
-        biggest QC artifact. They are deliberately reused across QC re-runs (hence
-        excluded from _invalidate_qc_downstream), but become dead once QC is
-        approved: S5 reads only the cache *filename* recorded in parameters.yaml to
-        match the peak chrom convention, never the file contents.
+        biggest QC artifact and are RETAINED by default: Integration-MuAgent
+        re-counts them against a consensus peak set (reading their *contents*, not
+        just the cached filename recorded in parameters.yaml), so the old "dead once
+        QC is approved" assumption no longer holds. They are deleted here only when
+        run.yaml sets `retain_for_integration: false` (single-sample run reclaiming disk).
       - tsne_coords_cache.parquet / cell_totals.parquet — S1a recompute caches.
 
     Keeps qc_summary.json, the s1/s2 qc_metrics parquets (the durable QC-metrics
@@ -141,10 +161,14 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
     ]
     # Chr-normalised fragment caches: both naming variants + tabix index, in
     # whichever stage dir they landed in (qc_explore import or an S2 re-derive).
-    for stage in ("qc_explore", "s2_atac_qc"):
-        for name in ("atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz"):
-            targets.append(rp.artifact(stage, name))
-            targets.append(rp.artifact(stage, name + ".tbi"))
+    # RETAINED by default — Integration-MuAgent re-counts them against a consensus
+    # peak set, so it reads their contents (not just the cached filename). Deleted
+    # only when run.yaml opts out via `retain_for_integration: false`.
+    if not _retain_for_integration(run_dir):
+        for stage in ("qc_explore", "s2_atac_qc"):
+            for name in ("atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz"):
+                targets.append(rp.artifact(stage, name))
+                targets.append(rp.artifact(stage, name + ".tbi"))
     # S1a recompute caches (no S1a re-run can happen after approval).
     targets += [rp.artifact(s, f) for (s, f) in _S1A_REGEN_CACHES]
 
