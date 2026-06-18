@@ -7,20 +7,20 @@
 #   $3  threads (cpus-per-task)
 #   $4  mem_mb (memory in megabytes)
 #   $5  runtime in minutes
-#   $6  gpu count (0 for CPU rules; >0 for GPU-capable rules — see resources.smk)
-#   $7  jobscript path
+#   $6  jobscript path
 #
-# GPU routing (when $6 > 0): land on $PMA_SLURM_GPU_PARTITION (falls back to the
-# normal partition) with --gres=$PMA_SLURM_GPU_GRES, and run the jobscript inside
-# `singularity exec --nv $PMA_GPU_IMAGE` — the pulled container is the only GPU
-# provider (the image carries python+rapids). PMA_DEVICE=gpu selects the GPU path.
+# Preprocessing is CPU-only (_GPU_CAPABLE is empty in resources.smk). GPU routing
+# for the integration subagent belongs in the integration pipeline's submit profile.
+# PMA_DEVICE=cpu is always exported to child jobs, overriding any GPU value that
+# the head-job may carry (head job is configured with --device gpu for integration,
+# but preprocessing child jobs must never inherit it).
 #
-# PMA_SUBMIT_DRY_RUN=1 prints the resolved sbatch command (and any container
-# wrapper) and exits 0 without submitting — used by render/parity tests.
+# PMA_SUBMIT_DRY_RUN=1 prints the resolved sbatch command and exits 0 without
+# submitting — used by render/parity tests.
 set -euo pipefail
 
-if [ "$#" -lt 7 ]; then
-    echo "slurm-submit.sh: expected 7 args (rule jobid threads mem_mb runtime gpu jobscript), got $#" >&2
+if [ "$#" -lt 6 ]; then
+    echo "slurm-submit.sh: expected 6 args (rule jobid threads mem_mb runtime jobscript), got $#" >&2
     exit 2
 fi
 
@@ -29,8 +29,7 @@ jobid="$2"
 threads="$3"
 mem_mb="$4"
 runtime_min="$5"
-gpu="${6:-0}"
-jobscript="$7"
+jobscript="$6"
 
 if [ "${PMA_DISABLE_STORAGE_LOCAL_COPIES:-1}" != "0" ]; then
     PYTHONPATH="${PMA_REPO_ROOT}:${PYTHONPATH:-}" python - "$jobscript" <<'PY'
@@ -45,25 +44,10 @@ log_root="${PMA_LOG_DIR:-.snakemake/slurm_logs}"
 log_dir="${log_root}/rule_${rule}"
 mkdir -p "$log_dir"
 
-# Defaults preserve the existing CPU behaviour exactly: --export=ALL on the normal
-# partition. GPU-capable jobs override partition/gres/env below.
-export_spec="ALL"
+# Preprocessing is always CPU. Override PMA_DEVICE=cpu so child jobs do not
+# inherit PMA_DEVICE=gpu from a head job configured with --device gpu.
+export_spec="ALL,PMA_DEVICE=cpu"
 partition="${PMA_SLURM_PARTITION:-}"
-declare -a gpu_opts=()
-is_gpu=0
-if [ "${gpu}" != "0" ] && [ -n "${gpu}" ]; then
-    # GPU job: land on the GPU partition/gres and run inside the pulled container
-    # (the only GPU provider — the wrapper below exec's the jobscript in the image).
-    # PMA_DEVICE=gpu selects the GPU code path.
-    is_gpu=1
-    [ -n "${PMA_SLURM_GPU_PARTITION:-}" ] && partition="$PMA_SLURM_GPU_PARTITION"
-    [ -n "${PMA_SLURM_GPU_GRES:-}" ] && gpu_opts+=(--gres "$PMA_SLURM_GPU_GRES")
-    export_spec="ALL,PMA_DEVICE=gpu"
-else
-    # Non-GPU rule: force CPU dispatch even when the head job was configured with
-    # device=gpu (PMA_DEVICE=gpu would otherwise inherit via --export=ALL).
-    export_spec="ALL,PMA_DEVICE=cpu"
-fi
 
 declare -a opts=(
     --parsable
@@ -76,47 +60,10 @@ declare -a opts=(
 )
 [ -n "${partition}" ] && opts+=(--partition "$partition")
 [ -n "${PMA_SLURM_ACCOUNT:-}" ] && opts+=(--account "$PMA_SLURM_ACCOUNT")
-[ "${#gpu_opts[@]}" -gt 0 ] && opts+=("${gpu_opts[@]}")
-
-# GPU container bind contract — KEEP IDENTICAL in pbs-submit.sh:
-#   A container that runs pipeline code MUST bind BOTH the resolved repo root
-#   (PMA_REPO_ROOT — for launch_runner.sh + the `executor` package on PYTHONPATH)
-#   AND the resolved run directory (PMA_RUN_DIR — for internal/artifacts I/O),
-#   because the run data may sit under a nested mount that singularity's default
-#   $HOME/$PWD auto-mount does not cover. Optional extra binds (PMA_GPU_BIND,
-#   sourced from site.config common.scratch via hpc.env) append after. Producers
-#   resolve these paths (launch_runner.sh / configure-execution), so no re-resolve here.
-# For a GPU container job, submit a thin wrapper that exec's the jobscript inside
-# the image with GPU passthrough; otherwise submit the jobscript directly.
-target="$jobscript"
-if [ "${is_gpu}" = "1" ] && [ "${PMA_GPU_PROVIDER:-}" = "container" ] && [ -n "${PMA_GPU_IMAGE:-}" ]; then
-    if [ -z "${PMA_RUN_DIR:-}" ]; then
-        echo "slurm-submit.sh: WARNING — GPU container job but PMA_RUN_DIR is unset; the run" \
-             "directory will not be bound and the job cannot read inputs / write outputs." \
-             "Ensure launch_runner.sh exported it (a configfile must be on the snakemake CLI)." >&2
-    fi
-    target="${jobscript}.gpuwrap.sh"
-    {
-        echo "#!/usr/bin/env bash"
-        echo "set -euo pipefail"
-        [ -n "${PMA_SINGULARITY_MODULE:-}" ] && echo "module load ${PMA_SINGULARITY_MODULE} 2>/dev/null || true"
-        printf 'exec singularity exec --nv'
-        printf ' --env PYTHONPATH=%q' "${PMA_REPO_ROOT}"
-        printf ' --bind %q' "${PMA_REPO_ROOT}"
-        [ -n "${PMA_RUN_DIR:-}" ] && printf ' --bind %q' "${PMA_RUN_DIR}"
-        [ -n "${PMA_GPU_BIND:-}" ] && printf ' --bind %q' "${PMA_GPU_BIND}"
-        printf ' %q bash %q\n' "${PMA_GPU_IMAGE}" "${jobscript}"
-    } > "$target"
-    chmod +x "$target"
-fi
 
 if [ "${PMA_SUBMIT_DRY_RUN:-0}" != "0" ]; then
-    echo "DRY_RUN sbatch ${opts[*]} ${target}"
-    if [ "$target" != "$jobscript" ]; then
-        echo "--- container wrapper ($target) ---"
-        cat "$target"
-    fi
+    echo "DRY_RUN sbatch ${opts[*]} ${jobscript}"
     exit 0
 fi
 
-exec sbatch "${opts[@]}" "$target"
+exec sbatch "${opts[@]}" "$jobscript"

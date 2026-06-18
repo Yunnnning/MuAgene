@@ -1,14 +1,19 @@
 """Contract test for the GPU-resource growth path (workflow/resources.smk).
 
-Snakemake `default-resources` cannot key off the rule name, so a stage that is in
-`_GPU_CAPABLE` but whose `<stage>_execute` rule omits
-`gpu=RESOURCES["<stage>"]["gpu"]` would silently fall back to the profile default
-(gpu=0) and request NO GPU. This test enforces the 3-edit growth contract documented
-in resources.smk: every _GPU_CAPABLE stage must declare its own `gpu=` resource.
+Preprocessing is CPU-only (_GPU_CAPABLE is empty). The preprocessing submit profiles
+(slurm/pbs) do not pass a gpu resource to the scheduler — {resources.gpu} was removed
+because no preprocessing stage uses it and Snakemake's default-resources fallback is
+unreliable across versions.
 
-The set is empty today (preprocessing is CPU-only), so the contract check is
-vacuously green; the second test verifies the checker itself so it fails loud the
-moment the integration subagent adds a GPU stage without the declaration.
+When a stage is added to _GPU_CAPABLE in the future, the submit profiles must be
+re-wired to accept and route a gpu resource (see resources.smk step 2 comment), AND
+that stage's execute rule must declare gpu=RESOURCES[stage]["gpu"]. This test enforces
+the second half of that contract: every _GPU_CAPABLE stage must declare its own gpu=
+resource in its execute rule.
+
+The set is empty today, so the contract check is vacuously green; the second test
+verifies the checker itself so it fails loud the moment a GPU stage is added without
+the declaration.
 """
 import importlib.machinery
 import importlib.util
