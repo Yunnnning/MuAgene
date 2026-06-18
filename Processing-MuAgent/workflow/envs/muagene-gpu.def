@@ -1,0 +1,48 @@
+# Singularity/Apptainer recipe for the MuAgene GPU env — the SINGLE source of truth
+# for what the GPU container contains (there is intentionally no parallel conda YAML;
+# the %post list below is the manifest).
+#
+# PULL-ONLY, NEVER BUILT ON A TARGET MACHINE. This recipe is built + pushed ONCE,
+# centrally, by a maintainer (see scripts/build_and_push_gpu_image.sh) and published to
+# a registry as a pinned image. Every machine then PULLS that image — Execution-MuAgent
+# `provision-env`/`init-machine` run `singularity pull <image> <gpu_image_uri>`, never
+# `singularity build`. This removes the --fakeroot/subuid requirement from the per-
+# machine setup path entirely. GPU-capable child jobs run inside the pulled image via
+# `singularity exec --nv` (see workflow/profiles/*/{slurm,pbs}-submit.sh).
+#
+# Why a container (not a conda env): the full RAPIDS + single-cell conda solve OOMs
+# even at 62 GB / hits channel errors. NVIDIA's prebuilt RAPIDS base image carries a
+# known-good cudf/cuml/cupy/CUDA stack; we add the single-cell libs on top with pip.
+#
+# Central build + publish (maintainer, out of band — NOT part of machine setup):
+#   bash scripts/build_and_push_gpu_image.sh docker://<registry>/muagene-gpu:25.04
+# Bump the tag deliberately on any change here; republishing a new tag is what flips
+# every machine's GPU env to `stale` (the fingerprint is the pinned image reference,
+# not this file's hash). The lab's gpu partition is RTX A5000 (Ampere, sm_86) — any
+# recent driver supports this CUDA 12 image.
+Bootstrap: docker
+From: rapidsai/base:25.04-cuda12.5-py3.11
+
+%labels
+    org.muagene.role gpu-compute-env
+    org.muagene.base rapidsai/base:25.04-cuda12.5-py3.11
+
+%post
+    set -eu
+    # rapids-singlecell provides the GPU drop-ins (pp.scrublet/pp.pca/pp.neighbors/
+    # tl.leiden/tl.umap/pp.harmony_integrate); the rest mirror the CPU env so a stage
+    # produces equivalent output on either device. snapatac2 stays CPU within the job;
+    # snakemake is needed because each child jobscript re-enters `snakemake --mode
+    # subprocess`. R/DecontX/SoupX are intentionally absent (S1a is CPU-only).
+    pip install --no-cache-dir \
+        rapids-singlecell \
+        scanpy anndata mudata muon snapatac2 scrublet \
+        leidenalg umap-learn scikit-learn pyarrow \
+        snakemake snakemake-executor-plugin-cluster-generic papermill
+
+%test
+    # Fail the build loudly if the GPU drop-in or core libs are missing.
+    python -c "import rapids_singlecell as rsc, scanpy, scrublet, snapatac2; assert hasattr(rsc.pp, 'scrublet')"
+
+%runscript
+    exec "$@"

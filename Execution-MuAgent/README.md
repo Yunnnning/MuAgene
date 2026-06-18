@@ -12,7 +12,7 @@ Processing-MuAgent and Execution-MuAgent share a two-file contract:
 
 | File | Written by | Read by | Contains |
 |------|-----------|---------|----------|
-| `deliverables/plan/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition/queue, account/QOS, conda env or container, resource scale |
+| `deliverables/plan/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition/queue, account/QOS, **compute device + GPU routing**, env identity, resource scale, and the **`environments:`** provisioning recipe (provider + definition per device) |
 | `internal/stage_meta/head_job.yaml` | Processing-MuAgent (`submit`) | Execution-MuAgent | Head-job submission spec: resources (CPU/mem/walltime), input config path, progress_timeout_hint, snakemake_target |
 | `internal/stage_meta/<stage>.yaml` | Processing-MuAgent (`plan-review`) | Execution-MuAgent (monitoring) | Per-stage metadata: science_description, resources, inputs/outputs, progress_timeout_hint. Not submitted — used for output validation and monitoring hints. |
 
@@ -66,7 +66,29 @@ Prints `<run_dir>/internal/hpc_monitor/latest_report.md` — the findings and di
 Execution-MuAgent report --run-dir /path/to/run
 ```
 
-`report` is the only command a human uses to inspect what Execution-MuAgent found. `execute-spec` and `resume-monitor` are machine entry points invoked by Processing-MuAgent. There are no manual-submission, registration, or standalone-monitor commands beyond these three.
+`report` is the human-facing diagnostic command; `execute-spec` and `resume-monitor` are machine entry points invoked by Processing-MuAgent. There is no manual-submission path beyond these.
+
+### `init-machine` / `provision-env` / `validate-env` / `doctor` — environment provisioning (runtime infra)
+
+Environment setup/management is Execution-MuAgent's responsibility (it owns the non-scientific runtime layer). Processing-MuAgent authors *what* the science needs — the env definitions/lock/`.def` in its repo and the `environments:` recipe; Execution-MuAgent makes them real on whatever machine, validates them, records a fingerprint, and reconciles when the definition (or the published image tag) changes. The env-definition *paths* live in one committed file, `<Processing-MuAgent>/workflow/envs/manifest.yaml`, read by both agents.
+
+```bash
+# Fresh machine — ONE bootstrap command (operator-facing; see "Install" for the prerequisite env):
+Execution-MuAgent init-machine --processing-repo <Processing-MuAgent> \
+  --device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag> --singularity-module <module>
+# -> probes the host, writes ~/.muagene/machine.config, creates the CPU env from the lock,
+#    installs both packages into it, pulls the GPU image, validates.
+
+# Per-device make/verify. --site-config is OPTIONAL: omit it once the machine is bootstrapped
+# (the recipe is synthesized from machine.config + the manifest); pass it to use a run's config.
+Execution-MuAgent provision-env [--site-config <site.config>] [--repo-root <Processing-MuAgent>] --device cpu|gpu|both
+Execution-MuAgent validate-env  [--site-config <site.config>] [--repo-root <Processing-MuAgent>] --device ...
+Execution-MuAgent doctor        [--site-config <...>] [--repo-root <...>]   # capabilities + env validation
+```
+
+- **CPU env** = conda-lock lockfile (linux-only; a non-linux host fails loud with `platform_unsupported`, never a silent solve). **GPU env** = a pinned container image **pulled** from a registry (`gpu_image_uri`) — built + published centrally from `muagene-gpu.def`, **never built on a target machine** (so no `--fakeroot`/subuid step). Provider/paths come from the `environments:` recipe / the manifest; the registry ref + env names come from machine.config.
+- **Fingerprint contract.** The *required* fingerprint is the provider's identity — the lock *content* (CPU) or the pinned image *reference* (GPU) — and the *provisioned* one is recorded in `~/.muagene/env_state.json`. Editing the lock, or republishing a new image tag, flips the env to **stale** → the next submit re-provisions it.
+- **Auto-provision.** `execute-spec` runs an env preflight before submitting: `policy: auto` (default) provisions a missing/stale env automatically; `policy: manual` fails loud with the exact `provision-env` command. A GPU job is never submitted to a CPU-only env — `validate-env` import-checks `rapids_singlecell`/`cupy` and fails loud (never silently degrade to CPU). A stale lock (YAML newer than the lock) fails loud with `lock_stale_vs_yaml`.
 
 ## Monitoring state machine
 
@@ -110,6 +132,7 @@ Gathered when entering SUSPECT:
 | Scheduler state | sacct/squeue (already in snapshot) | Not in FAILED_STATES |
 | Error markers | Log tails (already in snapshot) | None found |
 | CPU utilization | `sstat` (SLURM, best-effort) | CPU time advancing between checks |
+| GPU utilization (device=gpu only) | `sstat` gpu TRES on the child jobs (best-effort) | GPU util > 5% — a busy GPU with an idle CPU is normal mid-kernel |
 | Filesystem responsiveness | `os.stat()` in thread, 5 s timeout | Returns within timeout |
 | Child storage hang | Child log "Storing output in storage." | Not present |
 
@@ -122,8 +145,11 @@ Liveness is judged by **CPU activity between checks**, not mere presence: a fini
 3. Child RUNNING + "Storing output in storage." → `fs_hang`
 4. Filesystem probe timed out → `fs_hang`
 5. CPU advancing since the last check → `recovered`
+5b. GPU utilisation > 5% (`device=gpu`, best-effort) → `recovered` — a busy GPU with an idle CPU is normal mid-kernel; only fires when the cluster exposes GPU TRES, so it prevents a kill but never causes one
 6. Filesystem responsive + scheduler RUNNING + a measured-flat CPU sample → `confirmed_dead` (catches a lingering/deadlocked process)
 7. No prior sample yet / no reading → `recovered` (conservative default; a kill needs two samples)
+
+GPU child jobs are discovered, hang-detected, and killed-on-hang by the **same** daemon and rules as CPU jobs; the only GPU-specific signal is rule 5b. Two refinements are deferred to the integration effort (when GPU stages actually run): treating CPU-idle as non-fatal for a `device=gpu` job when GPU TRES is *unavailable* (today rule 6 could still fire), and PBS GPU supervision (the probe is SLURM-only).
 
 ### Output verification (per step + terminal)
 
@@ -134,7 +160,7 @@ Output verification is proper — not a folder/size check. `verify_output_file` 
 
 Because stages write outputs atomically (`/tmp` stage + fsync + `os.rename`), a file present at its final path is complete, so a valid signature plus non-zero size is a strong correctness signal.
 
-**Per step (normal progress):** on every check the monitor verifies each spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage (e.g. a planning `s0_ingest_execute` submission), so a clean head-job exit still emits this finding instead of leaving `verified_stages` empty. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
+**Per step (normal progress):** on every check the monitor verifies each spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage (e.g. a planning `plan_review_propose` submission), so a clean head-job exit still emits this finding instead of leaving `verified_stages` empty. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
 
 **Terminal:** when the head-job reaches COMPLETED, `validate_terminal_outputs` runs the same verifier over every `internal/stage_meta/<stage>.yaml` (excluding `head_job.yaml`). Any missing, empty, or corrupt output is reported as `output_missing` — a COMPLETED scheduler state with an unverifiable output is treated as a failure.
 
@@ -245,24 +271,51 @@ outputs:
 ```yaml
 schema_version: '1'
 scheduler: slurm       # slurm | pbs
+device: gpu            # cpu (default) | gpu — routes GPU-capable stages to the GPU env/partition
 slurm:
   partition: cpu-medium
   account: vaquerizas-lab
   qos: null
+  gpu_partition: gpu           # GPU-capable child jobs land here
+  gpu_gres: gpu:A5000:1        # --gres for those jobs
 common:
   resources_scale: 2
-  conda_env: muagene
-  container: null      # path to .sif for Apptainer/Singularity, or null
+  conda_env: muagene           # CPU env identity
+  gpu_conda_env: muagene-gpu   # GPU env identity (also labels the image)
+  container: null
   scratch: null
+environments:                  # HOW each device's env is provisioned (consumed by provision-env).
+                               # Paths come from <repo>/workflow/envs/manifest.yaml (single source);
+                               # configure-execution auto-fills manager/module/image_uri from machine.config.
+  manager: mamba               # micromamba|mamba|conda (null -> Execution auto-detects)
+  container_runtime: singularity
+  singularity_module: singularityce/3.11.3   # module to load before pull/exec (optional)
+  policy: auto                 # auto = re-provision on missing/stale; manual = fail loud
+  cpu:
+    provider: lock             # lock | yaml | container  (linux-only; lock is what installs)
+    definition: workflow/envs/processing.yaml
+    lock: workflow/envs/processing.linux-64.lock
+    imports: workflow/envs/muagene.imports.txt
+  gpu:
+    provider: container        # PULL-ONLY — pulled from image_uri, never built on this machine
+    definition: workflow/envs/muagene-gpu.def   # the central-build recipe (provenance)
+    image: ~/.muagene/images/muagene-gpu.sif    # local .sif the image is pulled to
+    image_uri: docker://<registry>/muagene-gpu:25.04   # pinned ref it is pulled FROM
+    imports: workflow/envs/muagene-gpu.imports.txt
 ```
 
-`hpc.env` is derived from this file by Processing-MuAgent and cannot drift from it.
+PBS GPU sites set `pbs.gpu_select_extra` (e.g. `ngpus=1`) and optionally `pbs.gpu_queue` instead of the slurm gpu keys. `hpc.env` is derived from this file by Processing-MuAgent and cannot drift from it. Env *identity* lives in `common.conda_env`/`gpu_conda_env` (and the GPU `image_uri`); the `environments:` section is the *provisioning recipe* — no duplication.
 
 ## Install
 
+Execution-MuAgent is intentionally lightweight (deps: `click` + `pyyaml` only), so it installs into a **minimal bootstrap env** on a fresh machine — it does not need the science stack. This is the env you run `init-machine` from; `init-machine` then creates the heavy `muagene` CPU env and installs both packages into *that*.
+
 ```bash
-cd /path/to/Execution-MuAgent
-pip install -e .
+# Minimal bootstrap env (any manager), then install Execution-MuAgent into it:
+mamba create -n muagene-exec python=3.11 pip -y
+mamba run -n muagene-exec pip install -e /path/to/Execution-MuAgent
+# Then bootstrap the machine (creates the muagene science env, installs both packages there):
+mamba run -n muagene-exec Execution-MuAgent init-machine --processing-repo /path/to/Processing-MuAgent --device cpu
 ```
 
-Requires Python 3.10+, `click>=8.1`, `pyyaml>=6`.
+Requires Python 3.10+, `click>=8.1`, `pyyaml>=6`. (`init-machine` also installs Execution-MuAgent into the `muagene` env so `Processing-MuAgent submit` can spawn it there.)

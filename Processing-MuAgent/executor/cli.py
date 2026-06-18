@@ -370,6 +370,36 @@ def hpc_info() -> None:
 @click.option("--resources-scale", default=None, type=float,
               help="Memory/walltime scale factor (PMA_RESOURCES_SCALE).")
 @click.option("--conda-env", default=None, help="Conda env name for cluster jobs (PMA_CONDA_ENV).")
+@click.option("--device", type=click.Choice(["cpu", "gpu"]), default="cpu", show_default=True,
+              help="Compute device for GPU-capable stages (compute.device). 'gpu' is cluster-only "
+                   "(--mode pbs|slurm + submit): routes those stages to the GPU partition/gres and "
+                   "container; local mode (--mode local) is always CPU.")
+@click.option("--gpu-partition", default=None,
+              help="SLURM GPU partition for GPU-capable stages (PMA_SLURM_GPU_PARTITION).")
+@click.option("--gpu-gres", default=None,
+              help="SLURM GPU gres request, e.g. gpu:A5000:1 (PMA_SLURM_GPU_GRES). Run hpc-info to discover.")
+@click.option("--pbs-gpu-select-extra", default=None,
+              help="PBS select-chunk GPU suffix for GPU-capable stages, e.g. 'ngpus=1' or "
+                   "'ngpus=1:gpu_type=a100' (PMA_PBS_GPU_SELECT_EXTRA).")
+@click.option("--gpu-queue", default=None,
+              help="Optional separate PBS GPU queue for GPU-capable stages (PMA_PBS_GPU_QUEUE).")
+@click.option("--gpu-conda-env", default=None,
+              help="Conda env activated for GPU child jobs (PMA_CONDA_ENV_GPU), e.g. muagene-gpu.")
+@click.option("--gpu-image", default=None,
+              help="Machine-local path the GPU .sif is pulled to (default ~/.muagene/images/muagene-gpu.sif).")
+@click.option("--gpu-image-uri", default=None,
+              help="Pinned registry reference the GPU image is PULLED from, e.g. "
+                   "docker://<registry>/muagene-gpu:<tag>. No machine builds the image locally. "
+                   "Defaults to machine.config gpu_image_uri.")
+@click.option("--singularity-module", default=None,
+              help="Module to `module load` before singularity exec (e.g. singularityce/3.11.3). "
+                   "Defaults to machine.config singularity_module.")
+@click.option("--scratch", default=None,
+              help="Optional node-local/fast scratch path to bind into the GPU container "
+                   "(exported as PMA_GPU_BIND). The run directory and repo root are always "
+                   "bound; this is for extra paths a stage writes outside the run dir.")
+@click.option("--env-policy", type=click.Choice(["auto", "manual"]), default="auto", show_default=True,
+              help="On a missing/stale env at submit: auto-provision (default) or fail loud with the command.")
 def configure_execution(
     config_path: str,
     mode: str,
@@ -380,6 +410,17 @@ def configure_execution(
     slurm_account: str | None,
     resources_scale: float | None,
     conda_env: str | None,
+    device: str,
+    gpu_partition: str | None,
+    gpu_gres: str | None,
+    pbs_gpu_select_extra: str | None,
+    gpu_queue: str | None,
+    gpu_conda_env: str | None,
+    gpu_image: str | None,
+    gpu_image_uri: str | None,
+    singularity_module: str | None,
+    scratch: str | None,
+    env_policy: str,
 ) -> None:
     """Record execution mode and write deliverables/plan/config/site.config + hpc.env."""
     run_dir = _resolve_run_dir(config_path)
@@ -395,6 +436,21 @@ def configure_execution(
         "execution.mode", mode,
         source="user", confidence="high",
         rationale=f"Execution backend set via configure-execution --mode {mode}.",
+    )
+
+    if mode == "local" and device == "gpu":
+        raise click.ClickException(
+            "GPU is cluster-only: --device gpu requires --mode pbs or slurm (use submit). "
+            "Local runs use --mode local with the default --device cpu.")
+
+    # On HPC, gpu routes GPU-capable stages to the GPU partition/gres and container
+    # (see workflow/resources.smk _GPU_CAPABLE). Stages that are not GPU-capable
+    # always run on CPU regardless of this setting. Local mode is CPU-only.
+    provenance.set_param(
+        params_path,
+        "compute.device", device,
+        source="user", confidence="high",
+        rationale=f"Compute device set via configure-execution --device {device}.",
     )
 
     # Explicit, auditable record of whether the USER confirmed this execution mode.
@@ -437,6 +493,10 @@ def configure_execution(
             err=True,
         )
 
+    # Machine-level infra knobs default from ~/.muagene/machine.config (written once by
+    # Execution-MuAgent `init-machine`), so the operator doesn't re-type manager/module/
+    # image/env names per run. Precedence: explicit flag > machine.config > env var.
+    mc = hpc.load_machine_config()
     settings: dict[str, str | None] = {
         "pbs_queue": pbs_queue or os.environ.get("PMA_PBS_QUEUE"),
         "pbs_project": pbs_project or os.environ.get("PMA_PBS_PROJECT"),
@@ -446,11 +506,28 @@ def configure_execution(
             str(int(resources_scale)) if resources_scale is not None
             else os.environ.get("PMA_RESOURCES_SCALE")
         ),
-        "conda_env": conda_env or os.environ.get("PMA_CONDA_ENV") or os.environ.get("CONDA_DEFAULT_ENV"),
+        "conda_env": (conda_env or mc.get("conda_env") or os.environ.get("PMA_CONDA_ENV")
+                      or os.environ.get("CONDA_DEFAULT_ENV")),
+        "device": device,
+        "slurm_gpu_partition": gpu_partition or os.environ.get("PMA_SLURM_GPU_PARTITION"),
+        "slurm_gpu_gres": gpu_gres or os.environ.get("PMA_SLURM_GPU_GRES"),
+        "pbs_gpu_select_extra": pbs_gpu_select_extra or os.environ.get("PMA_PBS_GPU_SELECT_EXTRA"),
+        "pbs_gpu_queue": gpu_queue or os.environ.get("PMA_PBS_GPU_QUEUE"),
+        "gpu_conda_env": gpu_conda_env or mc.get("gpu_conda_env") or os.environ.get("PMA_CONDA_ENV_GPU"),
+        "gpu_image": gpu_image or mc.get("gpu_image") or os.environ.get("PMA_GPU_IMAGE"),
+        "gpu_image_uri": gpu_image_uri or mc.get("gpu_image_uri") or os.environ.get("PMA_GPU_IMAGE_URI"),
+        "singularity_module": (singularity_module or mc.get("singularity_module")
+                               or os.environ.get("PMA_SINGULARITY_MODULE")),
+        # Optional extra GPU-container bind (-> PMA_GPU_BIND). Flag > machine.config > env.
+        "scratch": scratch or mc.get("scratch") or os.environ.get("PMA_GPU_BIND"),
+        # Detected infra: None lets Execution auto-detect; machine.config pins them.
+        "env_manager": mc.get("manager"),
+        "container_runtime": mc.get("container_runtime"),
+        "env_policy": env_policy or mc.get("policy") or "auto",
     }
 
     if mode == "local":
-        click.echo("Execution mode: local (no hpc.env written).")
+        click.echo(f"Execution mode: local (device={device}; no hpc.env written).")
         return
 
     if mode == "pbs" and not settings["pbs_queue"]:
@@ -459,6 +536,35 @@ def configure_execution(
     if mode == "slurm" and not settings["slurm_partition"]:
         raise click.ClickException(
             "SLURM mode requires --slurm-partition or PMA_SLURM_PARTITION in the environment.")
+
+    # GPU routing prerequisites (cluster-only; preprocessing stages are CPU-only —
+    # _GPU_CAPABLE is empty until the integration subagent adds stages). Fail loud
+    # rather than silently submitting with a misconfigured partition/env.
+    if device == "gpu":
+        click.echo(
+            "NOTE: --device gpu prepares cluster GPU routing for the integration "
+            "subagent (future). Processing-MuAgent preprocessing is CPU-only.",
+            err=True,
+        )
+        # SLURM GPU is container-only: the job runs inside the PULLED image, so fail
+        # loud now if the pinned image reference is missing rather than writing
+        # image_uri: null and only discovering it at provision/submit
+        # (gpu_image_unavailable). PBS GPU is deferred — it keeps a conda-env fallback
+        # for now; apply the same check when PBS goes container-only.
+        if mode == "slurm" and not settings["gpu_image_uri"]:
+            raise click.ClickException(
+                "SLURM --device gpu requires --gpu-image-uri — a pinned registry reference the GPU "
+                "image is PULLED from (e.g. docker://<registry>/muagene-gpu:<tag>) — or gpu_image_uri "
+                "in ~/.muagene/machine.config (set once via `Execution-MuAgent init-machine`). "
+                "No machine builds the image locally.")
+        if mode == "slurm" and not settings["slurm_gpu_gres"]:
+            raise click.ClickException(
+                "SLURM --device gpu requires --gpu-gres (e.g. gpu:A5000:1). Run `hpc-info` to discover "
+                "the GPU partition/gres on this cluster.")
+        if mode == "pbs" and not settings["pbs_gpu_select_extra"]:
+            settings["pbs_gpu_select_extra"] = "ngpus=1"
+            click.echo("NOTE: --device gpu on PBS without --pbs-gpu-select-extra; defaulting to 'ngpus=1'.",
+                       err=True)
 
     site_cfg = hpc.write_site_config(paths.site_config, mode=mode, settings=settings)
     out = hpc.write_hpc_env(paths.hpc_env_sh, paths.site_config)
@@ -469,6 +575,52 @@ def configure_execution(
     click.echo(f"Wrote {out}  (derived from site.config)")
     click.echo("Source this file in your shell before submit/run on the cluster:")
     click.echo(f"  source {out}")
+
+
+@main.command(name="regenerate-locks")
+@click.option("--platform", "platforms", multiple=True, default=("linux-64",), show_default=True,
+              help="conda platform(s) to lock for. MuAgene is linux-only; default linux-64.")
+def regenerate_locks(platforms: tuple[str, ...]) -> None:
+    """Regenerate the CPU conda-lock lockfile from workflow/envs/processing.yaml.
+
+    The YAML is the human source of truth; the committed lock is what actually gets
+    installed (solve-free, reproducible). Run this AFTER editing processing.yaml, then
+    COMMIT the refreshed lock — `validate-env`/`submit` fail loud (`lock_stale_vs_yaml`)
+    when the YAML's content hash no longer matches the lock's recorded `# source-sha256:`.
+    Lock generation is a science-authoring act, so it lives in Processing-MuAgent.
+    Requires conda-lock: `pip install 'Processing-MuAgent[dev]'`.
+    """
+    import hashlib
+    import shutil
+    import subprocess
+
+    man = hpc.load_env_manifest()
+    cpu = man.get("cpu") or {}
+    yaml_path = hpc.REPO_ROOT / cpu["definition"]
+    work = (hpc.REPO_ROOT / cpu["lock"]).parent
+    if not yaml_path.exists():
+        raise click.ClickException(f"CPU env YAML not found: {yaml_path}")
+    if not shutil.which("conda-lock"):
+        raise click.ClickException(
+            "conda-lock not found. Install dev deps:  pip install 'Processing-MuAgent[dev]'  "
+            "(or: pip install conda-lock).")
+    # Stamp the lock with the YAML's content hash; the env preflight compares this (not
+    # mtimes — git doesn't preserve those) to detect a lock that drifted from the YAML.
+    src_hash = hashlib.sha256(yaml_path.read_bytes()).hexdigest()
+    for plat in platforms:
+        click.echo(f"conda-lock --kind explicit -p {plat} -f {yaml_path}")
+        try:
+            subprocess.run(["conda-lock", "--kind", "explicit", "-f", str(yaml_path), "-p", plat],
+                           cwd=str(work), check=True)
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise click.ClickException(f"conda-lock failed for {plat}: {exc}")
+        produced = work / f"conda-{plat}.lock"        # conda-lock's default explicit name
+        dest = work / f"processing.{plat}.lock"        # the manifest's convention
+        if produced.exists():
+            produced.replace(dest)
+        dest.write_text(f"# source-sha256: {src_hash}\n" + dest.read_text())
+        click.echo(f"wrote {dest}")
+    click.echo("Lockfile(s) regenerated. Commit them alongside processing.yaml.")
 
 
 @main.command()
@@ -1129,8 +1281,8 @@ def _prepare_submit_approvals(
                    "For local foreground runs use `run` (which is local-only).")
 @click.option("--target", default=None,
               help="Override the Snakemake target. Omit to auto-infer the first "
-                   "incomplete step (e.g. s0_ingest_execute for planning, "
-                   "s2_atac_qc_execute, post_qc_review_propose, all).")
+                   "incomplete step (e.g. plan_review_propose for planning, "
+                   "post_qc_review_propose, all).")
 @click.option("--no-context", is_flag=True,
               help="Explicit user choice to proceed without biological context (planning "
                    "submissions only); fields marked status=missing.")

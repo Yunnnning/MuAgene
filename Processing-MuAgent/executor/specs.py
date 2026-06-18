@@ -245,6 +245,22 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
     io = _STAGE_IO.get(stage_stem) if stage_stem != target else None
     outputs = _resolve_io(io["outputs"], str(run_dir_path)) if io else {}
 
+    # GPU preflight gating: tell Execution whether this run's stages actually include a
+    # GPU-capable one (single source = _GPU_CAPABLE in resources.smk). execute-spec skips
+    # the GPU env reconcile/pull when this is False, so a device=gpu run with no GPU
+    # consumer (preprocessing today — _GPU_CAPABLE is empty) never pulls the container for
+    # nothing. Per target: a single <stage>_execute → that stage; a multi-stage target
+    # (all / *_propose) → the whole branch DAG (planning stages are CPU).
+    res_mod = _load_resources_smk()
+    gpu_capable: set[str] = getattr(res_mod, "_GPU_CAPABLE", set())
+    if stage_stem != target:
+        target_stages = {stage_stem}
+    else:
+        from . import provenance
+        branch = provenance.current_branch(str(paths.parameters_yaml))
+        target_stages = set(_BRANCH_STAGES.get(branch, _BRANCH_STAGES["paired"]))
+    gpu_stages_present = bool(gpu_capable & target_stages)
+
     spec: dict[str, Any] = {
         "schema_version": "1",
         "stage": "head_job",
@@ -260,6 +276,10 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
         "outputs": outputs,
         "progress_timeout_hint": 120,  # 2 h silence on a Snakemake orchestrator is suspicious
         "snakemake_target": target,
+        # True iff this run's stages include a GPU-capable one (_GPU_CAPABLE ∩ stages).
+        # Execution's execute-spec gates the GPU env preflight on this — no GPU consumer,
+        # no container pull. Empty _GPU_CAPABLE (preprocessing) → always False today.
+        "gpu_stages_present": gpu_stages_present,
     }
     out = paths.stage_meta("head_job")
     out.write_text(yaml.safe_dump(spec, default_flow_style=False, sort_keys=False))

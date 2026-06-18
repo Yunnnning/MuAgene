@@ -129,13 +129,10 @@ def _atac_threshold_table(
         "nucleosome_signal_max": _param(params, "s2_atac_qc.nucleosome_signal_max"),
         "frip_min": _param(params, "s2_atac_qc.frip_min"),
     }
-    frip_display = (
-        f"< {_fmt(th['frip_min'])}" if peak_source
-        else f"< {_fmt(th['frip_min'])} _(not applied — no peaks available)_"
-    )
     return _qc_tables.atac_removal_table(
         th, rm, include_note=False,
-        frip_threshold_display=frip_display, frip_removed=_rm_count(rm, "frip_min"),
+        peak_source=peak_source,
+        frip_removed=_rm_count(rm, "frip_min"),
     )
 
 

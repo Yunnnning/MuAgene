@@ -604,11 +604,10 @@ def _rna_table(data: dict[str, Any]) -> str:
 
 
 def _atac_table(data: dict[str, Any]) -> str:
-    th = data["thresholds"]
     return _qc_tables.atac_removal_table(
-        th, data["cells_removed"],
+        data["thresholds"], data["cells_removed"],
         include_note=True,
-        frip_threshold_display=f"< {_fmt(th['frip_min'])} _(computed at runtime)_",
+        frip_runtime_note=True,
         frip_removed="—",
     )
 

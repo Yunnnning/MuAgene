@@ -14,8 +14,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 export PMA_REPO_ROOT="${PMA_REPO_ROOT:-$REPO_ROOT}"
 
-# Activate the project conda env. Allow override via PMA_CONDA_ENV.
-CONDA_ENV="${PMA_CONDA_ENV:-grn}"
+# Put the repo on PYTHONPATH so `import executor` resolves from source in EVERY job tier —
+# this process AND the child jobs snakemake submits (they inherit it via sbatch/qsub
+# --export=ALL). The head job already finds executor via cwd=repo_root and GPU child jobs
+# via the container wrapper's --env PYTHONPATH; this closes the CPU child-job gap so a
+# submit-time auto-provisioned env (created from the lock, no `pip install -e`) still
+# imports executor. init-machine's editable install remains for interactive console scripts.
+export PYTHONPATH="${PMA_REPO_ROOT}:${PYTHONPATH:-}"
+
+# Activate the project conda env. Identity comes from PMA_CONDA_ENV (set by
+# configure-execution); `muagene` is the canonical default for a fresh install.
+CONDA_ENV="${PMA_CONDA_ENV:-muagene}"
+if [ -z "${PMA_CONDA_ENV:-}" ]; then
+    echo "launch_runner.sh: PMA_CONDA_ENV unset; defaulting to '$CONDA_ENV'. Set it with" \
+         "configure-execution --conda-env <name> (or provision it via Execution-MuAgent provision-env)." >&2
+fi
 
 if command -v micromamba >/dev/null 2>&1; then
     # shellcheck disable=SC1091
@@ -55,7 +68,7 @@ for arg in "$@"; do
 done
 
 directory_args=()
-if [ "$has_directory_arg" -eq 0 ] && [ -n "$configfile" ]; then
+if [ -n "$configfile" ]; then
     run_dir="$(python - "$configfile" <<'PY'
 import sys
 from pathlib import Path
@@ -66,10 +79,17 @@ with Path(sys.argv[1]).open() as fh:
 print(Path(cfg["run_dir"]).expanduser().resolve())
 PY
 )"
-    snakemake_workdir="${run_dir}/internal/snakemake"
-    mkdir -p "$snakemake_workdir"
-    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${snakemake_workdir}/cache}"
-    directory_args=(--directory "$snakemake_workdir")
+    # Single live source for the run directory: export it so the child-job submit
+    # scripts (spawned by snakemake under this process) can bind it into GPU
+    # containers. Derived from the config here — deliberately NOT projected into
+    # hpc.env, which is a static site.config snapshot a copied path would drift from.
+    export PMA_RUN_DIR="$run_dir"
+    if [ "$has_directory_arg" -eq 0 ]; then
+        snakemake_workdir="${run_dir}/internal/snakemake"
+        mkdir -p "$snakemake_workdir"
+        export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${snakemake_workdir}/cache}"
+        directory_args=(--directory "$snakemake_workdir")
+    fi
 fi
 
 # Cluster profiles: shared-NFS snakemake flags + site-specific SLURM defaults.

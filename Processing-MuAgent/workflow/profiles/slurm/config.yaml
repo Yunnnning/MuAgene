@@ -12,7 +12,7 @@ executor: cluster-generic
 
 cluster-generic-submit-cmd: >-
   ${PMA_REPO_ROOT}/workflow/profiles/slurm/slurm-submit.sh
-  {rule} {jobid} {threads} {resources.mem_mb} {resources.runtime}
+  {rule} {jobid} {threads} {resources.mem_mb} {resources.runtime} {resources.gpu}
 
 cluster-generic-status-cmd: ${PMA_REPO_ROOT}/workflow/profiles/slurm/slurm-status.sh
 
@@ -54,9 +54,14 @@ rerun-triggers:
 default-resources:
   - mem_mb=4000
   - runtime=120
+  # GPU fallback for rules that do NOT declare their own `gpu=` resource (every CPU
+  # stage). A GPU-capable rule must declare `gpu=RESOURCES["<stage>"]["gpu"]` in its
+  # own resources: block — Snakemake default-resources cannot key off the rule name,
+  # so this default applies only to rules that omit it. See workflow/resources.smk.
+  - gpu=0
 
 # Conda envs are not managed by snakemake in v1. The head-job runs inside the
-# project env (`grn`); child rule jobs self-activate it because slurm-submit.sh
+# project env (`muagene`); child rule jobs self-activate it because slurm-submit.sh
 # injects a `conda activate "$PMA_CONDA_ENV"` block into each generated jobscript
 # (see executor.hpc.inject_conda_activation_text). Without that, sbatch
 # --export=ALL would propagate env *variables* but not the activated env, leaving

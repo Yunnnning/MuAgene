@@ -1,0 +1,30 @@
+# Canonical, repo-root-relative environment-definition paths — the SINGLE source of
+# truth for the `environments:` provisioning contract. Read by BOTH agents:
+#   - Processing-MuAgent  executor/hpc.py:build_environments_section  (writes site.config)
+#   - Execution-MuAgent   execution_muagent/machine.py:default_environments_section
+#                         (provision-env / validate-env / init-machine without a site.config)
+#
+# Env *identity* is deliberately NOT here — that is per-machine and lives in
+# machine.config / configure-execution: the conda env NAME (conda_env/gpu_conda_env)
+# and the GPU registry image reference (gpu_image_uri). This file only says, per
+# device, the provider + the in-repo definition / lock / imports paths.
+schema_version: "1"
+
+cpu:
+  provider: lock
+  definition: workflow/envs/processing.yaml         # human source of truth (linux-64)
+  lock: workflow/envs/processing.linux-64.lock      # what actually gets installed (solve-free)
+  imports: workflow/envs/muagene.imports.txt
+
+gpu:
+  # The GPU env is a container. Target machines PULL a pinned, centrally-published
+  # image (machine.config gpu_image_uri) — they never build locally. `definition`
+  # below is the recipe the image is BUILT from centrally, kept for provenance.
+  provider: container
+  definition: workflow/envs/muagene-gpu.def
+  imports: workflow/envs/muagene-gpu.imports.txt
+
+defaults:
+  # Machine-local path where the pulled GPU image lands (overridable per machine via
+  # configure-execution --gpu-image / init-machine --gpu-image).
+  gpu_image: ~/.muagene/images/muagene-gpu.sif

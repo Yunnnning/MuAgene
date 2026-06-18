@@ -69,6 +69,41 @@ def execute_spec(
             f"Spec validation failed with {len(errors)} error(s); not submitting."
         )
 
+    # Environment preflight: make the run's env(s) real + valid before submitting.
+    # CPU env always (head job + CPU stages). GPU env too, but ONLY when device=gpu AND
+    # this run actually has a GPU-capable stage (spec.gpu_stages_present, set by Processing
+    # from _GPU_CAPABLE) — otherwise a device=gpu preprocessing run (no GPU consumer) would
+    # pull the multi-GB container for nothing. Deliberate eager prep stays available via an
+    # explicit `provision-env --device gpu`. policy=auto provisions a missing/stale env;
+    # never silently degrade — a missing/invalid GPU env aborts the submit (it would fail
+    # mid-run otherwise). Old site.configs without an `environments:` section reconcile to
+    # "ok" without action, so existing CPU runs are unaffected.
+    from . import environment
+    gpu_needed = (site_cfg.device or "cpu") == "gpu" and getattr(spec, "gpu_stages_present", False)
+    devices = ["cpu"] + (["gpu"] if gpu_needed else [])
+    env_errors: list[str] = []
+    for dev in devices:
+        try:
+            rec = environment.reconcile(site_cfg, repo_root, dev)
+        except Exception as exc:
+            # A crashed reconcile (corrupt env_state.json, probe/subprocess failure)
+            # must NOT be downgraded to a warning — that would submit a job against an
+            # unverified env (silent degrade). Record it as a hard preflight error so
+            # the `if env_errors` check below aborts before submit_from_spec.
+            env_errors.append(f"{dev}: env preflight crashed: {exc}")
+            click.echo(f"env preflight [{dev}] error: {exc}", err=True)
+            continue
+        if rec.get("provision"):
+            click.echo(f"env preflight [{dev}]: "
+                       f"{rec['provision'].get('action')} -> {rec['provision'].get('status')}")
+        for f in rec.get("findings", []):
+            click.echo(f"env preflight [{dev}] {f['severity']}: {f['message']}", err=True)
+            if f["severity"] == "error":
+                env_errors.append(f"{dev}: {f['message']}")
+    if env_errors:
+        raise click.ClickException(
+            "Environment preflight failed; not submitting:\n  - " + "\n  - ".join(env_errors))
+
     run_dir_path = Path(run_dir).resolve()
     log_dir = run_dir_path / "internal" / "hpc_monitor" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -137,6 +172,7 @@ def execute_spec(
         submitted_at=utc_now(),
         spec_path=str(Path(spec_path).resolve()),
         progress_timeout_hint=spec.progress_timeout_hint,
+        device=site_cfg.device or "cpu",
     )
     registry = register_submission(submission)
     click.echo(f"  monitor registry: {registry}")
@@ -217,6 +253,220 @@ def report(run_dir: str) -> None:
     if not latest.is_file():
         raise click.ClickException(f"No diagnostic report at {latest}")
     click.echo(latest.read_text(encoding="utf-8"))
+
+
+def _provisioning_context(site_config_path: str | None, repo_root: str | None):
+    """Resolve (site_cfg, repo_root) for provision/validate from EITHER an explicit
+    science site.config OR this machine's ~/.muagene/machine.config profile.
+
+    With --site-config: the backward-compatible path (its `environments:` section
+    wins; pre-contract configs still work). Without it: synthesize a site.config from
+    machine.config + the committed env manifest, so a fresh machine can provision
+    before any run/site.config exists — Execution-MuAgent owns infra end to end.
+    """
+    from . import machine
+    mc = machine.load_machine_config()
+    if site_config_path:
+        site_cfg = load_site_config(site_config_path)
+        repo = repo_root or (mc.processing_repo if mc else None)
+        if not repo:
+            raise click.ClickException(
+                "--repo-root is required with --site-config (the Processing-MuAgent repo "
+                "holding env definitions), and no machine.config processing_repo is recorded.")
+        return site_cfg, str(repo)
+    repo = repo_root or (mc.processing_repo if mc else None)
+    if not repo:
+        raise click.ClickException(
+            "No --site-config given and this machine is not bootstrapped. Run "
+            "`Execution-MuAgent init-machine --processing-repo <path>` first, or pass "
+            "--site-config and --repo-root explicitly.")
+    return machine.synthesize_site_config(repo, mc), str(repo)
+
+
+@main.command(name="provision-env")
+@click.option("--site-config", "site_config_path", default=None, type=click.Path(exists=True),
+              help="Optional site.config (its environments: section drives provisioning). "
+                   "Omit to use this machine's ~/.muagene/machine.config profile.")
+@click.option("--repo-root", default=None, type=click.Path(exists=True),
+              help="Processing-MuAgent repo root (holds env definitions/locks/.def). "
+                   "Defaults to machine.config processing_repo.")
+@click.option("--device", type=click.Choice(["cpu", "gpu", "both"]), default="both", show_default=True)
+@click.option("--force", is_flag=True, help="Re-provision even if the env is already present and current.")
+def provision_env_cmd(site_config_path: str | None, repo_root: str | None, device: str, force: bool) -> None:
+    """Make the CPU/GPU env real on THIS machine (idempotent).
+
+    CPU = conda-lock create; GPU = pull a pinned, centrally-published container image
+    (never built locally). Records a fingerprint so a later definition/image change is
+    detected and re-provisioned. Run once per new machine (or via `init-machine`).
+    """
+    from . import environment
+    site_cfg, repo_root = _provisioning_context(site_config_path, repo_root)
+    devices = ["cpu", "gpu"] if device == "both" else [device]
+    failed = False
+    for dev in devices:
+        spec = environment.resolve_env_spec(site_cfg, repo_root, dev)
+        click.echo(f"[{dev}] provider={spec.provider} "
+                   f"target={spec.image or spec.env_name}")
+        res = environment.provision_env(spec, site_cfg, force=force)
+        click.echo(f"[{dev}] {res.get('action', 'noop')} -> {res.get('status')}")
+        if res.get("status") == "failed":
+            click.echo((res.get("stderr") or "")[-1200:], err=True)
+            failed = True
+    if failed:
+        raise click.ClickException("provision-env failed for one or more devices (see above).")
+
+
+@main.command(name="validate-env")
+@click.option("--site-config", "site_config_path", default=None, type=click.Path(exists=True),
+              help="Optional site.config. Omit to use this machine's machine.config profile.")
+@click.option("--repo-root", default=None, type=click.Path(exists=True),
+              help="Processing-MuAgent repo root. Defaults to machine.config processing_repo.")
+@click.option("--device", type=click.Choice(["cpu", "gpu", "both"]), default="both", show_default=True)
+def validate_env_cmd(site_config_path: str | None, repo_root: str | None, device: str) -> None:
+    """Preflight an env without submitting: present + imports its declared modules.
+
+    Nonzero exit on any error finding (e.g. a CPU-only env asked to run GPU work).
+    """
+    from . import environment
+    site_cfg, repo_root = _provisioning_context(site_config_path, repo_root)
+    devices = ["cpu", "gpu"] if device == "both" else [device]
+    ok = True
+    for dev in devices:
+        spec = environment.resolve_env_spec(site_cfg, repo_root, dev)
+        res = environment.validate_env(spec, site_cfg)
+        if not res["findings"]:
+            click.echo(f"[{dev}] OK ({spec.provider})")
+        for f in res["findings"]:
+            click.echo(f"[{dev}] {f['severity']}: {f['message']}")
+        ok = ok and res["ok"]
+    if not ok:
+        raise click.ClickException("validate-env found errors (see above).")
+
+
+@main.command()
+@click.option("--site-config", "site_config_path", default=None, type=click.Path(exists=True),
+              help="Optional: validate the envs declared in this site.config.")
+@click.option("--repo-root", default=None, type=click.Path(exists=True))
+def doctor(site_config_path: str | None, repo_root: str | None) -> None:
+    """Print this machine's capabilities (scheduler, GPU, env manager, container
+    runtime) and validate its envs (from the given site.config, else machine.config)."""
+    import json as _json
+
+    from . import capabilities, environment, machine
+    caps = capabilities.probe_capabilities()
+    click.echo(_json.dumps(caps, indent=2, sort_keys=True))
+    site_cfg = None
+    if site_config_path:
+        site_cfg = load_site_config(site_config_path)
+        repo = repo_root or (machine.load_machine_config() or machine.MachineConfig()).processing_repo
+    else:
+        mc = machine.load_machine_config()
+        repo = repo_root or (mc.processing_repo if mc else None)
+        if mc and repo:
+            site_cfg = machine.synthesize_site_config(repo, mc)
+            click.echo(f"machine profile: {machine.machine_config_path()}")
+    if site_cfg is None or not repo:
+        return
+    for dev in ("cpu", "gpu"):
+        spec = environment.resolve_env_spec(site_cfg, repo, dev)
+        res = environment.validate_env(spec, site_cfg)
+        status = "OK" if res["ok"] else "PROBLEM"
+        click.echo(f"[{dev}] {status} (provider={spec.provider})")
+        for f in res["findings"]:
+            click.echo(f"  {f['severity']}: {f['message']}")
+
+
+@main.command(name="init-machine")
+@click.option("--processing-repo", required=True, type=click.Path(exists=True),
+              help="Sibling Processing-MuAgent repo root (holds env definitions + manifest.yaml).")
+@click.option("--device", type=click.Choice(["cpu", "gpu", "both"]), default="cpu", show_default=True)
+@click.option("--manager", default=None, help="conda env manager (default: auto-detect).")
+@click.option("--container-runtime", default=None, help="apptainer|singularity (default: auto-detect).")
+@click.option("--singularity-module", default=None, help="`module load` name for singularity on HPC.")
+@click.option("--gpu-image", default=None, help="Machine-local .sif path the image pulls to.")
+@click.option("--gpu-image-uri", default=None,
+              help="Pinned registry reference to PULL the GPU image from (required when device "
+                   "includes gpu). No machine builds the image locally.")
+@click.option("--conda-env", default=None, help="CPU env name to create (default muagene).")
+@click.option("--gpu-conda-env", default=None, help="GPU env name (default muagene-gpu).")
+@click.option("--policy", type=click.Choice(["auto", "manual"]), default="auto", show_default=True,
+              help="Submit-time reconcile policy recorded in machine.config.")
+@click.option("--install-processing/--no-install-processing", default=True, show_default=True,
+              help="pip install -e the Processing + Execution packages into the CPU env.")
+@click.option("--force", is_flag=True, help="Re-provision even if envs are already present and current.")
+def init_machine(processing_repo: str, device: str, manager: str | None,
+                 container_runtime: str | None, singularity_module: str | None,
+                 gpu_image: str | None, gpu_image_uri: str | None, conda_env: str | None,
+                 gpu_conda_env: str | None, policy: str, install_processing: bool,
+                 force: bool) -> None:
+    """Make THIS machine ready for MuAgene in one operator-facing command.
+
+    Bootstrap entry point: probes capabilities, writes ~/.muagene/machine.config,
+    provisions the CPU env from the committed lock (NO science site.config needed),
+    installs both agent packages into it, pulls the GPU image if requested, validates,
+    and prints a readiness report. This is the FIRST thing run on a fresh machine —
+    Execution-MuAgent owns non-scientific infrastructure end to end.
+
+    Operator-facing by design: unlike the run-time lifecycle commands (which write
+    findings into internal/hpc_monitor/ and never address the user), init-machine
+    prints structured results to stdout — there is no Processing agent or run dir yet.
+    """
+    from . import environment, machine
+    cfg = machine.detect_machine_config(
+        processing_repo, manager=manager, container_runtime=container_runtime,
+        singularity_module=singularity_module, gpu_image=gpu_image,
+        gpu_image_uri=gpu_image_uri, policy=policy, conda_env=conda_env,
+        gpu_conda_env=gpu_conda_env)
+    mc_path = machine.write_machine_config(cfg)
+    click.echo(f"machine profile: {mc_path}")
+    click.echo(f"  manager={cfg.manager} runtime={cfg.container_runtime} "
+               f"scheduler={cfg.scheduler} gpu_present={cfg.gpu_present}")
+    if cfg.manager is None:
+        raise click.ClickException(
+            "No conda env manager (micromamba/mamba/conda) on PATH; cannot provision. "
+            "Install one (e.g. miniforge) and re-run.")
+
+    devices = ["cpu", "gpu"] if device == "both" else [device]
+    if "gpu" in devices and not cfg.gpu_image_uri:
+        raise click.ClickException(
+            "device includes gpu but no --gpu-image-uri given. The GPU image is PULLED "
+            "from a pinned, centrally-published registry reference — no machine builds it "
+            "locally. Pass --gpu-image-uri docker://<registry>/muagene-gpu:<tag>.")
+
+    failed: list[str] = []
+    for dev in devices:
+        site_cfg = machine.synthesize_site_config(processing_repo, cfg, device=dev)
+        spec = environment.resolve_env_spec(site_cfg, processing_repo, dev)
+        click.echo(f"[{dev}] provider={spec.provider} target={spec.image or spec.env_name}")
+        res = environment.provision_env(spec, site_cfg, force=force)
+        click.echo(f"[{dev}] {res.get('action', 'noop')} -> {res.get('status')}")
+        if res.get("status") == "failed":
+            click.echo((res.get("stderr") or "")[-1200:], err=True)
+            failed.append(dev)
+            continue
+        val = environment.validate_env(spec, site_cfg)
+        for f in val["findings"]:
+            click.echo(f"[{dev}] {f['severity']}: {f['message']}", err=(f["severity"] == "error"))
+        if not val["ok"]:
+            failed.append(dev)
+
+    # Layer the agent packages onto the CPU env so `Processing-MuAgent submit` (which
+    # spawns `python -m execution_muagent`) runs both CLIs from the science env.
+    if install_processing and "cpu" in devices and "cpu" not in failed:
+        cpu_cfg = machine.synthesize_site_config(processing_repo, cfg, device="cpu")
+        env_name = environment.resolve_env_spec(cpu_cfg, processing_repo, "cpu").env_name
+        for label, repo in (("Processing-MuAgent", processing_repo),
+                            ("Execution-MuAgent", machine.EXECUTION_REPO_ROOT)):
+            pres = environment.pip_install_editable(cfg.manager, env_name, repo)
+            click.echo(f"[cpu] pip install -e {label} -> rc={pres.get('returncode')}")
+            if pres.get("returncode") != 0:
+                click.echo((pres.get("stderr") or "")[-800:], err=True)
+                failed.append(f"pip:{label}")
+
+    if failed:
+        raise click.ClickException(
+            "init-machine did not complete cleanly for: " + ", ".join(failed))
+    click.echo("Machine ready.")
 
 
 if __name__ == "__main__":

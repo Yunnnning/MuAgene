@@ -1,0 +1,7 @@
+# Modules Execution-MuAgent `validate-env` imports to confirm the CPU env is usable
+# before submitting. One module per line; '#' comments and blanks ignored.
+scanpy
+anndata
+snapatac2
+scrublet
+snakemake

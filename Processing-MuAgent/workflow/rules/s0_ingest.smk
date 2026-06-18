@@ -32,9 +32,9 @@ rule s0_ingest_propose:
 rule s0_ingest_execute:
     """Merged planning compute (single cluster job): load + validate + pair, assemble
     the preprocessing plan in-process, and run the QC threshold exploration on the
-    in-memory matrices — emitting the data + figures plan_review consumes. Submitted
-    via Execution-MuAgent (`submit` infers `s0_ingest_execute` as the planning target);
-    not a localrule because the ATAC fragment import + RNA QC are heavy.
+    in-memory matrices — emitting the data + figures plan_review consumes. Pulled in
+    as a dependency when submit infers `plan_review_propose` (the planning-phase
+    target); not a localrule because the ATAC fragment import + RNA QC are heavy.
     """
     input:
         context = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
