@@ -282,7 +282,7 @@ After `executor init`: confirm the canonical config path and blank context templ
 
 After biological-context write (cases a/b/c): confirm the file exists at `deliverables/plan/config/biological_context.md` and that you populated the fields the user told you about.
 
-After `configure-execution`: confirm `execution.mode` **and `compute.device` (cpu/gpu)** and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume. When device=gpu, also confirm the GPU partition/gres (SLURM) or select-extra (PBS) and the GPU conda env that were recorded.
+After `configure-execution`: confirm `execution.mode` **and `compute.device` (cpu/gpu)** and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume. When `device=gpu` on SLURM, also confirm the GPU partition/gres and the pinned `gpu_image_uri` (the container image is **pulled** from that registry reference — recorded in `site.config` / `~/.muagene/machine.config`, not a conda env).
 
 After the planning phase completes (`plan_review_propose` — local `run` or HPC `submit`):
 

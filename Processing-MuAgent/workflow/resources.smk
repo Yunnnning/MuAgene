@@ -64,6 +64,8 @@ _BASE_RESOURCES: dict[str, dict[str, int]] = {
     "s6_neighbors":      {"cpus": 2, "mem_mb": 16_000},
     "s7_clustering":  {"cpus": 4, "mem_mb": 16_000},
     "s8_umap":        {"cpus": 2, "mem_mb": 8_000},
+    # s_handoff is a localrule (orchestrator host): assemble post-QC .h5mu + manifest.
+    "s_handoff":      {"cpus": 1, "mem_mb": 4_000},
 }
 
 # Walltime in MINUTES. snakemake>=8 requires `runtime` to be int minutes.
@@ -80,6 +82,7 @@ _BASE_RUNTIME_MIN: dict[str, int] = {
     "s6_neighbors":      45,
     "s7_clustering": 120,
     "s8_umap":        45,
+    "s_handoff":      30,
 }
 
 
@@ -148,4 +151,5 @@ PROGRESS_TIMEOUT_HINT: dict[str, int] = {
     "s6_neighbors":     30,
     "s7_clustering":    60,
     "s8_umap":          30,
+    "s_handoff":        20,
 }

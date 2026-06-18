@@ -270,5 +270,203 @@ class LockPreflightTests(unittest.TestCase):
         m_bash.assert_not_called()
 
 
+class CreateFromLockTests(unittest.TestCase):
+    """Tests for the create-vs-update routing and broken-prefix cleanup in _create_from_lock."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.lock = self.tmp / "processing.linux-64.lock"
+        self.lock.write_text("@EXPLICIT\nhttps://x/a.conda\n")
+        self.spec = env.EnvSpec(device="cpu", provider="lock", env_name="grn",
+                                definition=None, lock=self.lock, image=None, imports=None)
+
+    def test_creates_when_env_absent(self):
+        with mock.patch.object(env, "_named_env_usable", return_value=False), \
+             mock.patch.object(env, "_clean_broken_env_prefix") as m_clean, \
+             mock.patch.object(env, "_run", return_value=_ok()) as m_run:
+            result = env._create_from_lock(self.spec, "micromamba")
+        self.assertEqual(result["action"], "create_from_lock")
+        self.assertIn("create", m_run.call_args[0][0])
+        m_clean.assert_called_once_with("micromamba", "grn")
+
+    def test_updates_in_place_when_env_usable(self):
+        with mock.patch.object(env, "_named_env_usable", return_value=True), \
+             mock.patch.object(env, "_run", return_value=_ok()) as m_run:
+            result = env._create_from_lock(self.spec, "micromamba")
+        self.assertEqual(result["action"], "update_from_lock")
+        cmd = m_run.call_args[0][0]
+        self.assertIn("install", cmd)
+        self.assertNotIn("create", cmd)
+
+    def test_recreates_broken_listed_env(self):
+        # Listed by `env list` but the prefix is broken (no conda-meta/history): must route to
+        # create (after cleanup), NOT update — updating a half-built env can't repair it.
+        envs_dir = self.tmp / "envs"
+        broken = envs_dir / "grn"
+        (broken / "conda-meta").mkdir(parents=True)  # no history -> broken
+        with mock.patch.object(env, "_conda_env_present", return_value=True), \
+             mock.patch.object(env, "_conda_envs_dirs", return_value=[envs_dir]), \
+             mock.patch.object(env, "_run", return_value=_ok()) as m_run:
+            result = env._create_from_lock(self.spec, "micromamba")
+        self.assertEqual(result["action"], "create_from_lock")
+        self.assertIn("create", m_run.call_args[0][0])
+        self.assertFalse(broken.exists())  # cleaned before create
+
+    def test_pip_install_editable_uses_no_deps(self):
+        # The env is fully conda-provisioned; pip must only link source, never re-resolve
+        # deps from PyPI over the conda packages.
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        with mock.patch.object(env, "_run", return_value=_ok()) as m_run:
+            env.pip_install_editable("micromamba", "muagene", repo)
+        cmd = m_run.call_args[0][0]
+        self.assertIn("--no-deps", cmd)
+        self.assertIn("-e", cmd)
+
+    def test_clean_broken_env_prefix_removes_dir_without_conda_meta(self):
+        envs_dir = self.tmp / "envs"
+        envs_dir.mkdir()
+        broken_prefix = envs_dir / "grn"
+        broken_prefix.mkdir()
+        (broken_prefix / "lib").mkdir()  # has files, no conda-meta
+
+        info_json = '{"envs_dirs": ["' + str(envs_dir) + '"]}'
+        with mock.patch.object(env.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, info_json, "")):
+            env._clean_broken_env_prefix("micromamba", "grn")
+
+        self.assertFalse(broken_prefix.exists())
+
+    def test_clean_broken_env_prefix_removes_partial_env_with_empty_conda_meta(self):
+        # The real-world failure: an interrupted create leaves a prefix with bin/python and
+        # an empty conda-meta (no `history`). `conda env list` hides it, so it reads as
+        # 'missing' and we try to create — but the directory is there. A conda-meta DIR
+        # alone is not proof of health; `conda-meta/history` is. Must be cleaned.
+        envs_dir = self.tmp / "envs"
+        envs_dir.mkdir()
+        broken_prefix = envs_dir / "grn"
+        (broken_prefix / "conda-meta").mkdir(parents=True)   # present but EMPTY (no history)
+        (broken_prefix / "bin").mkdir()
+        (broken_prefix / "bin" / "python").write_text("")
+
+        info_json = '{"envs_dirs": ["' + str(envs_dir) + '"]}'
+        with mock.patch.object(env.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, info_json, "")):
+            env._clean_broken_env_prefix("micromamba", "grn")
+
+        self.assertFalse(broken_prefix.exists())
+
+    def test_clean_broken_env_prefix_leaves_healthy_env_alone(self):
+        envs_dir = self.tmp / "envs"
+        envs_dir.mkdir()
+        good_prefix = envs_dir / "grn"
+        (good_prefix / "conda-meta").mkdir(parents=True)
+        (good_prefix / "conda-meta" / "history").write_text("")  # conda's marker of a real env
+
+        info_json = '{"envs_dirs": ["' + str(envs_dir) + '"]}'
+        with mock.patch.object(env.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, info_json, "")):
+            env._clean_broken_env_prefix("micromamba", "grn")
+
+        self.assertTrue(good_prefix.exists())
+        self.assertTrue((good_prefix / "conda-meta" / "history").exists())
+
+    def test_envs_dirs_fallback_when_manager_omits_envs_dirs(self):
+        # mamba 2.x's `info --json` has no `envs_dirs` key. Cleanup must still locate the
+        # prefix via the derived install-root envs dir, else a failed provision can never
+        # self-heal on such a host.
+        root = self.tmp / "miniforge3"
+        (root / "bin").mkdir(parents=True)
+        manager_bin = root / "bin" / "mamba"
+        manager_bin.write_text("")
+        broken_prefix = root / "envs" / "grn"
+        (broken_prefix / "conda-meta").mkdir(parents=True)  # partial: no history
+
+        with mock.patch.object(env.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, "{}", "")), \
+             mock.patch.object(env.shutil, "which", return_value=str(manager_bin)):
+            dirs = env._conda_envs_dirs("mamba")
+            self.assertIn(root / "envs", dirs)
+            env._clean_broken_env_prefix("mamba", "grn")
+
+        self.assertFalse(broken_prefix.exists())
+
+
+class NamedEnvUsableTests(unittest.TestCase):
+    """`_named_env_usable` (and thus env_present) must treat a present-but-broken env as
+    unusable so it re-provisions, while never false-negativing a healthy or unlocatable env."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.envs = self.tmp / "envs"
+
+    def _prefix(self, name, *, healthy):
+        p = self.envs / name
+        (p / "conda-meta").mkdir(parents=True)
+        if healthy:
+            (p / "conda-meta" / "history").write_text("")
+        return p
+
+    def test_not_listed_is_unusable(self):
+        with mock.patch.object(env, "_conda_env_present", return_value=False):
+            self.assertFalse(env._named_env_usable("micromamba", "muagene"))
+
+    def test_listed_and_healthy_is_usable(self):
+        self._prefix("muagene", healthy=True)
+        with mock.patch.object(env, "_conda_env_present", return_value=True), \
+             mock.patch.object(env, "_conda_envs_dirs", return_value=[self.envs]):
+            self.assertTrue(env._named_env_usable("micromamba", "muagene"))
+
+    def test_listed_but_broken_prefix_is_unusable(self):
+        self._prefix("muagene", healthy=False)  # conda-meta but no history
+        with mock.patch.object(env, "_conda_env_present", return_value=True), \
+             mock.patch.object(env, "_conda_envs_dirs", return_value=[self.envs]):
+            self.assertFalse(env._named_env_usable("micromamba", "muagene"))
+
+    def test_listed_but_unlocatable_prefix_trusts_listing(self):
+        # Custom envs_dir we can't see -> don't false-negative a healthy listed env.
+        with mock.patch.object(env, "_conda_env_present", return_value=True), \
+             mock.patch.object(env, "_conda_envs_dirs", return_value=[self.envs]):
+            self.assertTrue(env._named_env_usable("micromamba", "muagene"))
+
+
+class ReconcileStaleWarningTests(unittest.TestCase):
+    """reconcile() emits env_stale_reprovision warning before updating a stale conda env."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        patcher = mock.patch.object(env, "_state_path", return_value=self.tmp / "state.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.yaml = self.tmp / "processing.yaml"
+        self.yaml.write_text("name: muagene\ndependencies: [scanpy]\n")
+        self.lock = self.tmp / "processing.linux-64.lock"
+        self.lock.write_text("# platform: linux-64\n@EXPLICIT\nhttps://x/a.conda\n")
+        self.sc = SiteConfig(scheduler="slurm", conda_env="grn",
+                             environments={"policy": "auto", "cpu": {
+                                 "provider": "lock", "definition": str(self.yaml),
+                                 "lock": str(self.lock)}})
+
+    def test_stale_warning_emitted_before_reprovision(self):
+        with mock.patch.object(env, "_host_conda_subdir", return_value="linux-64"), \
+             mock.patch.object(env, "env_status", return_value="stale"), \
+             mock.patch.object(env, "provision_env",
+                               return_value={"status": "provisioned", "action": "update_from_lock",
+                                             "device": "cpu"}), \
+             mock.patch.object(env, "validate_env",
+                               return_value={"ok": True, "findings": []}):
+            out = env.reconcile(self.sc, "/repo", "cpu")
+        self.assertTrue(any(f["code"] == "env_stale_reprovision" and f["severity"] == "warning"
+                            for f in out["findings"]))
+
+    def test_no_stale_warning_when_env_ok(self):
+        with mock.patch.object(env, "_host_conda_subdir", return_value="linux-64"), \
+             mock.patch.object(env, "env_status", return_value="ok"), \
+             mock.patch.object(env, "validate_env",
+                               return_value={"ok": True, "findings": []}):
+            out = env.reconcile(self.sc, "/repo", "cpu")
+        self.assertFalse(any(f["code"] == "env_stale_reprovision" for f in out["findings"]))
+
+
 if __name__ == "__main__":
     unittest.main()

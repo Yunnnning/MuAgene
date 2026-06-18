@@ -149,7 +149,7 @@ Once the user answers, in order:
 
 - Confirm `executor init` wrote `deliverables/plan/config/run.yaml` and `biological_context.md`.
 - If context was supplied, confirm it was written (`deliverables/plan/config/biological_context.md`).
-- If HPC mode was configured, confirm `execution.mode`, the `compute.device` (cpu/gpu) recorded, and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume. When device=gpu, also confirm the GPU partition/gres (SLURM) or select-extra (PBS) and the GPU conda env.
+- If HPC mode was configured, confirm `execution.mode`, the `compute.device` (cpu/gpu) recorded, and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume. When `device=gpu` on SLURM, also confirm GPU partition/gres and the pinned `gpu_image_uri` (container image pulled from registry — not a conda env).
 - After the planning phase completes (`plan_review_propose`), surface `deliverables/plan/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
 
 See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the canonical Step 2 script and the per-context-form handling details.
@@ -294,13 +294,13 @@ Approve, revise, or abort?"
 
 2. When `manifest` finishes:
    - Read `deliverables/results/run_manifest.json` and extract `workflow_branch`, `outputs`.
-   - Point the user at the review notebook `deliverables/results/review_processed_<run>.ipynb` (load + inspect + re-cluster at a custom resolution), the UMAP figures in `deliverables/figures/`, and the handoff artifact `run_manifest.json`. The QC summary lives at `deliverables/qc_review/qc_review_<run>.md`.
+   - Point the user at the review notebook `deliverables/results/review_processed_<run>.ipynb` (load + inspect + re-cluster at a custom resolution), the UMAP figures in `deliverables/figures/`, the preprocessing handoff `run_manifest.json`, and the Integration handoff bundle (`post_qc_manifest.json`, `post_qc_<run>.h5mu`). The QC summary lives at `deliverables/qc_review/qc_review_<run>.md`.
 
 ### WHAT_TO_SURFACE_BACK
 
 - At each pause: the full proposal yaml content + any linked summary markdown.
-- At **`post_qc_review` after a threshold revision:** relay `deliverables/deliverables/qc_review/qc_review_<run_name>.md` **verbatim** (not the proposal yaml alone). Mention `qc_summary_<run_name>.html` for the rendered report.
-- At completion: the manifest's `outputs` keys + a one-line sign-off ("Run complete. Outputs at `deliverables/results/`. I stop here — integration/annotation is out of scope.").
+- At **`post_qc_review` after a threshold revision:** relay `deliverables/qc_review/qc_review_<run_name>.md` **verbatim** (not the proposal yaml alone). Mention `deliverables/qc_review/qc_summary_<run_name>.html` for the rendered report.
+- At completion: the manifest's `outputs` keys + point the user at `post_qc_manifest.json` / `post_qc_<run>.h5mu` (Integration-MuAgent handoff) and a one-line sign-off ("Run complete. Outputs at `deliverables/results/`. I stop here — integration/annotation is out of scope.").
 
 ---
 
@@ -353,14 +353,14 @@ and fallback rules (empty partition lists, unreachable files) are in
 | Checkpoint **#1** | plan_review | Login node | Review plan |
 | QC | S1a → S3 | Cluster head-job via `submit` | report `hpc-status`; wait for gate signal |
 | Checkpoint **#2** | post_qc_review | — | Review QC |
-| Finish | S4 → S5 → S6 → S7 (clustering) → S8 → manifest | Cluster head-job via `submit` | — |
+| Finish | s_handoff + S4 → S5 → S6 → S7 (clustering) → S8 → manifest | Cluster head-job via `submit` (`s_handoff` is a localrule) | — |
 
 After plan review approval, `source deliverables/plan/config/hpc.env`, then:
 
 - **QC batch:** `executor submit --config $CFG --executor pbs|slurm --auto-approve --auto-approve-except post_qc_review`
-- **After QC approval:** `executor submit --config $CFG --executor pbs|slurm` — runs S4→S8→manifest to completion (target `all`, no further gate)
+- **After QC approval:** `executor submit --config $CFG --executor pbs|slurm` — runs s_handoff + S4→S8→manifest to completion (target `all`, no further gate)
 
-Each gated phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. The gate `<stage>` becomes `awaiting_approval` when the propose localrule runs. The final phase (S4→S8→manifest) has no gate, so it targets `all` and runs straight through to the final results in one submission. You never need to run `propose` by hand to surface a gate.
+Each gated phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. The gate `<stage>` becomes `awaiting_approval` when the propose localrule runs. The final phase (s_handoff + S4→S8→manifest) has no gate, so it targets `all` and runs straight through to the final results in one submission. You never need to run `propose` by hand to surface a gate.
 
 `monitor.pid` removal means the **daemon has stopped** — it is the signal that this phase's compute is over. It *usually* arrives together with the gate sentinel, but not always: if the head job's workflow finishes but its process lingers (an orchestrator that won't exit), the Execution-MuAgent daemon cancels the leftover job and stops, so `monitor.pid` removal may arrive shortly after the gate is already armed. Treat the two as independent signals — which is exactly what the report-and-repoll rule below already does (it drives the next checkpoint on **either** `monitor.pid` gone **or** a gate `awaiting_approval`).
 

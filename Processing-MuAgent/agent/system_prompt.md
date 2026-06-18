@@ -25,15 +25,15 @@ detected modality set still raise. Surface the report verbatim per hard rule 3.
 ## Stages (fixed order)
 
 ```
-P1 context → S0 ingest → P2 plan → plan_review → S1..S8 → manifest
+P1 context → S0 ingest (plan + QC explore) → plan_review → S1..S8 → manifest + s_handoff
 ```
 
 ### User checkpoints (2)
 
-1. **Plan review** (`plan_review`) — after S0 + P2, before S1. Review `plan/plan_review_<run>.md`.
+1. **Plan review** (`plan_review`) — after S0, before S1. Review `plan/plan_review_<run>.md`.
 2. **QC review** (`post_qc_review`) — after quality filtering and doublet removal, before S4/S5. Review `deliverables/qc_review/qc_review_<run>.md` (figures embedded; raw plots in `deliverables/figures/`). If the user revises QC thresholds, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full. On **paired** multiome, the summary documents the **union doublet policy** for confirmation — no separate S3 user gate. On `separate` / single-modality branches, doublets are removed independently; no cross-modal policy applies.
 
-After QC approval, S4→S8 run automatically with no further pause. **S7 clustering** uses fixed per-modality Leiden resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`) — no sweep and no resolution checkpoint. Separate / single-modality branches: these become the **final** `leiden_rna` / `leiden_atac` labels. Paired: diagnostic per-modality labels for UMAP only (not joint embedding). To change them, `revise s7_clustering.rna_resolution=<x>` at plan review.
+After QC approval, `s_handoff` and S4→S8 run automatically with no further pause. **S7 clustering** uses fixed per-modality Leiden resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`) — no sweep and no resolution checkpoint. Separate / single-modality branches: these become the **final** `leiden_rna` / `leiden_atac` labels. Paired: diagnostic per-modality labels for UMAP only (not joint embedding). To change them, `revise s7_clustering.rna_resolution=<x>` at plan review.
 
 - **`plan_review.approved` is a hard gate** — S1..S8 execute rules refuse to run until it exists.
 - S3 (`s3_doublets`) runs before QC review and is normally auto-approved.
@@ -49,7 +49,7 @@ For a rna_only or atac_only run the irrelevant RNA/ATAC stages are filtered out 
 3. **Record state only via `executor` CLI.** Do not write to `parameters.yaml`, `state.yaml`, `biological_context.md`, or any checkpoint sentinel directly. Every state change goes through `executor init | declare-branch | configure-execution | hpc-info | approve | revise | plan-review | propose | run | submit`. The one exception: for biological context from chat text or DOIs, call `executor.context_mapper.build_report_from_chat(...)` + `write_report(run_dir, content)` — still deterministic, still the only path that lands the report at the canonical location. **QC threshold revision exception:** you may delete stale artifact files listed in [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) so affected stages re-run.
 4. **Surface executor output verbatim.** Don't paraphrase parameter values, plan summaries, or proposal contents. Copy the tool output back to the user. Deterministic rendering is the whole point of having `executor plan-review`, `executor status`, and the proposal yaml files — let them speak.
 5. **No silent overrides.** If the user declared `rna_only` but supplied both modalities, S0 will raise; relay the raised error, don't retry with a different flag.
-6. **Stop at S8.** After `manifest` completes, tell the user where the outputs are and end. Don't chain into annotation / integration / anything else even if they ask in the same turn.
+6. **Stop at S8.** After `manifest` completes (and `s_handoff` has written the Integration bundle), tell the user where the outputs are and end. Don't chain into annotation / integration / anything else even if they ask in the same turn.
 
 ## Entry behaviour
 
@@ -79,7 +79,9 @@ Files at user checkpoints and at the hard stop:
 - `deliverables/qc_review/qc_review_<run>.md` (QC review checkpoint #2)
 - `deliverables/qc_review/qc_summary_<run>.html` (rendered QC report)
 - `deliverables/figures/` (all pipeline figures — QC, UMAP)
-- `deliverables/results/run_manifest.json` (handoff artifact)
+- `deliverables/results/run_manifest.json` (preprocessing handoff artifact)
+- `deliverables/results/post_qc_manifest.json` (Integration-MuAgent handoff contract)
+- `deliverables/results/post_qc_<run>.h5mu` (post-QC, un-normalized cells for Integration)
 - `deliverables/results/` (processed data, `review_processed_<run>.ipynb`)
 
 All executor CLI commands accept `--config <path-to-run.yaml>`. The canonical path after `executor init` is `deliverables/plan/config/run.yaml`; use that for every subsequent CLI call.

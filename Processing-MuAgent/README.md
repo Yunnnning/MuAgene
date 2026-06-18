@@ -11,8 +11,9 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
 ```
   P1 context extraction → S0 ingest (load + validate + assemble plan + QC explore) → (CHECKPOINT 1) plan_review
   → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → (CHECKPOINT 2) post_qc_review
+  → s_handoff (post-QC Integration bundle; after QC approval, orthogonal to S4–S8)
   → S4 RNA normalization + HVG → S5 ATAC spectral embedding → S6 PCA (RNA) + neighbor graph
-  → S7 clustering (fixed resolutions) → S8 UMAP → outputs
+  → S7 clustering (fixed resolutions) → S8 UMAP → manifest
 ```
 
 ### User checkpoints (2)
@@ -23,7 +24,7 @@ Two deliberate pauses where you review deliverables and decide before heavy down
 | #     | CLI name              | Internal stage   | When                   | What you decide                                                                                                                                                                                                                                                            |
 | ----- | --------------------- | ---------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **1** | **Plan review**       | `plan_review`    | After S0, before S1    | Approve the preprocessing plan (`plan/plan_review_<run>.md`)                                                                                                                                                                                                             |
-| **2** | **QC review**         | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `qc_summary/qc_review_<run>.html`; revise **RNA/ATAC quality-filter thresholds** (or skip individual metrics entirely) and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
+| **2** | **QC review**         | `post_qc_review` | After S3, before S4/S5 | Inspect QC figures in `deliverables/figures/` + `deliverables/qc_review/qc_review_<run>.md` (or `qc_summary_<run>.html`); revise **RNA/ATAC quality-filter thresholds** (or skip individual metrics entirely) and re-run if needed; on **paired** multiome, confirm the **union doublet removal policy** |
 
 After QC approval the pipeline runs straight through to the final outputs: Leiden clustering uses **fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5)**. To use different values, revise clustering resolutions at plan review, or manually re-run clustering on the final outputs using your chosen parameters.
 
@@ -63,8 +64,8 @@ After QC approval the pipeline runs straight through to the final outputs: Leide
 - **S2 ATAC QC** — The following per-cell thresholds are applied:
   - `n_fragments` (number of fragments per cell): MAD-derived threshold with lower floor = **1,500**
   - `TSS_enrichment` (Transcription Start Site enrichment score): minimum = **1.5**, maximum = **50**
-  - `nucleosome_signal` (nucleosome signal): defult = **3**
-  - `FRiP` (Fraction of Reads in Peaks): defult = **0.2**
+  - `nucleosome_signal` (nucleosome signal): default = **3**
+  - `FRiP` (Fraction of Reads in Peaks): default = **0.2**
 
 **Flexible QC thresholds**
 Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipped** (filter removed entirely), or **partially skipped** (upper or lower bound only removed) — at either **plan review** (checkpoint #1) or **QC review** (checkpoint #2).
@@ -73,8 +74,8 @@ Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipp
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
-  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`qc_review/qc_review_<run>.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large QC-only working files are automatically deleted to free storage (~2 GB/run): the QC matrices `rna_qc.h5ad`, `atac_qc.h5ad`, `atac_snap.h5ad`, the `qc_explore/atac_snap_explore.h5ad` import, the chr-normalised fragment caches `atac_fragments_cbf[_chrnorm].tsv.gz` (the single biggest artifact — reused across QC re-runs but dead once approved), and the S1a recompute caches (`tsne_coords_cache.parquet`, `cell_totals.parquet`). None is a declared Snakemake output or read by a post-gate stage, so deletion never triggers a re-run. Preserved: `qc_summary.json` markers, the QC-metrics parquets (the final S8 manifest reads `qc_metrics_post.parquet`), `rna_decontaminated.h5ad`, and all S3+ artifacts. (Per-stage scratch dirs — `_work_soupx`/`_work_decontx`, `macs3_tmp` — are removed by their own stage as soon as it finishes, not here.)
+  - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`deliverables/qc_review/qc_review_<run>.md`).
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `deliverables/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large QC-only working files are automatically deleted to free storage (~2 GB/run): the QC matrices `rna_qc.h5ad`, `atac_qc.h5ad`, `atac_snap.h5ad`, the `qc_explore/atac_snap_explore.h5ad` import, the chr-normalised fragment caches `atac_fragments_cbf[_chrnorm].tsv.gz` (the single biggest artifact — reused across QC re-runs but dead once approved), and the S1a recompute caches (`tsne_coords_cache.parquet`, `cell_totals.parquet`). None is a declared Snakemake output or read by a post-gate stage, so deletion never triggers a re-run. Preserved: `qc_summary.json` markers, the QC-metrics parquets (the final S8 manifest reads `qc_metrics_post.parquet`), `rna_decontaminated.h5ad`, and all S3+ artifacts. (Per-stage scratch dirs — `_work_soupx`/`_work_decontx`, `macs3_tmp` — are removed by their own stage as soon as it finishes, not here.)
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → spectral embedding. In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
   1. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
@@ -85,7 +86,8 @@ Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipp
 - **S6 PCA (RNA) + neighbor graph** (`s6_neighbors`) — **RNA:** optional `sc.pp.scale`, then PCA; `n_pcs` from a chord-distance elbow on explained variance, capped at `rna_n_pcs_max`; nearest-neighbors on PCA space. **ATAC:** KNN graph on the S5 spectral embedding (`X_spectral` via `snap.pp.knn`). Artifact: `internal/artifacts/s6_neighbors/rna_neighbors.h5ad`.
 - **S7 Clustering** — Leiden clustering at fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`). Runs automatically with no sweep and no checkpoint. Separate / single-modality branches: these become the final `leiden_rna` / `leiden_atac` labels. Paired branch: diagnostic per-modality labels for UMAP only (not joint embedding).
 - **S8 UMAP** — Per-modality UMAP. **Paired** → `processed_<run>.h5mu`; **separate** → `rna_processed.h5ad` + `atac_processed.h5ad`. On the paired branch, S8 expects matching barcodes from S3; final assembly includes a defensive re-intersection logged only when it filters cells.
-- **manifest** — `run_manifest.json` handoff contract (v1.0.0), the review notebook, and `layout.json`. 
+- **manifest** — `run_manifest.json` preprocessing handoff contract (v1.0.0), the review notebook, and `layout.json`.
+- **s_handoff** — After QC approval (gated on `post_qc_review.approved`; reads S3 post-doublet artifacts only). Writes `post_qc_<run>.h5mu` (post-QC, post-doublet, **un-normalized** cells for Integration-MuAgent) and `post_qc_manifest.json` (schema `muagene.post_qc_handoff/1`). Orthogonal to S4–S8; `rule all` requires both this bundle and `run_manifest.json`. Independently buildable via `run --target s_handoff`.
 
 ## Paired multiome
 
@@ -131,7 +133,7 @@ Processing-MuAgent/
 ├── agent/               # chat-runtime prompts (system_prompt, interaction_flow)
 ├── config/              # example run configurations
 ├── executor/            # Python implementation (stages, methods, CLI, helpers)
-│   ├── stages/          # per-stage scripts S0..S8 + post_qc_review
+│   ├── stages/          # per-stage scripts S0..S8 + post_qc_review + s_handoff
 │   ├── methods/         # MAD thresholds, doublet policy
 │   ├── hpc.py           # site.config/hpc.env writers; submission delegated to Execution-MuAgent
 │   └── specs.py         # stage metadata authoring (writes internal/stage_meta/)
@@ -210,7 +212,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Checkpoint **#1**                   | plan_review                 | Login node                      | Review plan             |
 | QC                                  | S1a → S1 → S2 → S3          | Cluster                         | —                       |
 | Checkpoint **#2**                   | post_qc_review              | —                               | Review QC               |
-| Finish                              | S4 → S5 → S6 → S7 → S8 → manifest | Cluster                    | —                       |
+| Finish                              | s_handoff + S4 → S5 → S6 → S7 → S8 → manifest | Cluster (`s_handoff` is a localrule on the head-job host) | —                       |
 
 
 **Execution mode must be user-confirmed before any compute runs.** Both `run` and `submit` hard-refuse to launch until `execution.user_confirmed=true` is recorded (via `configure-execution ... --confirmed-by-user`). This is a one-time gate enforced on fresh runs and resume sessions alike — the agent must confirm local vs HPC with the user and never auto-default. `run` additionally refuses when the mode is `pbs`/`slurm` (use `submit`). Once confirmed, the pipeline proceeds automatically.
@@ -228,7 +230,7 @@ Source `deliverables/plan/config/hpc.env`, then use `Processing-MuAgent submit` 
 | ----------------------------------------- | ------------------------ | ------------------------------------------------------------------------- |
 | `plan_review` not approved                | `plan_review_propose`    | Fresh run: P1 → S0 → plan assembly + QC explore, then arms gate. Resume after S0: only the cheap propose rule runs. |
 | `post_qc_review` not approved             | `post_qc_review_propose` | S1a → S3 + QC summary, then pauses                                        |
-| `post_qc_review` approved                 | `all`                    | S4 → S6 → S7 clustering → S8 → manifest → final results (no further pause) |
+| `post_qc_review` approved                 | `all`                    | s_handoff + S4 → S6 → S7 clustering → S8 → manifest → final results (no further pause) |
 
 
 Override with `--target <name>` only when debugging.
@@ -261,7 +263,7 @@ Processing-MuAgent approve plan_review --config $CFG
 # First heavy QC batch (stops at QC review):
 Processing-MuAgent submit --config $CFG --executor slurm
 
-# After QC review — runs clustering + UMAP through to the final outputs (no further pause):
+# After QC review — runs s_handoff + clustering + UMAP through to the final outputs (no further pause):
 Processing-MuAgent approve qc_review --config $CFG
 Processing-MuAgent submit --config $CFG --executor slurm
 ```
@@ -308,10 +310,12 @@ After `init`, only `deliverables/plan/` exists under deliverables. The `figures/
       plan_summary_<run>.html     ← download-friendly web version of plan_review (figures embedded)
     figures/                      ← all pipeline figures (created at first plot)
     qc_review/                    ← QC review (#2): qc_review_<run>.md + qc_summary_<run>.html
-    results/                      ← final deliverables (created at S8/manifest; data + manifest)
+    results/                      ← final deliverables (created at S8/manifest + s_handoff)
       processed_<run>.h5mu         ← or rna/atac_processed.h5ad (separate branch)
+      post_qc_<run>.h5mu           ← s_handoff (post-QC, un-normalized; Integration input)
       review_processed_<run>.{ipynb,py}
-      run_manifest.json           ← handoff artifact
+      run_manifest.json            ← manifest (preprocessing handoff)
+      post_qc_manifest.json        ← s_handoff (Integration-MuAgent handoff contract)
       layout.json
   internal/
     artifacts/sN_<stage>/         ← intermediate stage outputs
@@ -339,14 +343,11 @@ Commands below use `$CFG` = `<run_dir>/deliverables/plan/config/run.yaml` (writt
 
 ### Install
 
-MuAgene is set up on a fresh machine by **Execution-MuAgent** (it owns infrastructure). Clone both repos as siblings, then run one bootstrap command — it creates the `muagene` CPU env from the committed conda-lock lock and installs **both** packages into it. Do **not** create the conda env by hand.
+MuAgene is set up on a fresh machine by **Execution-MuAgent** (it owns infrastructure). Clone both repos as siblings, then run **one** bootstrap command — it creates the single integrated `muagene` env (science stack + both agent CLIs) from the committed conda-lock lock and installs both packages into it. Do **not** create the conda env by hand.
 
 ```bash
 # With Processing-MuAgent and Execution-MuAgent cloned as siblings:
-mamba create -n muagene-exec python=3.11 pip -y                       # minimal bootstrap env
-mamba run -n muagene-exec pip install -e /path/to/Execution-MuAgent
-mamba run -n muagene-exec Execution-MuAgent init-machine \
-  --processing-repo /path/to/Processing-MuAgent --device cpu          # creates `muagene`, installs both pkgs
+bash /path/to/Execution-MuAgent/scripts/bootstrap.sh --processing-repo /path/to/Processing-MuAgent
 conda activate muagene
 ```
 
@@ -381,6 +382,7 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 | `approve`             | Write `internal/checkpoints/<stage>.approved` (human checkpoints only)                                                                                                                         |
 | `plan-review`         | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/`                                                                                                              |
 | `revise`              | Update one or more parameters in `parameters.yaml` and reset a checkpoint to awaiting. Used to tune, tighten, loosen, or **skip** individual QC metrics — see **Flexible QC thresholds**       |
+| `regenerate-locks`    | Regenerate the CPU conda-lock lockfile from `workflow/envs/processing.yaml` after editing dependencies (needs `pip install '.[dev]'`; commit the refreshed lock)                                |
 | `unlock`              | Remove stale Snakemake locks after a cancelled/killed run                                                                                                                                      |
 | `propose`             | Run a single `*_propose` rule (optional; not required for the main pipeline)                                                                                                                   |
 
@@ -402,7 +404,7 @@ Processing-MuAgent run --config $CFG
 Processing-MuAgent approve plan_review --config $CFG
 Processing-MuAgent run --config $CFG
 Processing-MuAgent approve qc_review --config $CFG
-Processing-MuAgent run --config $CFG   # runs S4 → S8 → manifest, no further pause
+Processing-MuAgent run --config $CFG   # runs s_handoff + S4 → S8 → manifest, no further pause
 
 # Option B — pre-seed both checkpoints (unattended Snakemake; you still review outputs):
 Processing-MuAgent run --config $CFG --auto-approve

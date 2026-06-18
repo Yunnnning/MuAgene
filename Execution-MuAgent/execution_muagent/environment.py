@@ -26,6 +26,7 @@ import json
 import os
 import platform
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -142,6 +143,8 @@ def _provisioned_fingerprint(spec: EnvSpec) -> str | None:
 # --- presence + status -----------------------------------------------------
 
 def _conda_env_present(manager: str, name: str) -> bool:
+    """True if `<manager> env list` names this env. conda/mamba only list *valid* envs
+    (a prefix without conda-meta/history is hidden), so this is presence-by-listing."""
     try:
         out = subprocess.run([manager, "env", "list"], capture_output=True,
                              text=True, timeout=30).stdout
@@ -154,10 +157,38 @@ def _conda_env_present(manager: str, name: str) -> bool:
     return False
 
 
+def _prefix_is_healthy(prefix: Path) -> bool:
+    """A real conda env always carries `conda-meta/history`; a partial/interrupted create
+    (cancelled job, NFS hiccup, OOM) does not. This is conda's own marker of a usable env."""
+    return (prefix / "conda-meta" / "history").exists()
+
+
+def _find_env_prefix(manager: str, env_name: str) -> Path | None:
+    """First on-disk prefix dir for a named env across the manager's envs_dirs, else None.
+    Shared by presence checks and broken-prefix cleanup so both agree on where an env lives."""
+    for d in _conda_envs_dirs(manager):
+        prefix = d / env_name
+        if prefix.exists():
+            return prefix
+    return None
+
+
+def _named_env_usable(manager: str, env_name: str) -> bool:
+    """A named conda env is usable when it is listed AND — if we can locate its prefix —
+    that prefix is a healthy conda env. A located-but-broken prefix (no conda-meta/history)
+    is treated as NOT usable, so it re-provisions instead of being trusted (a registered env
+    can still be internally broken). When the prefix can't be located we trust the listing
+    (avoids a false negative on a custom envs_dir)."""
+    if not _conda_env_present(manager, env_name):
+        return False
+    prefix = _find_env_prefix(manager, env_name)
+    return prefix is None or _prefix_is_healthy(prefix)
+
+
 def env_present(spec: EnvSpec, manager: str | None) -> bool:
     if spec.provider == "container":
         return bool(spec.image and spec.image.exists())
-    return bool(spec.env_name and manager and _conda_env_present(manager, spec.env_name))
+    return bool(spec.env_name and manager and _named_env_usable(manager, spec.env_name))
 
 
 def env_status(spec: EnvSpec, manager: str | None) -> str:
@@ -230,13 +261,64 @@ def _pull_image(spec: EnvSpec, runtime: str) -> dict[str, Any]:
             "image_uri": spec.image_uri, "stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
 
+def _conda_envs_dirs(manager: str) -> list[Path]:
+    """Directories where conda/mamba may place a *named* env.
+
+    `<manager> info --json` reports `envs_dirs` for conda and micromamba, but mamba 2.x
+    omits it (returns no such key) — so we always also derive the standard locations:
+    the install root's `envs/` (from the manager binary at `<root>/bin/<manager>`) and
+    the per-user `~/.conda/envs`. Without this fallback, broken-prefix cleanup is a silent
+    no-op on a mamba 2.x host and a failed provision can never self-heal.
+    """
+    dirs: list[Path] = []
+    try:
+        out = subprocess.run([manager, "info", "--json"], capture_output=True,
+                             text=True, timeout=30)
+        for d in (json.loads(out.stdout).get("envs_dirs") or []):
+            dirs.append(Path(d))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    mgr_bin = shutil.which(manager) or manager
+    for cand in (Path(mgr_bin).resolve().parent.parent / "envs",
+                 Path(os.path.expanduser("~/.conda/envs"))):
+        if cand not in dirs:
+            dirs.append(cand)
+    return dirs
+
+
+def _clean_broken_env_prefix(manager: str, env_name: str) -> None:
+    """Remove a broken/partial env directory at the env prefix so conda can create there.
+
+    A provision interrupted partway leaves a prefix with a `bin/python` but no
+    `conda-meta/history` (see `_prefix_is_healthy`). `conda env list` then hides it — so the
+    env reads as 'missing' and we try to create — yet the directory is physically there and
+    blocks `conda create`. Remove only a located-but-unhealthy prefix; healthy envs are left
+    untouched and a failed rmtree is swallowed so conda's own error explains what happened."""
+    try:
+        prefix = _find_env_prefix(manager, env_name)
+        if prefix is not None and not _prefix_is_healthy(prefix):
+            shutil.rmtree(prefix, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def _create_from_lock(spec: EnvSpec, manager: str | None) -> dict[str, Any]:
     if not manager or not spec.env_name or not spec.lock:
         return {"returncode": 1, "action": "create_from_lock",
                 "stderr": "lock provider needs a manager, env_name, and lock file"}
-    proc = _run([manager, "create", "-y", "-n", spec.env_name, "--file", str(spec.lock)],
-                _CREATE_TIMEOUT_S)
-    return {"returncode": proc.returncode, "action": "create_from_lock",
+    if _named_env_usable(manager, spec.env_name):
+        # Present & healthy env: update packages in place — no deletion, so a failed update
+        # leaves the previous working env intact (no broken-env-on-NFS-failure risk).
+        cmd = [manager, "install", "-y", "-n", spec.env_name, "--file", str(spec.lock)]
+        action = "update_from_lock"
+    else:
+        # Missing OR broken env: clean up any broken prefix left by a prior failed provision,
+        # then create fresh (a half-built prefix would otherwise block `conda create`).
+        _clean_broken_env_prefix(manager, spec.env_name)
+        cmd = [manager, "create", "-y", "-n", spec.env_name, "--file", str(spec.lock)]
+        action = "create_from_lock"
+    proc = _run(cmd, _CREATE_TIMEOUT_S)
+    return {"returncode": proc.returncode, "action": action,
             "env": spec.env_name, "stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
 
@@ -251,8 +333,11 @@ def _create_from_yaml(spec: EnvSpec, manager: str | None) -> dict[str, Any]:
 
 def pip_install_editable(manager: str | None, env_name: str | None,
                          repo: str | Path) -> dict[str, Any]:
-    """`<manager> run -n <env> pip install -e <repo>` — used by init-machine to layer
-    the agent packages onto the provisioned CPU env. Returns a structured result."""
+    """`<manager> run -n <env> pip install --no-deps -e <repo>` — layer an agent package's
+    SOURCE (+ console scripts) onto the CPU env. `--no-deps` is deliberate: the env is fully
+    conda-provisioned from the lock, so every dependency is already present at its pinned
+    conda build. Letting pip re-resolve deps from PyPI would clobber conda packages with
+    incompatible wheels (the exact silent drift this env model avoids). Returns a result."""
     repo_path = Path(os.path.expanduser(str(repo)))
     if not manager or not env_name:
         return {"returncode": 1, "action": "pip_install",
@@ -260,7 +345,7 @@ def pip_install_editable(manager: str | None, env_name: str | None,
     if not repo_path.exists():
         return {"returncode": 1, "action": "pip_install",
                 "stderr": f"repo not found: {repo_path}", "repo": str(repo_path)}
-    proc = _run([manager, "run", "-n", env_name, "pip", "install", "-e", str(repo_path)],
+    proc = _run([manager, "run", "-n", env_name, "pip", "install", "--no-deps", "-e", str(repo_path)],
                 _CREATE_TIMEOUT_S)
     return {"returncode": proc.returncode, "action": "pip_install", "repo": str(repo_path),
             "stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
@@ -431,6 +516,11 @@ def reconcile(site_config: Any, repo_root: str | Path, device: str) -> dict[str,
     status = env_status(spec, manager)
     out: dict[str, Any] = {"device": device, "status": status, "policy": policy,
                            "provision": None, "validation": None, "findings": []}
+    if status == "stale":
+        out["findings"].append({"severity": "warning", "code": "env_stale_reprovision",
+            "message": (f"{device} env lock fingerprint changed (e.g. git branch switch "
+                        f"or lock update); updating env '{spec.env_name}' in place — "
+                        f"may take a few minutes.")})
     if status != "ok":
         if policy == "manual":
             out["ok"] = False
@@ -448,7 +538,7 @@ def reconcile(site_config: Any, repo_root: str | Path, device: str) -> dict[str,
 
     validation = validate_env(spec, site_config, manager=manager)
     out["validation"] = validation
-    out["findings"] = validation["findings"]
+    out["findings"] = out["findings"] + validation["findings"]
     out["ok"] = validation["ok"]
     return out
 

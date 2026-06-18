@@ -27,6 +27,7 @@ _SCIENCE_DESCRIPTIONS: dict[str, str] = {
     "s6_neighbors":     "Build RNA PCA and shared nearest-neighbor graph",
     "s7_clustering":    "Run Leiden clustering at fixed per-modality resolutions (RNA=0.7, ATAC=0.5)",
     "s8_umap":          "Project RNA and ATAC embeddings to 2D UMAP for visualization",
+    "s_handoff":        "Assemble the per-sample post-QC .h5mu + handoff manifest for Integration-MuAgent",
 }
 
 # Run-dir-relative input/output artifact paths per stage.
@@ -117,24 +118,33 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "sentinel": "{run_dir}/internal/artifacts/s8_umap/s8_done.txt",
         },
     },
+    "s_handoff": {
+        "inputs": {
+            "rna_post":  "{run_dir}/internal/artifacts/s3_doublets/rna_post_doublet.h5ad",
+            "atac_post": "{run_dir}/internal/artifacts/s3_doublets/atac_post_doublet.h5ad",
+        },
+        "outputs": {
+            "post_qc_manifest": "{run_dir}/deliverables/results/post_qc_manifest.json",
+        },
+    },
 }
 
 _BRANCH_STAGES: dict[str, list[str]] = {
     "paired": [
         "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
+        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "s_handoff",
     ],
     "separate": [
         "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
+        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "s_handoff",
     ],
     "rna_only": [
         "s0_ingest", "s1a_ambient", "s1_rna_qc", "s3_doublets",
-        "s4_rna_norm", "s6_neighbors", "s7_clustering", "s8_umap",
+        "s4_rna_norm", "s6_neighbors", "s7_clustering", "s8_umap", "s_handoff",
     ],
     "atac_only": [
         "s0_ingest", "s2_atac_qc", "s3_doublets",
-        "s5_atac_spectral", "s8_umap",
+        "s5_atac_spectral", "s8_umap", "s_handoff",
     ],
 }
 
