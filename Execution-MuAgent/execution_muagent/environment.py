@@ -230,13 +230,46 @@ def _pull_image(spec: EnvSpec, runtime: str) -> dict[str, Any]:
             "image_uri": spec.image_uri, "stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
 
+def _clean_broken_env_prefix(manager: str, env_name: str) -> None:
+    """Remove a non-conda directory at the env prefix so conda can create there.
+
+    This happens when a previous provision attempt removed conda-meta but failed before
+    completing the recreation (e.g. an NFS busy file blocked the removal). Without
+    cleanup, conda create raises 'Non-conda folder exists at prefix'. Silently skips if
+    the prefix is healthy, cannot be located, or the rmtree fails (conda's own error
+    will then explain what happened).
+    """
+    try:
+        out = subprocess.run([manager, "info", "--json"], capture_output=True,
+                             text=True, timeout=30)
+        info = json.loads(out.stdout)
+        for d in (info.get("envs_dirs") or []):
+            prefix = Path(d) / env_name
+            if prefix.exists() and not (prefix / "conda-meta").exists():
+                import shutil
+                shutil.rmtree(prefix, ignore_errors=True)
+                return
+    except Exception:
+        pass
+
+
 def _create_from_lock(spec: EnvSpec, manager: str | None) -> dict[str, Any]:
     if not manager or not spec.env_name or not spec.lock:
         return {"returncode": 1, "action": "create_from_lock",
                 "stderr": "lock provider needs a manager, env_name, and lock file"}
-    proc = _run([manager, "create", "-y", "-n", spec.env_name, "--file", str(spec.lock)],
-                _CREATE_TIMEOUT_S)
-    return {"returncode": proc.returncode, "action": "create_from_lock",
+    if _conda_env_present(manager, spec.env_name):
+        # Stale env: update packages in place — no deletion, so a failed update leaves
+        # the previous working env intact (no broken-env-on-NFS-failure risk).
+        cmd = [manager, "install", "-y", "-n", spec.env_name, "--file", str(spec.lock)]
+        action = "update_from_lock"
+    else:
+        # Missing env: clean up any broken prefix left by a prior failed provision,
+        # then create fresh.
+        _clean_broken_env_prefix(manager, spec.env_name)
+        cmd = [manager, "create", "-y", "-n", spec.env_name, "--file", str(spec.lock)]
+        action = "create_from_lock"
+    proc = _run(cmd, _CREATE_TIMEOUT_S)
+    return {"returncode": proc.returncode, "action": action,
             "env": spec.env_name, "stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
 
 
@@ -431,6 +464,11 @@ def reconcile(site_config: Any, repo_root: str | Path, device: str) -> dict[str,
     status = env_status(spec, manager)
     out: dict[str, Any] = {"device": device, "status": status, "policy": policy,
                            "provision": None, "validation": None, "findings": []}
+    if status == "stale":
+        out["findings"].append({"severity": "warning", "code": "env_stale_reprovision",
+            "message": (f"{device} env lock fingerprint changed (e.g. git branch switch "
+                        f"or lock update); updating env '{spec.env_name}' in place — "
+                        f"may take a few minutes.")})
     if status != "ok":
         if policy == "manual":
             out["ok"] = False
@@ -448,7 +486,7 @@ def reconcile(site_config: Any, repo_root: str | Path, device: str) -> dict[str,
 
     validation = validate_env(spec, site_config, manager=manager)
     out["validation"] = validation
-    out["findings"] = validation["findings"]
+    out["findings"] = out["findings"] + validation["findings"]
     out["ok"] = validation["ok"]
     return out
 

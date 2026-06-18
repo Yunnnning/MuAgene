@@ -270,5 +270,101 @@ class LockPreflightTests(unittest.TestCase):
         m_bash.assert_not_called()
 
 
+class CreateFromLockTests(unittest.TestCase):
+    """Tests for the create-vs-update routing and broken-prefix cleanup in _create_from_lock."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.lock = self.tmp / "processing.linux-64.lock"
+        self.lock.write_text("@EXPLICIT\nhttps://x/a.conda\n")
+        self.spec = env.EnvSpec(device="cpu", provider="lock", env_name="grn",
+                                definition=None, lock=self.lock, image=None, imports=None)
+
+    def test_creates_when_env_absent(self):
+        with mock.patch.object(env, "_conda_env_present", return_value=False), \
+             mock.patch.object(env, "_clean_broken_env_prefix") as m_clean, \
+             mock.patch.object(env, "_run", return_value=_ok()) as m_run:
+            result = env._create_from_lock(self.spec, "micromamba")
+        self.assertEqual(result["action"], "create_from_lock")
+        self.assertIn("create", m_run.call_args[0][0])
+        m_clean.assert_called_once_with("micromamba", "grn")
+
+    def test_updates_in_place_when_env_present(self):
+        with mock.patch.object(env, "_conda_env_present", return_value=True), \
+             mock.patch.object(env, "_run", return_value=_ok()) as m_run:
+            result = env._create_from_lock(self.spec, "micromamba")
+        self.assertEqual(result["action"], "update_from_lock")
+        cmd = m_run.call_args[0][0]
+        self.assertIn("install", cmd)
+        self.assertNotIn("create", cmd)
+
+    def test_clean_broken_env_prefix_removes_dir_without_conda_meta(self):
+        envs_dir = self.tmp / "envs"
+        envs_dir.mkdir()
+        broken_prefix = envs_dir / "grn"
+        broken_prefix.mkdir()
+        (broken_prefix / "lib").mkdir()  # has files, no conda-meta
+
+        info_json = '{"envs_dirs": ["' + str(envs_dir) + '"]}'
+        with mock.patch.object(env.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, info_json, "")):
+            env._clean_broken_env_prefix("micromamba", "grn")
+
+        self.assertFalse(broken_prefix.exists())
+
+    def test_clean_broken_env_prefix_leaves_healthy_env_alone(self):
+        envs_dir = self.tmp / "envs"
+        envs_dir.mkdir()
+        good_prefix = envs_dir / "grn"
+        good_prefix.mkdir()
+        (good_prefix / "conda-meta").mkdir()  # healthy env
+
+        info_json = '{"envs_dirs": ["' + str(envs_dir) + '"]}'
+        with mock.patch.object(env.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, info_json, "")):
+            env._clean_broken_env_prefix("micromamba", "grn")
+
+        self.assertTrue(good_prefix.exists())
+        self.assertTrue((good_prefix / "conda-meta").exists())
+
+
+class ReconcileStaleWarningTests(unittest.TestCase):
+    """reconcile() emits env_stale_reprovision warning before updating a stale conda env."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        patcher = mock.patch.object(env, "_state_path", return_value=self.tmp / "state.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.yaml = self.tmp / "processing.yaml"
+        self.yaml.write_text("name: muagene\ndependencies: [scanpy]\n")
+        self.lock = self.tmp / "processing.linux-64.lock"
+        self.lock.write_text("# platform: linux-64\n@EXPLICIT\nhttps://x/a.conda\n")
+        self.sc = SiteConfig(scheduler="slurm", conda_env="grn",
+                             environments={"policy": "auto", "cpu": {
+                                 "provider": "lock", "definition": str(self.yaml),
+                                 "lock": str(self.lock)}})
+
+    def test_stale_warning_emitted_before_reprovision(self):
+        with mock.patch.object(env, "_host_conda_subdir", return_value="linux-64"), \
+             mock.patch.object(env, "env_status", return_value="stale"), \
+             mock.patch.object(env, "provision_env",
+                               return_value={"status": "provisioned", "action": "update_from_lock",
+                                             "device": "cpu"}), \
+             mock.patch.object(env, "validate_env",
+                               return_value={"ok": True, "findings": []}):
+            out = env.reconcile(self.sc, "/repo", "cpu")
+        self.assertTrue(any(f["code"] == "env_stale_reprovision" and f["severity"] == "warning"
+                            for f in out["findings"]))
+
+    def test_no_stale_warning_when_env_ok(self):
+        with mock.patch.object(env, "_host_conda_subdir", return_value="linux-64"), \
+             mock.patch.object(env, "env_status", return_value="ok"), \
+             mock.patch.object(env, "validate_env",
+                               return_value={"ok": True, "findings": []}):
+            out = env.reconcile(self.sc, "/repo", "cpu")
+        self.assertFalse(any(f["code"] == "env_stale_reprovision" for f in out["findings"]))
+
+
 if __name__ == "__main__":
     unittest.main()
