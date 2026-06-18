@@ -84,23 +84,17 @@ _BASE_RUNTIME_MIN: dict[str, int] = {
 
 
 # GPU routing ----------------------------------------------------------------
-# _GPU_CAPABLE is the SINGLE SOURCE OF TRUTH for which stages request a GPU
-# (gres/partition/container) when compute.device=gpu. Processing-MuAgent
-# preprocessing is CPU-only today — the set is empty. GPU cluster infrastructure
-# (container pull, bind contract, submit-script routing) is in place for the
-# integration subagent to add its stages here later. Growing coverage is exactly
-# THREE edits per stage, kept in lockstep:
-#   1. Add the stage name to this set — flips RESOURCES[stage]["gpu"] to 1 when
-#      device=gpu. This gate alone changes nothing until step 2 wires it through.
-#   2. Declare `gpu=RESOURCES["<stage>"]["gpu"]` in that stage's `<stage>_execute`
-#      rule `resources:` block, exactly like `mem_mb`/`runtime` are declared per
-#      rule. Snakemake `default-resources` cannot key off the rule name, so the
-#      profile default (gpu=0) covers every rule that does NOT declare its own;
-#      WITHOUT this line the GPU resource never reaches the submit script and the
-#      stage silently requests 0 GPUs. tests/test_gpu_resources_contract.py fails
-#      loud if a _GPU_CAPABLE stage is missing this declaration.
-#   3. Give the stage a `compute.use_gpu()` branch for its heavy op — gates the
-#      actual *code path*.
+# _GPU_CAPABLE is the registry of stages that can use a GPU when compute.device=gpu.
+# Preprocessing is CPU-only — the set is empty. GPU routing (partition, gres,
+# container dispatch) lives in the integration pipeline's submit profile, not here.
+#
+# When a preprocessing stage gains GPU support in the future, three edits are
+# needed in lockstep:
+#   1. Add the stage name to _GPU_CAPABLE (the gate).
+#   2. Re-wire the submit profiles (slurm/pbs config.yaml + submit scripts) to
+#      accept and route a `gpu` resource — the preprocessing profiles intentionally
+#      omit {resources.gpu} today because no preprocessing stage uses it.
+#   3. Give the stage a `compute.use_gpu()` branch for its compute path.
 _GPU_CAPABLE: set[str] = set()
 
 
@@ -115,14 +109,11 @@ def gpu_for(stage: str) -> int:
 
 # Public API ----------------------------------------------------------------
 
-# NOTE: the per-stage `gpu` value is resolved HERE, at Snakemake parse time, from
-# PMA_DEVICE (via gpu_for -> _device). On the supported path PMA_DEVICE is exported
-# before Snakemake starts — the Execution-MuAgent head-job script sets it from
-# site.config and hpc.env carries it — so the value is correct when the workflow is
-# parsed. (A manual `snakemake` run that forgets to source hpc.env would see the cpu
-# default; submit via Execution-MuAgent, which sets it for you.)
+# `gpu` is intentionally absent from RESOURCES: preprocessing submit profiles do not
+# pass a gpu resource to the scheduler (see slurm/pbs config.yaml). When a stage is
+# added to _GPU_CAPABLE in the future, the submit profiles must be re-wired first.
 RESOURCES: dict[str, dict[str, int]] = {
-    name: {"cpus": v["cpus"], "mem_mb": _scaled_mem(v["mem_mb"]), "gpu": gpu_for(name)}
+    name: {"cpus": v["cpus"], "mem_mb": _scaled_mem(v["mem_mb"])}
     for name, v in _BASE_RESOURCES.items()
 }
 
