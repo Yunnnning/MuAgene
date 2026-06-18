@@ -155,9 +155,10 @@ def assemble_plan(
                                         "Cap per-cell rho/contamination at this fraction; "
                                         "prevents pathological over-correction on noisy cells.", "medium"),
                 "marker_genes": p(
-                    None, "pending_user_confirmation",
+                    None, "default",
                     "Optional (recommended): 5–10 marker gene symbols to visualise on t-SNE "
-                    "embeddings before and after Ambient RNA Correction. Set at plan review. "
+                    "embeddings before and after Ambient RNA Correction. Set at plan review "
+                    "via 'executor revise s1a_ambient.marker_genes [GENE1,GENE2,...]'. "
                     "Genes absent from the matrix are silently dropped. null = skip.",
                     "low",
                 ),

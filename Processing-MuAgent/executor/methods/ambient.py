@@ -154,6 +154,16 @@ def run_decontx(
     in_dir.mkdir(parents=True, exist_ok=True)
 
     counts = _to_csr(adata)
+    if counts.nnz > 0:
+        if counts.data.min() < 0:
+            raise ValueError(
+                "DecontX requires non-negative counts; negative values found in the count matrix."
+            )
+        if not np.allclose(counts.data, np.round(counts.data)):
+            raise ValueError(
+                "DecontX requires integer counts; non-integer values found "
+                "(data may be normalized rather than raw counts)."
+            )
     barcodes = list(map(str, adata.obs_names))
     features = list(map(str, adata.var_names))
     _write_mtx(counts, in_dir / "counts.mtx")

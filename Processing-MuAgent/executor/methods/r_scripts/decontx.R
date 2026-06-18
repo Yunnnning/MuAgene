@@ -86,7 +86,7 @@ summary_obj <- list(
     n_high_contamination = sum(contam > 0.20),
     max_contam_cap = max_contam,
     total_counts_pre = sum(counts_t),
-    total_counts_post = sum(decon_t)
+    total_counts_post = sum(decon)
 )
 write_json(summary_obj, file.path(out_dir, "summary.json"),
                      auto_unbox = TRUE, pretty = TRUE)
