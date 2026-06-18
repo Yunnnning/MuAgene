@@ -149,7 +149,7 @@ Once the user answers, in order:
 
 - Confirm `executor init` wrote `deliverables/plan/config/run.yaml` and `biological_context.md`.
 - If context was supplied, confirm it was written (`deliverables/plan/config/biological_context.md`).
-- If HPC mode was configured, confirm `execution.mode`, the `compute.device` (cpu/gpu) recorded, and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume. When device=gpu, also confirm the GPU partition/gres (SLURM) or select-extra (PBS) and the GPU conda env.
+- If HPC mode was configured, confirm `execution.mode`, the `compute.device` (cpu/gpu) recorded, and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume. When `device=gpu` on SLURM, also confirm GPU partition/gres and the pinned `gpu_image_uri` (container image pulled from registry — not a conda env).
 - After the planning phase completes (`plan_review_propose`), surface `deliverables/plan/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
 
 See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the canonical Step 2 script and the per-context-form handling details.

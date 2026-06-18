@@ -73,11 +73,16 @@ Execution-MuAgent report --run-dir /path/to/run
 Environment setup/management is Execution-MuAgent's responsibility (it owns the non-scientific runtime layer). Processing-MuAgent authors *what* the science needs — the env definitions/lock/`.def` in its repo and the `environments:` recipe; Execution-MuAgent makes them real on whatever machine, validates them, records a fingerprint, and reconciles when the definition (or the published image tag) changes. The env-definition *paths* live in one committed file, `<Processing-MuAgent>/workflow/envs/manifest.yaml`, read by both agents.
 
 ```bash
-# Fresh machine — ONE bootstrap command (operator-facing; see "Install" for the prerequisite env):
+# Fresh machine — ONE command (see "Install"). Creates the integrated `muagene` env from the
+# lock and runs init-machine inside it:
+bash <Execution-MuAgent>/scripts/bootstrap.sh --processing-repo <Processing-MuAgent>
+#   + GPU:  ... --device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag> --singularity-module <module>
+
+# init-machine is the engine bootstrap.sh hands off to. Run it directly to re-provision/validate
+# an already-created env (probes the host, writes ~/.muagene/machine.config, fills the CPU env
+# from the lock, installs both agent packages into it, pulls the GPU image, validates):
 Execution-MuAgent init-machine --processing-repo <Processing-MuAgent> \
   --device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag> --singularity-module <module>
-# -> probes the host, writes ~/.muagene/machine.config, creates the CPU env from the lock,
-#    installs both packages into it, pulls the GPU image, validates.
 
 # Per-device make/verify. --site-config is OPTIONAL: omit it once the machine is bootstrapped
 # (the recipe is synthesized from machine.config + the manifest); pass it to use a run's config.
@@ -308,14 +313,21 @@ PBS GPU sites set `pbs.gpu_select_extra` (e.g. `ngpus=1`) and optionally `pbs.gp
 
 ## Install
 
-Execution-MuAgent is intentionally lightweight (deps: `click` + `pyyaml` only), so it installs into a **minimal bootstrap env** on a fresh machine — it does not need the science stack. This is the env you run `init-machine` from; `init-machine` then creates the heavy `muagene` CPU env and installs both packages into *that*.
+A fresh machine needs **one command**. There is a single integrated env, `muagene`, that
+holds the science stack **and** both agent CLIs — no separate bootstrap env:
 
 ```bash
-# Minimal bootstrap env (any manager), then install Execution-MuAgent into it:
-mamba create -n muagene-exec python=3.11 pip -y
-mamba run -n muagene-exec pip install -e /path/to/Execution-MuAgent
-# Then bootstrap the machine (creates the muagene science env, installs both packages there):
-mamba run -n muagene-exec Execution-MuAgent init-machine --processing-repo /path/to/Processing-MuAgent --device cpu
+bash /path/to/Execution-MuAgent/scripts/bootstrap.sh --processing-repo /path/to/Processing-MuAgent
+# defaults: --processing-repo = the sibling ../Processing-MuAgent; --device cpu
 ```
 
-Requires Python 3.10+, `click>=8.1`, `pyyaml>=6`. (`init-machine` also installs Execution-MuAgent into the `muagene` env so `Processing-MuAgent submit` can spawn it there.)
+`bootstrap.sh` detects a conda manager (`micromamba`/`mamba`/`conda`), creates `muagene` from
+the committed lock (solve-free), then hands off to `init-machine`, which validates the env,
+installs both agent packages into it (`pip install --no-deps -e`, so the conda-provisioned
+packages are never re-resolved from PyPI), writes `~/.muagene/machine.config`, and records the
+fingerprint. After `Machine ready.`, `conda activate muagene` drives everything — interactive
+`Processing-MuAgent`/`Execution-MuAgent` CLIs and the `python -m execution_muagent` daemon that
+`Processing-MuAgent submit` spawns all run from this one env.
+
+Requires a conda env manager and Python 3.10+ (Execution-MuAgent itself only needs
+`click>=8.1` + `pyyaml>=6`, both supplied by the lock).

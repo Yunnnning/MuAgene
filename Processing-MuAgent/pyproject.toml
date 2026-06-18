@@ -24,7 +24,9 @@ dependencies = [
     "requests>=2.31",
     "click>=8.1",
     "jinja2>=3.1",
-    "snakemake>=7.32",
+    # >=8: the workflow profiles drive the plugin-based `--executor cluster-generic`
+    # interface, introduced in Snakemake 8 (matches workflow/envs/processing.yaml).
+    "snakemake>=8",
 ]
 
 [project.optional-dependencies]

@@ -594,12 +594,29 @@ def regenerate_locks(platforms: tuple[str, ...]) -> None:
     import shutil
     import subprocess
 
+    import yaml
+
     man = hpc.load_env_manifest()
     cpu = man.get("cpu") or {}
     yaml_path = hpc.REPO_ROOT / cpu["definition"]
     work = (hpc.REPO_ROOT / cpu["lock"]).parent
     if not yaml_path.exists():
         raise click.ClickException(f"CPU env YAML not found: {yaml_path}")
+    # The CPU env is rendered with `conda-lock --kind explicit` — a conda-ONLY format that
+    # silently drops any `pip:` subsection. A pip dep here would therefore never reach the
+    # lock (so a freshly provisioned env would be missing it and fail validate-env at run
+    # time, far from this command). Fail loud instead: every dependency must be a conda
+    # package. `- pip` itself (a bare string, for `init-machine`'s editable agent installs)
+    # is fine; only a `pip:` mapping is rejected.
+    spec = yaml.safe_load(yaml_path.read_text()) or {}
+    pip_deps = [d for d in (spec.get("dependencies") or [])
+                if isinstance(d, dict) and "pip" in d]
+    if pip_deps:
+        raise click.ClickException(
+            f"{yaml_path.name} has a `pip:` subsection, but the CPU lock is rendered with "
+            "`conda-lock --kind explicit` (conda-only) — pip deps would be silently dropped "
+            "from the lock and missing from every provisioned env. Move those packages to "
+            "conda dependencies (all of MuAgene's are on conda-forge/bioconda).")
     if not shutil.which("conda-lock"):
         raise click.ClickException(
             "conda-lock not found. Install dev deps:  pip install 'Processing-MuAgent[dev]'  "

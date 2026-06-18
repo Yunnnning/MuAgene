@@ -8,7 +8,10 @@ paths (read by both agents); `site.config`'s `environments:` section is generate
 ## CPU env — `processing.yaml` (canonical `muagene` env)
 
 Source-of-truth for the CPU env (provider `lock`: a conda-lock `processing.linux-64.lock`
-generated from this YAML gives reproducible, solve-free installs). Includes:
+generated from this YAML gives reproducible, solve-free installs). It is **fully conda** — no
+`pip:` subsection, because the lock is rendered with `conda-lock --kind explicit` (conda-only),
+which silently drops pip deps; `regenerate-locks` fails loud if one reappears. The only pip use
+is the bare `- pip` so the agent packages can be editable-installed. Includes:
 
 - Python stack (scanpy, muon, snapatac2, scrublet, snakemake, …)
 - **ATAC fragment prep:** `htslib` (`bgzip` + `tabix`) — must live in the env so cluster
@@ -54,10 +57,10 @@ Processing-MuAgent regenerate-locks          # runs conda-lock; needs: pip insta
 ## Provisioning
 
 ```bash
-# Execution-MuAgent owns this. Fresh machine — one bootstrap command (creates the CPU env
-# from the lock, installs both packages, pulls the GPU image):
-Execution-MuAgent init-machine --processing-repo <Processing-MuAgent> --device both \
-  --gpu-image-uri docker://<registry>/muagene-gpu:<tag>
+# Execution-MuAgent owns this. Fresh machine — ONE command creates the integrated `muagene` env
+# (science stack + both agent CLIs) and runs init-machine inside it:
+bash <Execution-MuAgent>/scripts/bootstrap.sh --processing-repo <Processing-MuAgent>
+#   + GPU:  ... --device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag>
 # Per-run (optional once bootstrapped); `submit` also auto-provisions a missing/stale env:
 Execution-MuAgent provision-env --site-config <site.config> --repo-root <Processing-MuAgent> --device both
 ```
@@ -67,8 +70,9 @@ on the path: the head job runs `python -m snakemake` from the repo root (cwd on 
 child jobs inherit `PYTHONPATH=$PMA_REPO_ROOT` (exported by `scripts/launch_runner.sh`) via
 `sbatch`/`qsub --export=ALL`; GPU child jobs get it from the container wrapper's `--env PYTHONPATH`.
 So a submit-time auto-provisioned env (created from the lock, no editable install) still imports
-`executor` in child jobs. `init-machine`'s `pip install -e` is for the interactive
-`Processing-MuAgent`/`executor` console scripts.
+`executor` in child jobs. `init-machine`'s `pip install --no-deps -e` is for the interactive
+`Processing-MuAgent`/`executor` console scripts (`--no-deps` because the lock already supplies
+every dependency — pip must not re-resolve them from PyPI over the conda builds).
 
 Whether S1a runs correction vs pass-through is set in the preprocessing plan
 (`s1a_ambient.method`: default `auto`). See `executor/plan_assembler.py` and `plan_review.md`.

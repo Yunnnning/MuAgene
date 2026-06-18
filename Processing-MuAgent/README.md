@@ -339,14 +339,11 @@ Commands below use `$CFG` = `<run_dir>/deliverables/plan/config/run.yaml` (writt
 
 ### Install
 
-MuAgene is set up on a fresh machine by **Execution-MuAgent** (it owns infrastructure). Clone both repos as siblings, then run one bootstrap command — it creates the `muagene` CPU env from the committed conda-lock lock and installs **both** packages into it. Do **not** create the conda env by hand.
+MuAgene is set up on a fresh machine by **Execution-MuAgent** (it owns infrastructure). Clone both repos as siblings, then run **one** bootstrap command — it creates the single integrated `muagene` env (science stack + both agent CLIs) from the committed conda-lock lock and installs both packages into it. Do **not** create the conda env by hand.
 
 ```bash
 # With Processing-MuAgent and Execution-MuAgent cloned as siblings:
-mamba create -n muagene-exec python=3.11 pip -y                       # minimal bootstrap env
-mamba run -n muagene-exec pip install -e /path/to/Execution-MuAgent
-mamba run -n muagene-exec Execution-MuAgent init-machine \
-  --processing-repo /path/to/Processing-MuAgent --device cpu          # creates `muagene`, installs both pkgs
+bash /path/to/Execution-MuAgent/scripts/bootstrap.sh --processing-repo /path/to/Processing-MuAgent
 conda activate muagene
 ```
 
@@ -381,6 +378,7 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 | `approve`             | Write `internal/checkpoints/<stage>.approved` (human checkpoints only)                                                                                                                         |
 | `plan-review`         | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/`                                                                                                              |
 | `revise`              | Update one or more parameters in `parameters.yaml` and reset a checkpoint to awaiting. Used to tune, tighten, loosen, or **skip** individual QC metrics — see **Flexible QC thresholds**       |
+| `regenerate-locks`    | Regenerate the CPU conda-lock lockfile from `workflow/envs/processing.yaml` after editing dependencies (needs `pip install '.[dev]'`; commit the refreshed lock)                                |
 | `unlock`              | Remove stale Snakemake locks after a cancelled/killed run                                                                                                                                      |
 | `propose`             | Run a single `*_propose` rule (optional; not required for the main pipeline)                                                                                                                   |
 

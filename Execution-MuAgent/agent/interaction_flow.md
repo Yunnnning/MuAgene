@@ -125,7 +125,7 @@ The first command run on a new machine. In order:
 1. `probe_capabilities()` → env manager, container runtime, scheduler, gpu_present.
 2. Write `~/.muagene/machine.config` (manager, container_runtime, singularity_module, gpu_image, pinned `gpu_image_uri`, policy, `processing_repo`, env names, detected scheduler/gpu_present).
 3. Provision the **CPU env** from the committed conda-lock lock (no science site.config needed — the recipe is synthesized from machine.config + `<processing-repo>/workflow/envs/manifest.yaml`).
-4. `pip install -e` **both** agent packages (Processing-MuAgent and Execution-MuAgent) into the CPU env, so `Processing-MuAgent submit` can spawn `python -m execution_muagent` from that env.
+4. `pip install --no-deps -e` **both** agent packages (Processing-MuAgent and Execution-MuAgent) into the CPU env so **login-node** `Processing-MuAgent submit` can spawn `python -m execution_muagent` from that env (`--no-deps`: the lock already supplies every dependency, so pip only links source + console scripts and never re-resolves conda packages from PyPI). Cluster **child jobs** do not need this — they import `executor` from the repo via `PYTHONPATH=$PMA_REPO_ROOT` (exported by `scripts/launch_runner.sh` and inherited through `sbatch`/`qsub --export=ALL`).
 5. If `--device` includes gpu: **pull** the pinned image to the local `.sif` (never build). Requires `--gpu-image-uri`.
 6. `validate_env` per device; print a readiness report. Fail loud on any error.
 
