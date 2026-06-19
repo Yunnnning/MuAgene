@@ -15,7 +15,7 @@ def four_way_overlap(rna_flag: pd.Series, atac_flag: pd.Series) -> dict[str, int
     return {"rna_only": rna_only, "atac_only": atac_only, "both": both, "neither": neither}
 
 
-def recommend_policy(study_goal: str | None) -> dict[str, Any]:
+def recommend_policy() -> dict[str, Any]:
     """Paired multiome always uses union: remove cells flagged by either detector.
 
     Doublet detectors are prone to false negatives; union is stricter and reduces

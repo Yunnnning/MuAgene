@@ -236,6 +236,28 @@ class RenderSubmissionScriptTests(unittest.TestCase):
             self.assertIn("MyExperiment", config_line)
             self.assertNotIn("Processing-MuAgent", config_line)
 
+    def test_slurm_job_name_includes_run_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "whelanC57A"
+            repo_root = Path(tmp) / "repo"
+            script = self._render(run_dir, repo_root)
+            self.assertIn("#SBATCH --job-name=pma_head_job_whelanC57A", script)
+
+    def test_pbs_job_name_includes_run_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "whelanC57A"
+            repo_root = Path(tmp) / "repo"
+            sc = SiteConfig(scheduler="pbs", queue="workq", project="vaquerizas", conda_env="grn")
+            script = self._render(run_dir, repo_root, site_config=sc)
+            self.assertIn("#PBS -N pma_head_job_whelanC57A", script)
+
+    def test_run_name_exported_to_child_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "whelanC57A"
+            repo_root = Path(tmp) / "repo"
+            script = self._render(run_dir, repo_root)
+            self.assertIn("export PMA_RUN_NAME=whelanC57A", script)
+
 
 class OutputVerificationTests(unittest.TestCase):
     """verify_output_file: proper integrity, not just non-empty."""

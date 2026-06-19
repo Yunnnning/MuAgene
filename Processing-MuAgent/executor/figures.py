@@ -105,11 +105,12 @@ def default_rna_thresholds(obs) -> dict[str, float]:
 
 
 def default_atac_fragment_bounds(n_frag: np.ndarray) -> tuple[float, float, float]:
-    """Log-MAD fragment bounds at plan defaults."""
+    """Log-MAD fragment bounds at plan defaults (no overrides → applied == derived)."""
     from .methods import qc_thresholds as qct
-    return qct.atac_n_fragment_bounds(
+    f_lo, f_hi, mad_lo_raw, _derived = qct.atac_n_fragment_bounds(
         n_frag, k_mad=DEFAULT_N_FRAG_K_MAD, n_frag_floor=DEFAULT_N_FRAG_FLOOR,
     )
+    return f_lo, f_hi, mad_lo_raw
 
 # User-facing panel / axis labels for QC explore histograms (keys = internal metric ids).
 QC_METRIC_DISPLAY_NAMES: dict[str, str] = {
@@ -233,12 +234,20 @@ def build_mad_range_markers(
     hi_skip_above: float,
     log_axis: bool,
     pct: bool = False,
+    derived_lo: float | None = None,
+    derived_hi: float | None = None,
 ) -> tuple[list[tuple[float, str, bool]], float | None, float | None]:
     """Markers for log-MAD range metrics (total_counts, n_genes, n_fragments).
 
     Plan-default lower/upper bounds are always drawn. Bounds that actively filter
     are red; unused defaults (e.g. when a metric is skipped) are grey. Skip
     sentinels (``lo=0``, astronomical upper) are never plotted.
+
+    ``derived_lo``/``derived_hi`` are the MAD/floor-derived bounds that a user
+    override has displaced (``None`` when no override is active → behaviour
+    identical to before). When set they are drawn as grey ``(MAD)`` reference
+    lines so the chosen override (red ``applied_*``) is reviewed against the
+    derivation it replaced.
     """
     markers: list[tuple[float, str, bool]] = []
     lo_active = _lo_filter_active(applied_lo)
@@ -287,6 +296,20 @@ def build_mad_range_markers(
             pct=pct,
         )
 
+    # MAD/floor-derived bounds displaced by a user override: grey reference lines.
+    if derived_lo is not None and float(derived_lo) > 0:
+        _append_bound_marker(
+            markers, float(derived_lo),
+            _cutoff_label(float(derived_lo), pct=pct, log_axis=log_axis, mad=True),
+            False, pct=pct,
+        )
+    if derived_hi is not None and float(derived_hi) < hi_skip_above:
+        _append_bound_marker(
+            markers, float(derived_hi),
+            _cutoff_label(float(derived_hi), pct=pct, log_axis=log_axis, mad=True),
+            False, pct=pct,
+        )
+
     if lo_active and not any(
         _thresholds_coincide(float(applied_lo), m[0], pct=pct) for m in markers
     ):
@@ -317,8 +340,14 @@ def build_upper_only_markers(
     default_fixed_refs: list[tuple[float, str]] | None = None,
     pct: bool = False,
     log_axis: bool = False,
+    derived_hi: float | None = None,
 ) -> tuple[list[tuple[float, str, bool]], float | None, float | None]:
-    """Markers for upper-bound-only metrics (pct_counts_mt, pct_counts_ribo, nucleosome)."""
+    """Markers for upper-bound-only metrics (pct_counts_mt, pct_counts_ribo, nucleosome).
+
+    ``derived_hi`` is the MAD/clamp-derived upper bound that a user override has
+    displaced (``None`` → behaviour identical to before); when set it is drawn as a
+    grey ``(MAD)`` reference line under the red override.
+    """
     markers: list[tuple[float, str, bool]] = []
     hi_active = _hi_filter_active(applied_hi, hi_skip_above)
     def_hi = float(default_hi)
@@ -351,6 +380,14 @@ def build_upper_only_markers(
             markers, float(rx), str(rlabel),
             _bound_in_use(float(rx), applied_hi, hi_active, pct=pct),
             pct=pct,
+        )
+
+    # MAD-derived upper bound displaced by a user override: grey reference line.
+    if derived_hi is not None and float(derived_hi) < hi_skip_above:
+        _append_bound_marker(
+            markers, float(derived_hi),
+            _cutoff_label(float(derived_hi), pct=pct, log_axis=log_axis, mad=True),
+            False, pct=pct,
         )
 
     if hi_active and not any(

@@ -120,14 +120,6 @@ def build_intro_context(run_dir: Path | str) -> dict[str, Any]:
 
     pairing = ingest.get("pairing", {})
     overlap_raw = pairing.get("overlap")
-    study_goal = (
-        plan.get("stages", {})
-        .get("s3_doublets", {})
-        .get("parameters", {})
-        .get("study_goal", {})
-        .get("value", "")
-    )
-
     return {
         "organism":             field("organism").get("value", ""),
         "tissue":               field("tissue").get("value", ""),
@@ -135,7 +127,6 @@ def build_intro_context(run_dir: Path | str) -> dict[str, Any]:
         "sample_type":          field("sample_type").get("value", ""),
         "genome_build":         field("genome_build").get("value", ""),
         "workflow_branch":      plan.get("workflow_branch", ingest.get("workflow_branch", "")),
-        "study_goal":           study_goal,
         "rna_n_cells":          ingest.get("rna_n_cells"),
         "atac_n_barcodes":      ingest.get("atac_n_unique_barcodes"),
         "rna_raw_n_barcodes":   ingest.get("rna_raw_n_barcodes"),
@@ -337,7 +328,6 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     # a checkpoint gate.
     branch = plan.get("workflow_branch", "paired")
     policy = param("s3_doublets", "removal_policy_recommendation")
-    goal = param("s3_doublets", "study_goal")
 
     rna_doub_thr = param("s3_doublets", "rna_doublet_score_threshold")
     atac_doub_thr = (
@@ -398,7 +388,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         items.append({
             "label": "Doublet removal policy",
             "value": f"Scrublet only (fixed score threshold{rna_thr_note})",
-            "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
+            "reason": "single-detector branch — no reconciliation to confirm.",
             "certainty": "needs confirmation",
         })
     elif branch == "atac_only":
@@ -408,7 +398,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
         items.append({
             "label": "Doublet removal policy",
             "value": f"SnapATAC2 scrublet only (fixed score threshold{atac_thr_note})",
-            "reason": f"study_goal={goal.get('value', '?')}; single-detector branch — no reconciliation to confirm.",
+            "reason": "single-detector branch — no reconciliation to confirm.",
             "certainty": "needs confirmation",
         })
 

@@ -65,13 +65,12 @@ _AMBIENT_METHODS = frozenset({"auto", "none", "decontx", "soupx"})
 def _default_ambient_method(
     *,
     ingest: dict[str, Any] | None,
-    study_goal: str | None,
     user_method: str | None,
 ) -> tuple[str, str, str, str]:
     """Return (method, source, rationale, confidence) for s1a_ambient.method.
 
-    Correction is dataset- and goal-driven (10x ambient-RNA guidance), not
-    cells-vs-nuclei. Default is ``auto`` on RNA branches; confirm at plan review.
+    Correction is dataset-driven (10x ambient-RNA guidance), not cells-vs-nuclei.
+    Always recommended; can be opted out at plan review or overridden via run.yaml.
     """
     if user_method is not None:
         m = str(user_method).strip().lower()
@@ -89,7 +88,6 @@ def _default_ambient_method(
     has_raw = bool((ingest or {}).get("has_raw_matrix"))
     rna_status = (ingest or {}).get("rna_filtered_status")
     both_present = has_raw and rna_status == "filtered"
-    goal = (study_goal or "clustering_inference").strip().lower()
     if both_present:
         method_note = "Filtered and raw RNA → auto uses SoupX."
     else:
@@ -101,22 +99,11 @@ def _default_ambient_method(
     skip_note = (
         " Skip at plan review if contamination looks low after inspecting the data."
     )
-    if goal == "rare_populations":
-        return (
-            "auto",
-            "recommended",
-            method_note
-            + decision_note
-            + " Rare cell types are easily masked by background RNA, so correction "
-            "is usually worth keeping."
-            + skip_note,
-            "high",
-        )
     return (
         "auto",
-        "default",
+        "recommended",
         method_note + decision_note + skip_note,
-        "medium",
+        "high",
     )
 
 
@@ -125,7 +112,6 @@ def assemble_plan(
     *,
     workflow_branch: str,
     sample_type: str = "unknown",
-    study_goal: str | None = None,
     ingest: dict[str, Any] | None = None,
     s1a_ambient_method: str | None = None,
 ) -> dict[str, Any]:
@@ -136,7 +122,6 @@ def assemble_plan(
 
     ambient_method, amb_src, amb_rat, amb_conf = _default_ambient_method(
         ingest=ingest,
-        study_goal=study_goal,
         user_method=s1a_ambient_method,
     )
 
@@ -227,8 +212,6 @@ def assemble_plan(
                      "Paired multiome: union of RNA and ATAC doublet calls (remove if either detector flags)."),
                     "high",
                 ),
-                "study_goal": p(study_goal or "clustering_inference", "user" if study_goal else "default",
-                                 "From run.yaml or fallback.", "high" if study_goal else "medium"),
             }
         },
         "s4_rna_norm": {

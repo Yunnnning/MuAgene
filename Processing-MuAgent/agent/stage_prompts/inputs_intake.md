@@ -14,7 +14,6 @@ Tailor the required paths to the declared `workflow_branch`:
 >
 > Optional:
 > - **Biological context** — organism, tissue, assay, any DOIs. Free text is fine, or paste a filled Biological Context Report, or give me a path to one.
-> - **Study goal** — `clustering_inference` (default) or `rare_populations`. Shapes my S3 doublet-policy recommendation.
 > - **Seed** — default 42.
 > - **Execution** — Should I run locally on this machine, or submit jobs to a cluster (HPC: PBS Pro or SLURM)? - If you choose HPC and have not yet set the required `PMA_*` environment variables, I'll run `hpc-info` on the login node, list available queues/partitions, suggest a project code or account where I can detect one, and ask you to confirm before I write `hpc.env`.
 
@@ -50,8 +49,7 @@ run_dir: <user's run_dir>
 rna_path: <optional>
 atac_fragments_path: <optional>
 genome_assembly: <required>
-study_goal: <clustering_inference | rare_populations>     # default clustering_inference; guides S1a + S3
-# s1a_ambient_method: <auto | none | decontx | soupx>   # optional; else plan uses study_goal + ingest
+# s1a_ambient_method: <auto | none | decontx | soupx>   # optional; else plan uses ingest
 seed: 42
 ```
 

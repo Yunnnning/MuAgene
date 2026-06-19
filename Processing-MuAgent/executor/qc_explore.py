@@ -149,12 +149,22 @@ def _rna_qc_from_metrics(
     min_counts_floor = _pval(params, "min_counts_floor", DEFAULT_MIN_COUNTS_FLOOR)
     min_genes_floor = float(_pval(params, "min_genes_floor", DEFAULT_MIN_GENES_FLOOR))
     pct_ribo_max = float(_pval(params, "pct_ribo_max", DEFAULT_PCT_RIBO_MAX))
+    # Manual overrides pin the effective bound; the MAD/floor value is still
+    # computed (th["*_derived"]) and shown grey under the red override.
+    tc_min_ov = _pval(params, "total_counts_min_override", None)
+    tc_max_ov = _pval(params, "total_counts_max_override", None)
+    ng_min_ov = _pval(params, "n_genes_min_override", None)
+    ng_max_ov = _pval(params, "n_genes_max_override", None)
+    mt_max_ov = _pval(params, "pct_counts_mt_max_override", None)
 
     th = _qct.rna_thresholds(
         obs, total_counts_k_mad=total_counts_k_mad, n_genes_k_mad=n_genes_k_mad,
         pct_mt_k=pct_mt_k, pct_mt_ceiling=pct_mt_ceil,
         pct_mt_floor=pct_mt_floor, min_counts_floor=min_counts_floor,
         min_genes_floor=min_genes_floor,
+        total_counts_min_override=tc_min_ov, total_counts_max_override=tc_max_ov,
+        n_genes_min_override=ng_min_ov, n_genes_max_override=ng_max_ov,
+        pct_counts_mt_max_override=mt_max_ov,
     )
     masks = _qct.rna_pass_masks(obs, th, pct_ribo_max=pct_ribo_max)
     cells_removed = marginal_removals(masks)
@@ -171,6 +181,8 @@ def _rna_qc_from_metrics(
         default_floor=DEFAULT_MIN_COUNTS_FLOOR,
         hi_skip_above=SKIP_ABOVE_COUNTS,
         log_axis=True,
+        derived_lo=th["total_counts_min_derived"] if tc_min_ov is not None else None,
+        derived_hi=th["total_counts_max_derived"] if tc_max_ov is not None else None,
     )
     ng_markers, ng_lo, ng_hi = build_mad_range_markers(
         applied_lo=th["n_genes_min"],
@@ -181,6 +193,8 @@ def _rna_qc_from_metrics(
         default_floor=DEFAULT_MIN_GENES_FLOOR,
         hi_skip_above=SKIP_ABOVE_GENES,
         log_axis=True,
+        derived_lo=th["n_genes_min_derived"] if ng_min_ov is not None else None,
+        derived_hi=th["n_genes_max_derived"] if ng_max_ov is not None else None,
     )
     mt_markers, _, mt_hi = build_upper_only_markers(
         applied_hi=th["pct_counts_mt_max"],
@@ -189,6 +203,7 @@ def _rna_qc_from_metrics(
         hi_skip_above=SKIP_PCT_AT,
         pct=True,
         default_fixed_refs=DEFAULT_PCT_MT_REFS,
+        derived_hi=th["pct_counts_mt_max_derived"] if mt_max_ov is not None else None,
     )
     ribo_markers, _, ribo_hi = build_upper_only_markers(
         applied_hi=pct_ribo_max,
@@ -278,9 +293,12 @@ def _atac_qc_from_metrics(
     tss_max = float(_pval(params, "tss_enrichment_max", DEFAULT_TSS_MAX))
     nuc_max = float(_pval(params, "nucleosome_signal_max", DEFAULT_NUC_MAX))
     frip_min = float(_pval(params, "frip_min", 0.2))
+    nf_min_ov = _pval(params, "n_fragments_min_override", None)
+    nf_max_ov = _pval(params, "n_fragments_max_override", None)
 
-    f_lo, f_hi, f_lo_mad_raw = _qct.atac_n_fragment_bounds(
+    f_lo, f_hi, f_lo_mad_raw, (f_lo_derived, f_hi_derived) = _qct.atac_n_fragment_bounds(
         n_frag_values, k_mad=k_mad, n_frag_floor=n_frag_floor,
+        n_fragments_min_override=nf_min_ov, n_fragments_max_override=nf_max_ov,
     )
     masks = _qct.atac_pass_masks(
         n_frag_values, tss_values, ns_values,
@@ -311,6 +329,8 @@ def _atac_qc_from_metrics(
         default_floor=DEFAULT_N_FRAG_FLOOR,
         hi_skip_above=SKIP_ABOVE_COUNTS,
         log_axis=True,
+        derived_lo=f_lo_derived if nf_min_ov is not None else None,
+        derived_hi=f_hi_derived if nf_max_ov is not None else None,
     )
     tss_markers, tss_lo, tss_hi = build_fixed_range_markers(
         applied_lo=tss_min,
@@ -403,9 +423,11 @@ def _explore_atac(run_dir: Path, plan: dict[str, Any], figs_dir: Path,
     whitelist = atac_meta.get("cell_barcode_whitelist")
     h5_out = art / ATAC_SNAP_EXPLORE_H5AD
     Path(h5_out).unlink(missing_ok=True)  # idempotent re-runs
+    snap_tmp = art / "snapatac2_tmp"
+    snap_tmp.mkdir(exist_ok=True)
     adata = snap.pp.import_fragments(
         fragments_path, chrom_sizes=genome_ref, file=str(h5_out),
-        sorted_by_barcode=False, whitelist=whitelist,
+        sorted_by_barcode=False, whitelist=whitelist, tempdir=snap_tmp,
     )
     try:
         snap.metrics.tsse(adata, genome_ref)

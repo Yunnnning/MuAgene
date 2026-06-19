@@ -67,15 +67,17 @@ After QC approval the pipeline runs straight through to the final outputs: Leide
   - `nucleosome_signal` (nucleosome signal): default = **3**
   - `FRiP` (Fraction of Reads in Peaks): default = **0.2**
 
+  Any MAD-derived bound above (`total_counts`, `n_genes_by_counts`, `pct_counts_mt`, `n_fragments`) can be pinned to an exact value with its `*_override` key; see **Flexible QC thresholds** below.
+
 **Flexible QC thresholds**
-Every RNA and ATAC QC metric can be **tightened/loosened**, individually **skipped** (filter removed entirely), or **partially skipped** (upper or lower bound only removed) — at either **plan review** (checkpoint #1) or **QC review** (checkpoint #2).
+Every RNA and ATAC QC metric can be **tightened/loosened**, **pinned to an exact value**, individually **skipped** (filter removed entirely), or **partially skipped** (upper or lower bound only removed) — at either **plan review** (checkpoint #1) or **QC review** (checkpoint #2). To pin a MAD-derived bound to a specific number, set its `*_override` key (e.g. `revise s1_rna_qc n_genes_min_override=300`); the MAD/floor derivation still runs and is drawn as a **grey** reference line while the chosen cutoff is drawn in **red** on the QC histograms. An override more permissive than the recommended floor/ceiling is still applied but flagged with a warning in the QC report.
 
 - **S3 Doublets** — Per-modality doublet detection, then branch-specific reconciliation:
   - **RNA:** Scrublet (sparse-CSR input; `expected_doublet_rate ≈ 0.0008 × n_cells`, capped at 10%).
   - **RNA / ATAC:** fixed doublet score thresholds (defaults: RNA Scrublet 0.25, ATAC SnapATAC2 0.5; configurable via plan or `revise s3_doublets`).
   - **separate / single-modality branches:** Each modality is filtered independently by its own detector; per-modality calls are saved in `calls.parquet`.
   - **paired branch:** Also performs joint barcode alignment after doublet removal; the union doublet policy is confirmed at the **QC review checkpoint** (`deliverables/qc_review/qc_review_<run>.md`).
-- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms, a cell-count waterfall (with counts labelled on bars), and `deliverables/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large QC-only working files are automatically deleted to free storage (~2 GB/run): the QC matrices `rna_qc.h5ad`, `atac_qc.h5ad`, `atac_snap.h5ad`, the `qc_explore/atac_snap_explore.h5ad` import, the chr-normalised fragment caches `atac_fragments_cbf[_chrnorm].tsv.gz` (the single biggest artifact — reused across QC re-runs but dead once approved), and the S1a recompute caches (`tsne_coords_cache.parquet`, `cell_totals.parquet`). None is a declared Snakemake output or read by a post-gate stage, so deletion never triggers a re-run. Preserved: `qc_summary.json` markers, the QC-metrics parquets (the final S8 manifest reads `qc_metrics_post.parquet`), `rna_decontaminated.h5ad`, and all S3+ artifacts. (Per-stage scratch dirs — `_work_soupx`/`_work_decontx`, `macs3_tmp` — are removed by their own stage as soon as it finishes, not here.)
+- **post_qc_review** — **QC review checkpoint (#2).** Propose-only gate between S3 and S6 PCA (RNA) + neighbor graph. Generates doublet histograms (with the chosen doublet threshold drawn as a red cutoff line), a cell-count waterfall (with counts labelled on bars), and `deliverables/qc_review/qc_review_<run>.md` — a plain-language summary of what each filter step did (MAD outlier bounds, MT/ribo ceilings, TSS enrichment, nucleosome signal, FRiP, union doublet policy). Each RNA/ATAC section opens with cells before filtering, retained, and removed. Revise quality-filter thresholds and re-run affected stages before approving. On approval, the large QC-only working files are automatically deleted to free storage (~2 GB/run): the QC matrices `rna_qc.h5ad`, `atac_qc.h5ad`, `atac_snap.h5ad`, the `qc_explore/atac_snap_explore.h5ad` import, the chr-normalised fragment caches `atac_fragments_cbf[_chrnorm].tsv.gz` (the single biggest artifact — reused across QC re-runs but dead once approved), and the S1a recompute caches (`tsne_coords_cache.parquet`, `cell_totals.parquet`). None is a declared Snakemake output or read by a post-gate stage, so deletion never triggers a re-run. Preserved: `qc_summary.json` markers, the QC-metrics parquets (the final S8 manifest reads `qc_metrics_post.parquet`), `rna_decontaminated.h5ad`, and all S3+ artifacts. (Per-stage scratch dirs — `_work_soupx`/`_work_decontx`, `macs3_tmp` — are removed by their own stage as soon as it finishes, not here.)
 - **S4 RNA norm + HVG** — Log-normalize (`target_sum=1e4`) + HVG selection (`seurat_v3` on counts).
 - **S5 ATAC spectral embedding and peak matrix export** — SnapATAC2 tile matrix (`bin_size=500`, unified with S3) → feature selection → spectral embedding. In parallel, exports a feature (cell-by-feature) matrix using this priority order for the peak coordinates:
   1. **User-supplied peaks** — `atac_peaks_path` in `run.yaml` → SnapATAC2 `make_peak_matrix` (`user_peaks` mode).
@@ -355,7 +357,7 @@ For GPU (`--device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag>`) 
 
 ### Configure and scaffold a run
 
-Edit `config/run.example.yaml` (at minimum `run_dir`, `genome_assembly`, `study_goal`, and modality paths). Optional: `rna_raw_path`, `atac_peaks_path`, `barcode_translation_path`, `cell_metadata_path`, `biological_context_path`.
+Edit `config/run.example.yaml` (at minimum `run_dir`, `genome_assembly`, and modality paths). Optional: `rna_raw_path`, `atac_peaks_path`, `barcode_translation_path`, `cell_metadata_path`, `biological_context_path`.
 
 ```bash
 Processing-MuAgent init --config config/run.example.yaml
@@ -381,13 +383,13 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 | `hpc-status`          | One-shot report of job health, supervisor liveness, monitor findings, and per-step state (no poll loop); warns if supervision is offline while the cluster job is still running                |
 | `approve`             | Write `internal/checkpoints/<stage>.approved` (human checkpoints only)                                                                                                                         |
 | `plan-review`         | Render `plan_review.md`; also writes per-stage metadata to `internal/stage_meta/`                                                                                                              |
-| `revise`              | Update one or more parameters in `parameters.yaml` and reset a checkpoint to awaiting. Used to tune, tighten, loosen, or **skip** individual QC metrics — see **Flexible QC thresholds**       |
+| `revise`              | Update one or more parameters in `parameters.yaml` and reset a checkpoint to awaiting. Used to tune, tighten, loosen, **pin to an exact value** (`*_override`), or **skip** individual QC metrics — see **Flexible QC thresholds**       |
 | `regenerate-locks`    | Regenerate the CPU conda-lock lockfile from `workflow/envs/processing.yaml` after editing dependencies (needs `pip install '.[dev]'`; commit the refreshed lock)                                |
 | `unlock`              | Remove stale Snakemake locks after a cancelled/killed run                                                                                                                                      |
 | `propose`             | Run a single `*_propose` rule (optional; not required for the main pipeline)                                                                                                                   |
 
 
-**Approve aliases:** `qc_review` → `post_qc_review`. Parameter keys in `revise` use internal names (e.g. `s7_clustering.rna_resolution`).
+**Approve aliases:** `qc_review` → `post_qc_review`. `revise` accepts a short `<param>=<value>` form — the stage prefix is auto-added (e.g. `revise s7_clustering rna_resolution=1.2` stores `s7_clustering.rna_resolution`). The full `<stage>.<param>=<value>` form is also accepted.
 
 ### Local workflow
 
@@ -434,7 +436,7 @@ Processing-MuAgent supervisor-restart --config $CFG
 ### Optional debugging
 
 ```bash
-Processing-MuAgent revise s7_clustering s7_clustering.rna_resolution=1.2 --config $CFG
+Processing-MuAgent revise s7_clustering rna_resolution=1.2 --config $CFG
 Processing-MuAgent run --config $CFG --no-context
 Processing-MuAgent hpc-info
 Processing-MuAgent propose post_qc_review --config $CFG

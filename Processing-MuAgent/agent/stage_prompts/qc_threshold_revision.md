@@ -36,10 +36,10 @@ Use this when `execution.mode` is `pbs` or `slurm`.
 1. **Update parameters (this also invalidates stale artifacts + gate automatically).** For each changed value, run:
 
    ```bash
-   executor revise <stage> <stage>.<param>=<value> --config $CFG --rationale "<user's reason>"
+   executor revise <stage> <param>=<value> --config $CFG --rationale "<user's reason>"
    ```
 
-   Valid QC revision stages here are `s1_rna_qc`, `s2_atac_qc`, and `s3_doublets`. `revise` prints the invalidated files — no manual deletion needed.
+   The stage prefix is auto-added to the key (`<param>` → `<stage>.<param>` in `parameters.yaml`). The full form `<stage>.<param>=<value>` is also accepted. Valid QC revision stages here are `s1_rna_qc`, `s2_atac_qc`, and `s3_doublets`. `revise` prints the invalidated files — no manual deletion needed.
 
 2. **(Optional) verify the DAG** before spending cluster time. A dry-run must list the QC execute stages and `post_qc_review_propose`, not "Nothing to be done":
 
@@ -65,11 +65,11 @@ Use this when `execution.mode` is `pbs` or `slurm`.
 
 4. **Submit and monitor.**
 
-   Cancel stale head jobs first. An old head job can recreate sentinels you just cleared and confuse the new run:
+   Cancel stale head jobs first. An old head job can recreate sentinels you just cleared and confuse the new run. **Always filter by the current run name** — bare `grep pma_head` matches jobs from every concurrent sample:
 
    ```bash
-   squeue -u $USER | grep pma_head
-   # scancel <JOBID> for each listed pma_head job
+   squeue -u $USER | grep "pma_head_job_$(basename <run_dir>)"
+   # scancel <JOBID> for each listed job
    ```
 
    Then submit and monitor:
@@ -162,14 +162,44 @@ Revise the **input knobs** the stage reads — the override wins over the frozen
 plan via `provenance.effective_value`. The MAD-derived effective bounds
 (`s1_rna_qc.total_counts_min/max`, `n_genes_min/max`, `pct_counts_mt_max`;
 `s2_atac_qc.n_fragments_min/max`) are *outputs* the stage computes and overwrites
-each run — revising them has no effect. To move a MAD-derived cutoff, change its
-recipe knob (the multiplier or floor/ceiling), not the bound.
+each run — revising **those output keys directly** has no effect. To move a
+MAD-derived cutoff you have two options: tune its recipe knob (the multiplier or
+floor/ceiling) to shift the whole derivation, **or** pin the bound to an exact
+value with the matching `*_override` key (see "Pinning a bound to an exact value"
+below).
 
 | Stage | Honored keys (inputs) |
 |---|---|
 | `s1_rna_qc` | `total_counts_k_mad`, `n_genes_k_mad`, `pct_mt_k`, `pct_mt_ceiling`, `pct_mt_floor`, `pct_ribo_max`, `min_counts_floor`, `min_genes_floor`, `min_cells_per_gene` |
 | `s2_atac_qc` | `frip_min`, `tss_enrichment_min`, `tss_enrichment_max`, `nucleosome_signal_max`, `n_fragments_k_mad`, `n_fragments_floor` |
 | `s3_doublets` | `rna_doublet_score_threshold`, `atac_doublet_probability_threshold` |
+
+## Pinning a bound to an exact value (`*_override`)
+
+When the user wants a **specific numeric cutoff** for a MAD-derived bound (e.g.
+"set the RNA `n_genes` lower bound to exactly 300"), set the matching `*_override`
+key. The override becomes the *effective filtering bound*; the MAD/floor derivation
+still runs and is shown as a **grey reference line** while the chosen override is
+drawn in **red** on the QC histograms. The directly-settable fixed thresholds
+(`pct_ribo_max`, `tss_enrichment_min/max`, `nucleosome_signal_max`, `frip_min`,
+`pct_mt_floor`/`pct_mt_ceiling`, the `*_floor` keys, and the s3 doublet
+thresholds) already accept any value — they need **no** `_override` suffix.
+
+| Stage | Override keys (pin to an exact value) |
+|---|---|
+| `s1_rna_qc` | `total_counts_min_override`, `total_counts_max_override`, `n_genes_min_override`, `n_genes_max_override`, `pct_counts_mt_max_override` |
+| `s2_atac_qc` | `n_fragments_min_override`, `n_fragments_max_override` |
+
+Example: `executor revise s1_rna_qc n_genes_min_override=300 --config $CFG --rationale "user wants ≥300 genes"`.
+
+An override that is **more permissive than its recommended floor/ceiling** (e.g.
+`n_genes_min_override=100` below `min_genes_floor=250`, or
+`pct_counts_mt_max_override` above `pct_mt_ceiling`) is **still applied** — the
+user is trusted — but the stage logs an `override_below_floor` event and the QC
+review report shows a "⚠ Manual threshold override(s) below the recommended floor"
+note so the deviation is visible during review. Overridden bounds are recorded in
+`parameters.yaml` as `source: user` with a rationale that names the MAD-derived
+value they replaced.
 
 ## Stage-done sentinels
 
@@ -179,7 +209,12 @@ Each QC stage's `qc_summary.json` is its stage-done marker (used by `stage_progr
 
 ## Skipping individual QC metrics
 
-Use these workaround commands when the user wants to disable or remove the upper bound on a specific QC metric. Set them with `revise` before approving the plan (at plan review) or before re-submitting (at QC review).
+Use these workaround commands when the user wants to **fully disable** a metric or
+remove only its upper bound. To instead **pin a bound to an exact value** (not
+disable it), use the `*_override` keys from "Pinning a bound to an exact value"
+above (e.g. `n_genes_min_override=300`) rather than the `k_mad=999` trick. Set
+either with `revise` before approving the plan (at plan review) or before
+re-submitting (at QC review).
 
 ### RNA (`s1_rna_qc`)
 
@@ -205,7 +240,7 @@ Use these workaround commands when the user wants to disable or remove the upper
 | Skip `nucleosome_signal` (upper-bound metric) | `nucleosome_signal_max=999` |
 | Skip `frip` | `frip_min=0` |
 
-The pipeline renders skip labels automatically — no report editing needed. The threshold display layer detects workaround parameter values and substitutes clean labels (e.g. "0 – no upper bound", "disabled") in both the plan-review appendix and the QC review report.
+The pipeline renders skip labels automatically — no report editing needed. The threshold display layer detects workaround parameter values and substitutes clean labels (e.g. "0 – no upper bound", "disabled") in both the plan-review appendix and the QC review report. `*_override` values render normally (the chosen cutoff in red, the displaced MAD/floor value in grey) and are recorded `source: user`.
 
 **At plan review** (gate unapproved): `revise` auto-regenerates `plan_review_<run>.md` — the appendix already shows the clean labels.
 

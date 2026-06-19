@@ -50,7 +50,7 @@ See [`stage_prompts/entry.md`](stage_prompts/entry.md) for the canonical Step 1 
 
 "Paths I need, based on your declared analysis type:
 
-- **RNA input** (if relevant): full path to `.h5`, MEX directory, or `.h5ad`. Optional **`rna_raw_path`**: companion raw-droplet matrix; when both filtered and raw are supplied, the plan defaults to SoupX for S1a (DecontX when filtered only). **`study_goal`**: `rare_populations` strongly recommends ambient correction; `clustering_inference` defaults to auto but user confirms at plan review. Optional **`s1a_ambient_method`** in run.yaml (`auto`|`none`|`decontx`|`soupx`).
+- **RNA input** (if relevant): full path to `.h5`, MEX directory, or `.h5ad`. Optional **`rna_raw_path`**: companion raw-droplet matrix; when both filtered and raw are supplied, the plan defaults to SoupX for S1a (DecontX when filtered only). Ambient correction is always recommended; the user can opt out at plan review. Optional **`s1a_ambient_method`** in run.yaml (`auto`|`none`|`decontx`|`soupx`).
 - **ATAC input** (if relevant): full path to `fragments.tsv.gz`. The `.tbi` must sit next to it — I'll fail fast if it doesn't.
 - **Genome assembly**: `mm10`, `GRCh38`, etc. Required. I cross-check this against the ATAC fragment chromosome naming, so declare it carefully.
 - **Seed** (optional, default 42).
@@ -81,7 +81,6 @@ Once the user answers, in order:
    rna_path: <optional>
    atac_fragments_path: <optional>
    genome_assembly: <required>
-   study_goal: clustering_inference     # or rare_populations if user specified
    seed: 42
    ```
    Write it to a temporary path like `<run_dir>/run.yaml.draft` (before init copies it to the canonical location).
@@ -222,11 +221,11 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
    marker gene symbols to visualise, or tell me to **defer** this to the QC review
    step, or to **skip** it."
    - Escalate the wording to **strongly recommended** when contamination is elevated
-     (high `qc_explore` median rho) or `study_goal=rare_populations`.
+     (high `qc_explore` median rho).
    - **Never invent, suggest, look up, or supply gene names yourself** (hard rule,
      [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md)).
    - The user must make one explicit choice; record it:
-     - **provide genes** → `executor revise s1a_ambient s1a_ambient.marker_genes="[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"` (stored in `parameters.yaml`, plotted automatically during S1a).
+     - **provide genes** → `executor revise s1a_ambient "marker_genes=[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"` (stored in `parameters.yaml` as `s1a_ambient.marker_genes`, plotted automatically during S1a).
      - **defer to QC review** → carried as `--defer-marker-genes` on the approve call below (or `--marker-genes defer` on submit).
      - **decline** → carried as `--skip-marker-genes` on the approve call below (or `--marker-genes skip` on submit).
    - If `s1a_ambient.method == none`, skip this question entirely.
@@ -236,17 +235,18 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
    > "The QC strategy is marked **[? needs confirmation]**. The default MAD-based thresholds are shown in the plan appendix histograms. Would you like to:
    > - Keep the defaults and proceed to approval?
    > - Adjust one or more thresholds (tell me which and how)?
+   > - Set an exact threshold value (e.g. RNA `n_genes` lower bound = 300)?
    > - Skip one or more metrics entirely?
    >
-   > Any RNA metric (`total_counts`, `n_genes`, `pct_counts_mt`, `pct_counts_ribo`) or ATAC metric (`n_fragments`, `tss_enrichment`, `nucleosome_signal`, `frip`) can be tuned or disabled — see `qc_threshold_revision.md` → 'Skipping individual QC metrics'."
+   > Any RNA metric (`total_counts`, `n_genes`, `pct_counts_mt`, `pct_counts_ribo`) or ATAC metric (`n_fragments`, `tss_enrichment`, `nucleosome_signal`, `frip`) can be tuned, pinned to an exact value, or disabled — see `qc_threshold_revision.md` → 'Pinning a bound to an exact value' and 'Skipping individual QC metrics'."
 
    User outcomes:
    - **Confirm defaults** → proceed to approval (step 6 below).
-   - **Adjust / skip** → run `executor revise s1_rna_qc / s2_atac_qc <key>=<value> --config $CFG --rationale "<reason>"`. `revise` auto-regenerates the plan deliverables; re-surface and re-ask until the user confirms.
+   - **Adjust / skip** → run `executor revise s1_rna_qc <param>=<value> --config $CFG --rationale "<reason>"` (or `s2_atac_qc`). `revise` auto-regenerates the plan deliverables with the revised thresholds and recomputes projected cell-removal counts; re-surface and re-ask until the user confirms.
 
 6. On user decision:
    - **Approve** → `executor approve plan_review --config $CFG --note "approved after review"`, adding `--defer-marker-genes` or `--skip-marker-genes` to match the user's marker-gene choice when no genes were provided. **The executor refuses to approve while the marker-gene decision is unresolved** — if you see that error, you skipped the mandatory question above; go ask it. (On HPC, the same decision is carried as `--marker-genes defer|skip` on `submit --auto-approve`.)
-   - **Revise inputs or parameters** → `executor revise <stage> <key>=<value> --config $CFG --rationale "<user's reason>"`. While `plan_review` is unapproved, `revise` **automatically regenerates** `plan_review_<run>.md` / `plan_summary_<run>.html` (and re-derives the cheap QC preview from persisted metrics) so the overlay shows the new value — you do not refresh them by hand. The override wins over the frozen plan when the stage runs. Stage is re-set to awaiting_approval; re-surface the updated deliverable and ask if more revisions are needed before re-approving. (Revise the input knobs, not the MAD-derived bounds — see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) "Common revise keys".)
+   - **Revise inputs or parameters** → `executor revise <stage> <param>=<value> --config $CFG --rationale "<user's reason>"` (the stage prefix is auto-added to the key, so `revise s1_rna_qc min_counts_floor=500` stores `s1_rna_qc.min_counts_floor=500`). While `plan_review` is unapproved, `revise` **automatically regenerates** `plan_review_<run>.md` / `plan_summary_<run>.html` (and re-derives the cheap QC preview from persisted metrics) so the overlay shows the new value — you do not refresh them by hand. The override wins over the frozen plan when the stage runs. Stage is re-set to awaiting_approval; re-surface the updated deliverable and ask if more revisions are needed before re-approving. (Revise the input knobs — or pin a MAD-derived bound to an exact value with its `*_override` key (e.g. `n_genes_min_override=300`); revising the MAD-derived output key directly has no effect — see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) "Common revise keys" and "Pinning a bound to an exact value".)
    - **Abort** → stop. Tell the user the run dir is intact; they can resume later by re-invoking you on the same config.
 
 ### WHAT_TO_SURFACE_BACK
@@ -364,6 +364,8 @@ Each gated phase's head-job target is the **gate-arming `*_propose` localrule** 
 
 `monitor.pid` removal means the **daemon has stopped** — it is the signal that this phase's compute is over. It *usually* arrives together with the gate sentinel, but not always: if the head job's workflow finishes but its process lingers (an orchestrator that won't exit), the Execution-MuAgent daemon cancels the leftover job and stops, so `monitor.pid` removal may arrive shortly after the gate is already armed. Treat the two as independent signals — which is exactly what the report-and-repoll rule below already does (it drives the next checkpoint on **either** `monitor.pid` gone **or** a gate `awaiting_approval`).
 
+**Job naming convention.** All cluster jobs are named `pma_{stage}_{run_name}` (head jobs) and `pma_{rule}_{run_name}` (child jobs), where `run_name = basename(run_dir)` and `_execute` is stripped from child rule names. Example for run `whelanC57A`: head job = `pma_head_job_whelanC57A`; S1 child = `pma_s1_rna_qc_whelanC57A`. **Always filter squeue by run name** — never use bare `grep pma_head`, which matches jobs from every concurrent sample. The correct form is `squeue -u $USER | grep "pma_head_job_$(basename <run_dir>)"`.
+
 **Monitoring rule — the daemon monitors; Processing reports and re-polls (report-and-repoll).**
 After `submit`, the Execution-MuAgent daemon is the sole monitor and writes only structured state. Processing-MuAgent drives this loop:
 
@@ -417,6 +419,6 @@ These are written to `deliverables/plan/config/hpc.env` by `configure-execution`
 - **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/stage_meta/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.
 - **`hpc-status` shows "Supervisor: not running" alongside a RUNNING or PENDING scheduler state** — the supervision daemon has died but the cluster job is still active. Without the daemon, stalled jobs will not be auto-cancelled. Restart the daemon: `executor supervisor-restart --config $CFG`. This resumes the full watch loop (stall detection, kill-on-hang) against the already-running job without resubmitting. Tell the user what happened and what you did.
 - **Supervision daemon crashes on a site with KillUserProcesses=yes** — when the user's SSH session ends, systemd kills all their processes including the daemon. The cluster job keeps running, but protection is gone. For the current run, tell them to use `supervisor-restart` as soon as they reconnect. Going forward, suggest running `submit` inside a `tmux` or `screen` session on that cluster.
-- **One-shot `hpc-status` shows "review gate awaiting approval" before the pipeline has made any progress** — a stale `awaiting_approval` sentinel from a prior run (or an old head job still writing to it) is blocking progress. It now shows up directly in one-shot status before any real progress. Fix: (1) `squeue -u $USER | grep pma_head` → `scancel <JOBID>` for each result; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) re-run `executor submit` and report the next one-shot `hpc-status`.
+- **One-shot `hpc-status` shows "review gate awaiting approval" before the pipeline has made any progress** — a stale `awaiting_approval` sentinel from a prior run (or an old head job still writing to it) is blocking progress. It now shows up directly in one-shot status before any real progress. Fix: (1) `squeue -u $USER | grep "pma_head_job_$(basename <run_dir>)"` → `scancel <JOBID>` for each result; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) re-run `executor submit` and report the next one-shot `hpc-status`.
 - **Tempted to monitor a long-running job yourself** — don't. Rely on the daemon (the sole monitor) and read one-shot `executor hpc-status --config $CFG`; never run a blocking loop or `tail -f | grep`. (Re-polling via a non-blocking scheduled wakeup per the report-and-repoll rule is not a blocking loop and is the sanctioned way to re-check.)
 - **Blank ATAC QC figures ("(no data)") / `qc_explore` log shows `chrom_bound_filter_failed: bgzip not found on PATH`** — an *execution-environment* error, not a scientific one. The cluster child job did not have the project conda env's tools (`bgzip`/`tabix`, which live in `$PMA_CONDA_ENV/bin`) on PATH, so the ATAC fragment chr-renaming + chromosome-bound filter was skipped, the SnapATAC2 import matched zero fragments (Ensembl-named fragments vs UCSC-named reference), and `atac_qc_metrics.parquet` came back empty. **This is fixed structurally:** each generated Snakemake child jobscript is sanitized to self-activate `$PMA_CONDA_ENV` (`executor.hpc.sanitize_snakemake_jobscript` → `inject_conda_activation_text`, invoked by `slurm-submit.sh` / `pbs-submit.sh`), and `htslib` is pinned in `workflow/envs/processing.yaml` for `--use-conda` runs. **Note the default cluster profiles set `use-conda: false`**, so per-rule conda envs are *not* built — protection then depends entirely on the `--conda-env` you configured actually containing `bgzip`/`tabix`. Reading gzipped fragments uses Python's `gzip` (no `bgzip` needed for reads); the BED4→fragments conversion (`executor/io.py`) *requires* `bgzip`/`tabix` and **raises a clear, actionable error** if they are absent — and an empty ATAC import now raises rather than silently emitting a blank figure (it does **not** silently fall back). If you hit it: confirm `configure-execution --conda-env <name>` was set (recorded in `hpc.env` / `site.config`) and that `bgzip`/`tabix` exist in that env (`conda run -n <env> bgzip --version`).

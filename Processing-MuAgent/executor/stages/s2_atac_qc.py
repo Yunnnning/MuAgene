@@ -285,12 +285,15 @@ def _import_atac_fresh(run_dir: Path, art: Path, params_path: Path):
     # so we do not import the millions of empty-droplet barcodes in the fragments file.
     whitelist = atac_meta.get("cell_barcode_whitelist")
     h5_out = art / "atac_snap.h5ad"
+    snap_tmp = art / "snapatac2_tmp"
+    snap_tmp.mkdir(exist_ok=True)
     adata = snap.pp.import_fragments(
         fragments_path,
         chrom_sizes=genome_ref,
         file=str(h5_out),
         sorted_by_barcode=False,
         whitelist=whitelist,
+        tempdir=snap_tmp,
     )
 
     # TSS enrichment (per-cell)
@@ -413,23 +416,49 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", 50.0))
     nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 3.0))
     frip_min = float(_resolve_param(params_path, plan_params, "frip_min", 0.2))
+    # Manual overrides pin the effective MAD-derived n_fragments bounds (the
+    # MAD/floor derivation still runs and is recorded + shown grey). Absent →
+    # derived behaviour unchanged.
+    nf_min_ov = _resolve_param(params_path, plan_params, "n_fragments_min_override", None)
+    nf_max_ov = _resolve_param(params_path, plan_params, "n_fragments_max_override", None)
 
     # n_fragments MAD bounds (shared with the pre-plan QC exploration).
-    f_lo, f_hi, _ = _qct.atac_n_fragment_bounds(
+    f_lo, f_hi, _, (f_lo_derived, f_hi_derived) = _qct.atac_n_fragment_bounds(
         n_frag_values, k_mad=k_mad, n_frag_floor=n_frag_floor,
+        n_fragments_min_override=nf_min_ov, n_fragments_max_override=nf_max_ov,
     )
 
-    _prov.set_param(params_path, "s2_atac_qc.n_fragments_min", float(f_lo),
-                    source="derived", confidence="high",
-                    rationale=(f"max(MAD lower bound on log1p(n_fragments), "
-                               f"n_fragments_floor={n_frag_floor})"),
-                    method={"name": "mad_thresholds.log_mad_bounds",
-                            "code_ref": "executor/methods/mad_thresholds.py"})
-    _prov.set_param(params_path, "s2_atac_qc.n_fragments_max", float(f_hi),
-                    source="derived", confidence="high",
-                    rationale="MAD upper bound on log1p(n_fragments)",
-                    method={"name": "mad_thresholds.log_mad_bounds",
-                            "code_ref": "executor/methods/mad_thresholds.py"})
+    # Warn when an override is more permissive than the recommended floor.
+    override_warnings: list[str] = []
+    if nf_min_ov is not None and float(nf_min_ov) < float(n_frag_floor):
+        override_warnings.append(
+            f"n_fragments lower bound override {float(nf_min_ov):.4g} is below the "
+            f"recommended floor n_fragments_floor={float(n_frag_floor):.4g}")
+    if override_warnings:
+        log_event(run_dir, {"stage": "s2_atac_qc", "event": "override_below_floor",
+                            "warnings": override_warnings})
+
+    _NF_METHOD = {"name": "mad_thresholds.log_mad_bounds",
+                  "code_ref": "executor/methods/mad_thresholds.py"}
+    if nf_min_ov is not None:
+        _prov.set_param(params_path, "s2_atac_qc.n_fragments_min", float(f_lo),
+                        source="user", confidence="high",
+                        rationale=f"Manual override (was MAD-derived {float(f_lo_derived):.4g})")
+    else:
+        _prov.set_param(params_path, "s2_atac_qc.n_fragments_min", float(f_lo),
+                        source="derived", confidence="high",
+                        rationale=(f"max(MAD lower bound on log1p(n_fragments), "
+                                   f"n_fragments_floor={n_frag_floor})"),
+                        method=_NF_METHOD)
+    if nf_max_ov is not None:
+        _prov.set_param(params_path, "s2_atac_qc.n_fragments_max", float(f_hi),
+                        source="user", confidence="high",
+                        rationale=f"Manual override (was MAD-derived {float(f_hi_derived):.4g})")
+    else:
+        _prov.set_param(params_path, "s2_atac_qc.n_fragments_max", float(f_hi),
+                        source="derived", confidence="high",
+                        rationale="MAD upper bound on log1p(n_fragments)",
+                        method=_NF_METHOD)
     _prov.set_param(params_path, "s2_atac_qc.tss_enrichment_min", float(tss_min),
                     source="recommended", confidence="high",
                     rationale="Minimum TSS enrichment for retained cells")
@@ -670,6 +699,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             "frip_min": float(frip_min) if frip_applied else None,
         },
         "peak_source": peak_source if peak_source else None,
+        "override_warnings": override_warnings,
     }, indent=2))
 
     # Capture post-QC fragment size distribution before adata_f is closed.

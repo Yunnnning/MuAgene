@@ -32,6 +32,7 @@ def _plot_score_hist(
     out_dir: Path,
     stem: str,
     xlabel: str = "doublet score",
+    threshold: float | None = None,
 ) -> list[Path]:
     from .. import figures as _fig
     import matplotlib
@@ -53,6 +54,11 @@ def _plot_score_hist(
             label=f"singlet (n={n_sing})", edgecolor="none")
     ax.hist(scores[flags], bins=bins, color="#ef4444", alpha=0.75,
             label=f"doublet (n={n_doub})", edgecolor="none")
+    # Chosen doublet cutoff: red dashed line (matches the QC threshold figures).
+    if threshold is not None:
+        ax.axvline(float(threshold), color=_fig.QC_ANNOTATION_COLOR, linestyle="--",
+                   linewidth=_fig.ANNOTATION_LINEWIDTH, zorder=5,
+                   label=f"threshold = {float(threshold):g}")
     ax.set_xlabel(xlabel)
     ax.set_ylabel("cells")
     ax.set_title(title)
@@ -64,9 +70,22 @@ def _plot_score_hist(
 
 def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
     """Doublet-score histograms (RNA + ATAC) from S3 calls.parquet."""
+    from .. import provenance as _prov
     calls_path = RunPaths(run_dir).stage_dir("s3_doublets") / "calls.parquet"
     if not calls_path.exists():
         return []
+
+    # Chosen doublet thresholds → red cutoff line on each histogram. Honour the
+    # legacy ATAC key fallback chain used by qc_summary._doublet_section.
+    params_path = RunPaths(run_dir).parameters_yaml
+    rna_threshold = _prov.get_value(
+        params_path, "s3_doublets.rna_doublet_score_threshold", 0.25)
+    atac_threshold = (
+        _prov.get_value(params_path, "s3_doublets.atac_doublet_probability_threshold", None)
+        or _prov.get_value(params_path, "s3_doublets.atac_doublet_threshold", None)
+        or _prov.get_value(params_path, "s3_doublets.atac_doublet_score_threshold", None)
+        or 0.5
+    )
 
     calls = pd.read_parquet(calls_path)
     result: list[Path] = []
@@ -83,6 +102,7 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
                 title="RNA doublet scores (Scrublet)",
                 out_dir=figs_dir,
                 stem="post_qc_review_doublet_rna",
+                threshold=rna_threshold,
             ))
 
     atac_mask = None
@@ -110,6 +130,7 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
                 out_dir=figs_dir,
                 stem="post_qc_review_doublet_atac",
                 xlabel="doublet probability",
+                threshold=atac_threshold,
             ))
         else:
             atac_values = (
@@ -121,6 +142,7 @@ def _plot_doublet_scores(run_dir: Path, figs_dir: Path) -> list[Path]:
                 title="ATAC doublet scores (SnapATAC2)",
                 out_dir=figs_dir,
                 stem="post_qc_review_doublet_atac",
+                threshold=atac_threshold,
             ))
 
     return result
