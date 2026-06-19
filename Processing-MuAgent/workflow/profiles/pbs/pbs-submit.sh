@@ -59,13 +59,14 @@ mkdir -p "$log_dir"
 # inherit PMA_DEVICE=gpu from a head job configured with --device gpu.
 select_chunk="select=1:ncpus=${threads}:mem=${mem_mb}mb"
 queue="${PMA_PBS_QUEUE:-}"
+short_rule="${rule%_execute}"
 declare -a env_opts=(-v "PMA_DEVICE=cpu")
 
 declare -a opts=(
     -terse
     -l "${select_chunk}"
     -l "walltime=${walltime}"
-    -N "pma_${rule}"
+    -N "pma_${short_rule}_${PMA_RUN_NAME:-unknown}"
     -j oe
     -o "${log_dir}/${rule}.${jobid}.log"
 )

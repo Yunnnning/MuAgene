@@ -48,6 +48,7 @@ mkdir -p "$log_dir"
 # inherit PMA_DEVICE=gpu from a head job configured with --device gpu.
 export_spec="ALL,PMA_DEVICE=cpu"
 partition="${PMA_SLURM_PARTITION:-}"
+short_rule="${rule%_execute}"
 
 declare -a opts=(
     --parsable
@@ -55,7 +56,7 @@ declare -a opts=(
     --cpus-per-task="${threads}"
     --mem="${mem_mb}M"
     --time="${runtime_min}"
-    --job-name="pma_${rule}"
+    --job-name="pma_${short_rule}_${PMA_RUN_NAME:-unknown}"
     --output="${log_dir}/%j.log"
 )
 [ -n "${partition}" ] && opts+=(--partition "$partition")

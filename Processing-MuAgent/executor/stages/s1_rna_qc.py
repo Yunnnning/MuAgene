@@ -68,6 +68,14 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # Ribosomal upper-bound is recommended (not enforced strictly): some
     # tissues legitimately have very high ribo-protein expression.
     pct_ribo_max = float(_resolve_param(params_path, params, "pct_ribo_max", 50.0))
+    # Manual overrides pin the effective MAD-derived bound to an exact value (the
+    # MAD/floor derivation still runs and is recorded as the rationale + grey
+    # reference line). Absent → derived behaviour unchanged.
+    tc_min_ov = _resolve_param(params_path, params, "total_counts_min_override", None)
+    tc_max_ov = _resolve_param(params_path, params, "total_counts_max_override", None)
+    ng_min_ov = _resolve_param(params_path, params, "n_genes_min_override", None)
+    ng_max_ov = _resolve_param(params_path, params, "n_genes_max_override", None)
+    mt_max_ov = _resolve_param(params_path, params, "pct_counts_mt_max_override", None)
 
     # Derive thresholds (shared with the pre-plan QC exploration); absolute
     # floors win when MAD lower bounds fall below them.
@@ -76,30 +84,59 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         pct_mt_k=pct_mt_k, pct_mt_ceiling=pct_mt_ceil,
         pct_mt_floor=pct_mt_floor, min_counts_floor=min_counts_floor,
         min_genes_floor=min_genes_floor,
+        total_counts_min_override=tc_min_ov, total_counts_max_override=tc_max_ov,
+        n_genes_min_override=ng_min_ov, n_genes_max_override=ng_max_ov,
+        pct_counts_mt_max_override=mt_max_ov,
     )
     c_lo, c_hi = th["total_counts_min"], th["total_counts_max"]
     g_lo, g_hi = th["n_genes_min"], th["n_genes_max"]
     pct_mt_upper = th["pct_counts_mt_max"]
 
-    # Record as provenance
-    for key, value, rat in [
-        ("s1_rna_qc.total_counts_min", float(c_lo),
+    # Warn when an override is more permissive than its recommended fixed bound
+    # (override still wins — the user is trusted — but the deviation is surfaced
+    # in the QC review report and the log).
+    override_warnings: list[str] = []
+    if tc_min_ov is not None and float(tc_min_ov) < float(min_counts_floor):
+        override_warnings.append(
+            f"total_counts lower bound override {float(tc_min_ov):.4g} is below the "
+            f"recommended floor min_counts_floor={float(min_counts_floor):.4g}")
+    if ng_min_ov is not None and float(ng_min_ov) < float(min_genes_floor):
+        override_warnings.append(
+            f"n_genes lower bound override {float(ng_min_ov):.4g} is below the "
+            f"recommended floor min_genes_floor={float(min_genes_floor):.4g}")
+    if mt_max_ov is not None and float(mt_max_ov) > float(pct_mt_ceil):
+        override_warnings.append(
+            f"pct_counts_mt upper bound override {float(mt_max_ov):.4g}% is above the "
+            f"recommended ceiling pct_mt_ceiling={float(pct_mt_ceil):.4g}%")
+    if override_warnings:
+        log_event(run_dir, {"stage": "s1_rna_qc", "event": "override_below_floor",
+                            "warnings": override_warnings})
+
+    # Record as provenance. An active override is the user's choice (source=user,
+    # no method); otherwise the bound is MAD/floor-derived (source=derived, method).
+    _MAD_METHOD = {"name": "mad_thresholds", "code_ref": "executor/methods/mad_thresholds.py"}
+    for key, value, override, derived, rat in [
+        ("s1_rna_qc.total_counts_min", float(c_lo), tc_min_ov, th["total_counts_min_derived"],
          f"max(MAD lower bound on log1p(total_counts), min_counts_floor={min_counts_floor})"),
-        ("s1_rna_qc.total_counts_max", float(c_hi),
+        ("s1_rna_qc.total_counts_max", float(c_hi), tc_max_ov, th["total_counts_max_derived"],
          f"MAD upper bound on log1p(total_counts) (total_counts_k_mad={total_counts_k_mad})"),
-        ("s1_rna_qc.n_genes_min", float(g_lo),
+        ("s1_rna_qc.n_genes_min", float(g_lo), ng_min_ov, th["n_genes_min_derived"],
          f"max(MAD lower bound on log1p(n_genes), min_genes_floor={min_genes_floor})"),
-        ("s1_rna_qc.n_genes_max", float(g_hi),
+        ("s1_rna_qc.n_genes_max", float(g_hi), ng_max_ov, th["n_genes_max_derived"],
          f"MAD upper bound on log1p(n_genes) (n_genes_k_mad={n_genes_k_mad})"),
-        ("s1_rna_qc.pct_counts_mt_max", float(pct_mt_upper),
+        ("s1_rna_qc.pct_counts_mt_max", float(pct_mt_upper), mt_max_ov, th["pct_counts_mt_max_derived"],
          f"{pct_mt_k}*MAD above median(pct_counts_mt); clamped to [{pct_mt_floor}, {pct_mt_ceil}]"),
-        ("s1_rna_qc.pct_counts_ribo_max", float(pct_ribo_max),
-         "Soft ribosomal-protein ceiling (filters extreme stress/dying cells)."),
     ]:
-        _prov.set_param(params_path, key, value,
-                        source="derived", confidence="high", rationale=rat,
-                        method={"name": "mad_thresholds",
-                                "code_ref": "executor/methods/mad_thresholds.py"})
+        if override is not None:
+            _prov.set_param(params_path, key, value, source="user", confidence="high",
+                            rationale=f"Manual override (was MAD-derived {float(derived):.4g})")
+        else:
+            _prov.set_param(params_path, key, value, source="derived", confidence="high",
+                            rationale=rat, method=_MAD_METHOD)
+    _prov.set_param(params_path, "s1_rna_qc.pct_counts_ribo_max", float(pct_ribo_max),
+                    source="derived", confidence="high",
+                    rationale="Soft ribosomal-protein ceiling (filters extreme stress/dying cells).",
+                    method=_MAD_METHOD)
 
     # Per-metric pass masks (shared with the pre-plan QC exploration).
     masks = _qct.rna_pass_masks(a.obs, th, pct_ribo_max=pct_ribo_max)
@@ -148,6 +185,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         "n_cells_pre": result["n_cells_pre"],
         "n_cells_post": result["n_cells_post"],
         "cells_removed_per_metric": cells_removed_per_metric,
+        "override_warnings": override_warnings,
     }, indent=2))
     _io.write_h5ad_safe(a_f, art / "rna_qc.h5ad")
     log_event(run_dir, {"stage": "s1_rna_qc", "event": "done",

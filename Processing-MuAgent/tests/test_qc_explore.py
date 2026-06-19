@@ -226,7 +226,7 @@ class AtacFragmentBoundsTests(unittest.TestCase):
     def test_returns_mad_lower_before_floor_clamp(self):
         rng = np.random.default_rng(0)
         n_frag = rng.integers(1500, 20000, 500).astype(float)
-        f_lo, f_hi, mad_lo = qct.atac_n_fragment_bounds(
+        f_lo, f_hi, mad_lo, _derived = qct.atac_n_fragment_bounds(
             n_frag, k_mad=5.0, n_frag_floor=1500.0,
         )
         self.assertGreaterEqual(f_lo, 1500.0)

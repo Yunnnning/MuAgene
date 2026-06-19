@@ -319,8 +319,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         merged["atac_is_doublet"] = merged["atac_is_doublet"].fillna(False).astype(bool)
 
         overlap = _pol.four_way_overlap(merged["scrublet_is_doublet"], merged["atac_is_doublet"])
-        study_goal = plan["stages"]["s3_doublets"]["parameters"]["study_goal"]["value"]
-        policy = _pol.recommend_policy(study_goal)
+        policy = _pol.recommend_policy()
         chosen_policy = policy["recommendation"]
         removed = _pol.apply_policy(merged["scrublet_is_doublet"], merged["atac_is_doublet"], chosen_policy)
         merged["chosen_policy"] = chosen_policy
@@ -330,7 +329,6 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         _io.write_parquet_safe(merged, art / "calls.parquet")
         _io.write_text_safe(art / "overlap_summary.json", json.dumps({
             "overlap": overlap,
-            "study_goal": study_goal,
             "recommended_policy": chosen_policy,
             "rationale": policy["rationale"],
             "n_removed": n_removed,

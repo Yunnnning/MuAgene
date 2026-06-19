@@ -542,7 +542,6 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
         run_dir,
         workflow_branch=workflow_branch,
         sample_type=sample_type,
-        study_goal=config.get("study_goal"),
         ingest=report,
         s1a_ambient_method=config.get("s1a_ambient_method"),
     )

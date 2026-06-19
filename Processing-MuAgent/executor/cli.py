@@ -680,6 +680,13 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
     if "=" not in param_kv:
         raise click.ClickException("param_kv must be key=value")
     key, value = param_kv.split("=", 1)
+    # Accept both the short form (min_counts_floor=500) and the full form
+    # (s1_rna_qc.min_counts_floor=500). Without this normalisation the key is
+    # stored bare in parameters.yaml and effective_params() — which looks for
+    # "<stage>.<param>" — never finds it, so the revise has no effect on the
+    # plan-review preview or on the real stage at runtime.
+    if not key.startswith(f"{stage}."):
+        key = f"{stage}.{key}"
     try:
         value_parsed = yaml.safe_load(value)
     except Exception:

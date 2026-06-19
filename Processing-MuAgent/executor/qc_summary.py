@@ -839,6 +839,24 @@ def _ambient_section(
     )
 
 
+def _override_warning_block(summary_json: Path) -> str:
+    """Surface any manual-override-below-floor warnings recorded by the QC stage."""
+    if not summary_json.exists():
+        return ""
+    try:
+        warnings = json.loads(summary_json.read_text()).get("override_warnings") or []
+    except (ValueError, OSError):
+        return ""
+    if not warnings:
+        return ""
+    lines = "\n".join(f"> - {w}" for w in warnings)
+    return (
+        "\n> ⚠ **Manual threshold override(s) below the recommended floor** "
+        "(applied as requested):\n"
+        f"{lines}\n"
+    )
+
+
 def _rna_section(
     run_dir: Path,
     params: dict[str, Any],
@@ -884,6 +902,7 @@ def _rna_section(
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
+        f"{_override_warning_block(s1 / 'qc_summary.json')}"
         f"\n{_REMOVAL_NOTE}\n"
         "\n"
         "### Summary statistics (retained cells)\n\n"
@@ -953,8 +972,9 @@ def _atac_section(
         + "\n"
         "### Thresholds used\n\n"
         f"{thresholds}\n"
-        f"{peak_note}\n"
-        f"{_REMOVAL_NOTE}\n\n"
+        f"{peak_note}"
+        f"{_override_warning_block(summary_json)}"
+        f"\n{_REMOVAL_NOTE}\n\n"
         "### Summary statistics (retained cells)\n\n"
         f"{stats}\n"
         f"{warn_block}"

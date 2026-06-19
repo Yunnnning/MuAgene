@@ -427,6 +427,7 @@ def render_submission_script(
     """
     repo_root = Path(repo_root)
     run_dir_s = str(Path(run_dir).resolve())
+    run_name = Path(run_dir).name
     log_path_s = str(Path(log_path).resolve())
     walltime_min = spec.resources.get("walltime_min", 60)
     cpus = spec.resources.get("cpus", 1)
@@ -437,7 +438,7 @@ def render_submission_script(
         hh, mm = divmod(walltime_min, 60)
         lines = [
             "#!/bin/bash",
-            f"#SBATCH --job-name=pma_{spec.stage}",
+            f"#SBATCH --job-name=pma_{spec.stage}_{run_name}",
             f"#SBATCH --output={log_path_s}",
             f"#SBATCH --cpus-per-task={cpus}",
             f"#SBATCH --mem={mem_mb}M",
@@ -453,7 +454,7 @@ def render_submission_script(
         hh, mm = divmod(walltime_min, 60)
         lines = [
             "#!/bin/bash",
-            f"#PBS -N pma_{spec.stage}",
+            f"#PBS -N pma_{spec.stage}_{run_name}",
             f"#PBS -o {log_path_s}",
             "#PBS -j oe",
             f"#PBS -l select=1:ncpus={cpus}:mem={mem_mb}mb",
@@ -470,6 +471,7 @@ def render_submission_script(
         f"export PMA_CONFIG={resolve_config_yaml(run_dir_path)}",
         f"export PMA_TARGET={target}",
         f"export PMA_REPO_ROOT={repo_root}",
+        f"export PMA_RUN_NAME={run_name}",
     ]
     # Export scheduler-specific vars so launch_runner.sh adds them as
     # --default-resources when it detects the cluster profile.
