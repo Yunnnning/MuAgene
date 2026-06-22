@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "muagene.post_qc_handoff/1",
+  "title": "post_qc_manifest.json",
+  "description": "Per-sample post-QC handoff bundle manifest. Emitter: Processing-MuAgent executor/stages/s_handoff.py -> deliverables/results/post_qc_manifest.json. Points at the un-normalized post-QC .h5mu plus the retained ATAC peaks BED + prepared fragments a downstream consumer needs for a consensus re-count.",
+  "type": "object",
+  "required": [
+    "schema",
+    "handoff_contract_version",
+    "sample_run_dir",
+    "modality_branch",
+    "genome_assembly",
+    "post_qc_h5mu",
+    "atac",
+    "n_cells",
+    "parameters_ref",
+    "tool_versions"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": "muagene.post_qc_handoff/1" },
+    "handoff_contract_version": {
+      "type": "string",
+      "description": "HANDOFF_CONTRACT_VERSION from executor/__init__.py."
+    },
+    "sample_run_dir": { "type": "string" },
+    "modality_branch": { "enum": ["paired", "separate", "rna_only", "atac_only"] },
+    "genome_assembly": { "type": ["string", "null"] },
+    "post_qc_h5mu": {
+      "type": ["string", "null"],
+      "description": "Run-dir-relative path to post_qc_<run>.h5mu (MuData rna?/atac?, raw counts in rna.layers['counts'])."
+    },
+    "atac": {
+      "type": "object",
+      "required": ["peaks_bed", "fragments_prepared", "add_chr_prefix", "frag_chrom_convention"],
+      "additionalProperties": true,
+      "properties": {
+        "peaks_bed": { "type": ["string", "null"] },
+        "fragments_prepared": { "type": ["string", "null"] },
+        "add_chr_prefix": { "type": ["boolean", "null"] },
+        "frag_chrom_convention": { "enum": ["ucsc", null] }
+      }
+    },
+    "n_cells": {
+      "type": "object",
+      "required": ["rna", "atac", "joint"],
+      "additionalProperties": true,
+      "properties": {
+        "rna": { "type": ["integer", "null"] },
+        "atac": { "type": ["integer", "null"] },
+        "joint": { "type": "integer" }
+      }
+    },
+    "parameters_ref": { "type": ["string", "null"] },
+    "tool_versions": { "type": "object" }
+  }
+}

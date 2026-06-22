@@ -12,8 +12,18 @@ the plan, the stages, and the preview can never silently disagree.
 """
 from __future__ import annotations
 
+import json
+import pathlib
+
+import pytest
+
 from executor import defaults
 from executor import plan_assembler as pa
+
+
+def _contracts_dir() -> pathlib.Path:
+    # Processing-MuAgent/tests/<this> -> parents[2] == MuAgene repo root.
+    return pathlib.Path(__file__).resolve().parents[2] / "contracts"
 
 
 def test_plan_assembler_values_match_qc_defaults(tmp_path):
@@ -56,3 +66,47 @@ def test_figures_default_constants_match_qc_defaults():
     assert F.DEFAULT_TSS_MIN == atac["tss_enrichment_min"]
     assert F.DEFAULT_TSS_MAX == atac["tss_enrichment_max"]
     assert F.DEFAULT_NUC_MAX == atac["nucleosome_signal_max"]
+
+
+# --- Stage 2: contracts/post_qc_manifest.schema.json ---
+
+def _representative_manifest() -> dict:
+    """A manifest with exactly the keys/types s_handoff.run() emits."""
+    from executor import HANDOFF_CONTRACT_VERSION
+    return {
+        "schema": "muagene.post_qc_handoff/1",
+        "handoff_contract_version": HANDOFF_CONTRACT_VERSION,
+        "sample_run_dir": "/runs/sampleA",
+        "modality_branch": "paired",
+        "genome_assembly": "GRCh38",
+        "post_qc_h5mu": "deliverables/results/post_qc_sampleA.h5mu",
+        "atac": {
+            "peaks_bed": "internal/artifacts/s2_atac_qc/peaks_macs3.bed",
+            "fragments_prepared": "internal/artifacts/s2_atac_qc/atac_fragments_cbf.tsv.gz",
+            "add_chr_prefix": True,
+            "frag_chrom_convention": "ucsc",
+        },
+        "n_cells": {"rna": 100, "atac": 90, "joint": 95},
+        "parameters_ref": "internal/parameters.yaml",
+        "tool_versions": {"scanpy": "1.10.0"},
+    }
+
+
+def test_post_qc_manifest_schema_is_wellformed():
+    schema = json.loads((_contracts_dir() / "post_qc_manifest.schema.json").read_text())
+    assert schema["$id"] == "muagene.post_qc_handoff/1"
+    assert "schema" in schema["required"]
+    assert schema["properties"]["modality_branch"]["enum"] == [
+        "paired", "separate", "rna_only", "atac_only"]
+    # Every schema-required top-level key is one the emitter actually writes.
+    assert set(schema["required"]) <= set(_representative_manifest())
+
+
+def test_post_qc_manifest_representative_validates_against_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads((_contracts_dir() / "post_qc_manifest.schema.json").read_text())
+    jsonschema.validate(_representative_manifest(), schema)  # valid -> no raise
+    bad = _representative_manifest()
+    bad["modality_branch"] = "bogus"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)

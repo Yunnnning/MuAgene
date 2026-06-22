@@ -1,0 +1,142 @@
+# Inter-agent finding-code registry — single source of truth.
+#
+# Execution-MuAgent writes findings as {severity, code, message} into
+# internal/hpc_monitor/latest_snapshot.json. Processing-MuAgent reads that snapshot
+# (never the markdown report) and owns ALL recovery and user-facing relay. The
+# env-provisioning codes are also surfaced by the operator-facing bootstrap commands
+# (init-machine / provision-env / validate-env / doctor), which print to stdout.
+#
+# Keep this in lockstep with the emitters: the consistency tests assert that every
+# finding code emitted in Execution-MuAgent appears here. `confirmed_dead` and
+# `fs_hang` are monitor STATES / kill_action.confirmed_dead_reason, not finding
+# codes — see state_model.md.
+schema_version: "1"
+
+severities: [error, warning, info]
+
+findings:
+  # --- submit lifecycle (execute-spec) ---
+  spec_validation_error:
+    severity: error
+    emitted_by: execute-spec
+    meaning: Spec invalid — non-positive resources, unsupported scheduler, or a required input file is missing.
+    processing_action: Relay to the user; fix the spec/site.config and resubmit.
+  submit_rejected_policy:
+    severity: error
+    emitted_by: execute-spec (submit)
+    meaning: Scheduler rejected the job for a policy reason (invalid partition/account/QOS, walltime over the site limit).
+    processing_action: Relay as an adjustable resource/policy hint; user revises site.config or the spec. Never blindly resubmit.
+  submit_rejected_transient:
+    severity: error
+    emitted_by: execute-spec (submit)
+    meaning: Scheduler temporarily unavailable; already retried up to 2x with backoff and still failing.
+    processing_action: Relay; retry later once the scheduler recovers.
+
+  # --- monitoring (state machine) ---
+  scheduler_failed:
+    severity: error
+    emitted_by: monitor
+    meaning: Scheduler reports the job in a FAILED terminal state -> classified confirmed_dead; killed.
+    processing_action: Root-cause from the snapshot, fix, resubmit.
+  workflow_error_marker:
+    severity: error
+    emitted_by: monitor
+    meaning: Error markers found in the child rule log; message appends the scraped root cause (error_context). Classified confirmed_dead; killed.
+    processing_action: Root-cause from error_context in the snapshot (no need to open raw child logs); fix, resubmit.
+  output_missing:
+    severity: error
+    emitted_by: monitor (terminal output verification)
+    meaning: A declared stage output is absent or fails its integrity check at terminal time.
+    processing_action: Investigate the failing stage; fix and resubmit.
+  stall_confirmed:
+    severity: error
+    emitted_by: monitor
+    meaning: Investigation confirmed a dead/stalled job (responsive fs + RUNNING + measured-flat CPU); killed.
+    processing_action: Escalate to the human, fix, resubmit.
+  filesystem_hang_suspected:
+    severity: error
+    emitted_by: monitor
+    meaning: Filesystem-related hang (D-state, child storage-hang sentinel, or fs probe timeout) -> fs_hang; killed.
+    processing_action: Escalate; likely a storage/NFS issue. Fix and resubmit.
+  stall_suspected:
+    severity: warning
+    emitted_by: monitor
+    meaning: Silence reached tolerance_n consecutive intervals; entering investigation. Suspicion only — not killed.
+    processing_action: None yet; wait for the investigation verdict (stall_recovered or stall_confirmed).
+  stall_recovered:
+    severity: warning
+    emitted_by: monitor
+    meaning: Investigation found evidence of life (CPU/GPU advanced); silence reset; monitoring continues.
+    processing_action: None.
+  no_progress_files:
+    severity: warning
+    emitted_by: monitor
+    meaning: No run-scoped progress files have appeared yet (early in a job, or nothing is being written).
+    processing_action: None unless it persists past the stage's progress_timeout_hint.
+  scheduler_completing:
+    severity: warning
+    emitted_by: monitor
+    meaning: Scheduler is in a COMPLETING state (job winding down).
+    processing_action: None; wait for terminal state.
+  scheduler_query_failed:
+    severity: warning
+    emitted_by: monitor
+    meaning: A time-bounded squeue/qstat query failed or timed out (best-effort; the monitor never hangs on it).
+    processing_action: None; transient. Snapshot is refreshed next interval.
+  stage_output_verified:
+    severity: info
+    emitted_by: monitor (per-stage output verification)
+    meaning: A declared output appeared and passed an integrity check (HDF5/parquet/JSON open or structural signature).
+    processing_action: Normal progress; surface to the user as a completed stage.
+  workflow_complete:
+    severity: info
+    emitted_by: monitor
+    meaning: Head log shows a clean finish; the lingering head allocation was cancelled (not a failure).
+    processing_action: Proceed to the next gate / report completion.
+
+  # --- environment provisioning (operator-facing commands; also execute-spec preflight) ---
+  env_missing:
+    severity: error   # auto-resolved when machine policy = auto (reprovisioned at preflight)
+    emitted_by: provision-env / validate-env / execute-spec preflight
+    meaning: The target device env is absent.
+    processing_action: policy=auto -> auto-provisioned; policy=manual -> run the printed provision-env command.
+  env_stale:
+    severity: warning
+    emitted_by: validate-env / execute-spec preflight
+    meaning: Env fingerprint differs from the required one (lock hash or pinned image_uri changed).
+    processing_action: Reprovision (auto at preflight when policy=auto).
+  env_stale_reprovision:
+    severity: warning
+    emitted_by: execute-spec preflight
+    meaning: A stale env was reprovisioned automatically before submit.
+    processing_action: None.
+  lock_stale_vs_yaml:
+    severity: error
+    emitted_by: validate-env / execute-spec preflight
+    meaning: The committed CPU conda-lock's source hash no longer matches its YAML — cannot trust the lock.
+    processing_action: Run `Processing-MuAgent regenerate-locks` and commit, then resubmit.
+  platform_unsupported:
+    severity: error
+    emitted_by: provision-env / validate-env
+    meaning: CPU lock is linux-64 only and the host is not linux — refusing to solve cross-platform.
+    processing_action: Provision on a linux host.
+  gpu_image_unavailable:
+    severity: error
+    emitted_by: provision-env (gpu)
+    meaning: The pinned GPU container image_uri cannot be pulled.
+    processing_action: Publish/repin the image; never degrade a GPU job to a CPU env.
+  gpu_import_needs_node:
+    severity: warning
+    emitted_by: validate-env (gpu)
+    meaning: GPU import check can only run on a GPU node; deferred on a CPU login node.
+    processing_action: None; the check runs in the GPU child job.
+  import_failed:
+    severity: error
+    emitted_by: validate-env
+    meaning: The env exists but a declared module import failed (e.g. rapids_singlecell / cupy for GPU).
+    processing_action: Reprovision the env; do not submit against a broken env.
+  provision_failed:
+    severity: error
+    emitted_by: provision-env / init-machine
+    meaning: Env creation (conda-lock) or GPU image pull failed.
+    processing_action: Read the printed cause; fix and re-run provision-env.
