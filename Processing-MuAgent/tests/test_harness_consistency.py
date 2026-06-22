@@ -119,3 +119,25 @@ def test_every_executor_command_is_documented():
     tools = (pathlib.Path(__file__).resolve().parents[1] / "agent" / "tools.md").read_text()
     missing = [c for c in main.commands if c not in tools]
     assert not missing, f"executor commands missing from agent/tools.md: {sorted(missing)}"
+
+
+# --- Stage 6: revise --dry-run previews without mutating ---
+
+def test_qc_downstream_targets_is_nonmutating(tmp_path):
+    """The preview helper behind `revise --dry-run` lists the would-delete artifacts
+    but deletes nothing — the safeguard against a destructive revise."""
+    from executor import cli
+    from executor.run_paths import RunPaths
+    rp = RunPaths(tmp_path)
+    f = rp.artifact("s3_doublets", "calls.parquet")
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("x")
+    targets = cli._qc_downstream_targets(tmp_path, "s1_rna_qc")
+    assert f in targets       # an s1 revise would invalidate the downstream s3 artifact
+    assert f.exists()         # but computing the preview deletes nothing
+
+
+def test_revise_has_dry_run_flag():
+    from executor.cli import main
+    params = {p.name for p in main.commands["revise"].params}
+    assert "dry_run" in params, f"revise is missing the --dry-run flag; has {sorted(params)}"

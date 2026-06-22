@@ -6,6 +6,20 @@ Canonical user-facing report after re-run: `deliverables/qc_review/qc_review_<ru
 
 ---
 
+## Before you revise — diagnose, dry-run, confirm (guardrail)
+
+At `post_qc_review` a `revise` is **destructive**: it deletes the revised stage's outputs and everything downstream through S3 (plus the gate outputs). Before issuing a real `revise` here:
+
+1. **Diagnose the binding constraint.** For a MAD-derived bound the effective cutoff is `max(MAD, floor)` (lower) or `min(MAD, ceiling)` (upper) — so changing a non-binding knob has no effect. Classic gotcha: when median `pct_mt` is low, `pct_mt_floor` (not `pct_mt_ceiling`) is the binding lower constraint.
+2. **Dry-run first:** `executor revise <stage> <key>=<value> --config $CFG --dry-run`. It prints the parameter change, the **exact** artifacts that would be deleted, and the current thresholds (so you can see which bound is active) — and mutates nothing.
+3. **Confirm with the user** before running the real (mutating) `revise` at this gate — the cost of a mistaken revise is a forced re-run of the deleted stages.
+
+To pin a MAD-derived bound to an exact value, revise its `*_override` key (e.g. `n_genes_min_override=300`); revising the derived output key directly has no effect.
+
+**Recovery if a revise ran by mistake:** the deleted artifacts regenerate by re-running the affected stages — re-approve the revised stage (and `s3_doublets` if S1/S2 changed), then `run`/`submit`. There is no in-place undo; the dry-run + confirm above is the safeguard.
+
+---
+
 ## Plan vs live parameters
 
 `executor revise` does **not** update the preprocessing plan.
