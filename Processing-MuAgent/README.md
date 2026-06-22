@@ -4,6 +4,8 @@ Multiome (scRNA-seq + scATAC-seq) preprocessing subagent. Takes filtered or raw 
 
 Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Declare the branch up front with `Processing-MuAgent declare-branch`.
 
+**Harness layout.** Agent manifest + identity: [`AGENT.md`](AGENT.md). Conversational procedures (progressive disclosure): [`agent/skills/`](agent/skills/) (start at `index.md`); policy + hard rules: [`agent/system_prompt.md`](agent/system_prompt.md); per-command tool contracts: [`agent/tools.md`](agent/tools.md). Cross-agent contracts (finding codes, state model, handoff schemas): [`../contracts/`](../contracts/). QC default values live once in `executor/defaults.py`. Repo overview: [`../README.md`](../README.md).
+
 ## Pipeline overview
 
 **Stage order** (Snakemake DAG — `s0_ingest` is a single planning-compute job that loads the data once, validates it, assembles the preprocessing plan, and runs the QC threshold exploration; it emits `validation_report.json`, `preprocessing_plan.json`, and `qc_explore.json` that `plan_review` consumes):
@@ -132,7 +134,7 @@ At S7, RNA-only (`leiden_rna`) and ATAC-only (`leiden_atac`) clustering are run 
 
 ```
 Processing-MuAgent/
-├── agent/               # chat-runtime prompts (system_prompt, interaction_flow)
+├── agent/               # system_prompt.md + skills/ (procedures) + tools.md (contracts)
 ├── config/              # example run configurations
 ├── executor/            # Python implementation (stages, methods, CLI, helpers)
 │   ├── stages/          # per-stage scripts S0..S8 + post_qc_review + s_handoff

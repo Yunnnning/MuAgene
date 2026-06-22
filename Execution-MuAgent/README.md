@@ -6,6 +6,8 @@ The Execution Agent operates entirely in the background as MuAgene's execution l
 Head-job Spec → Job Rendering → Cluster Submission → Runtime Monitoring → Diagnostics → Status Report.
 ```
 
+**Harness layout.** Agent manifest + identity: [`AGENT.md`](AGENT.md). Run-time + provisioning procedures: [`agent/skills/`](agent/skills/) (start at `index.md`); policy + hard rules: [`agent/system_prompt.md`](agent/system_prompt.md); per-command tool contracts: [`agent/tools.md`](agent/tools.md). Finding codes + state model live once in [`../contracts/`](../contracts/). Repo overview: [`../README.md`](../README.md).
+
 ## Architecture
 
 Processing-MuAgent and Execution-MuAgent share a two-file contract:
@@ -175,21 +177,11 @@ When a run is unhealthy (`CONFIRMED_DEAD` or `FS_HANG`), Execution-MuAgent kills
 
 ### Finding codes
 
-| Code | Severity | Meaning |
-|---|---|---|
-| `submit_rejected_policy` | error | Scheduler policy rejection (partition/account/walltime) |
-| `scheduler_failed` | error | Scheduler state in terminal failure set |
-| `workflow_error_marker` | error | Error keywords in logs; message appends `Root cause — <child_log>: <exception>` scraped from the failing child rule log |
-| `output_missing` | error | Stage output missing, empty, or corrupt after COMPLETED |
-| `stage_output_verified` | info | A stage's declared outputs verified complete and loadable |
-| `workflow_complete` | info | Workflow finished cleanly but the job was lingering; the leftover job was cancelled and the daemon exits |
-| `stall_suspected` | warning | silence_intervals ≥ tolerance_n; entering investigation |
-| `stall_confirmed` | error | Investigation confirmed dead — kill was sent |
-| `stall_recovered` | warning | Investigation found life; monitoring continues |
-| `filesystem_hang_suspected` | error | D-state / degraded storage hang — kill was sent |
-| `no_progress_files` | warning | No progress files found yet (early stage) |
-| `scheduler_completing` | warning | Job in COMPLETING; may indicate epilog/NFS stall |
-| `scheduler_query_failed` | warning | Scheduler query timed out or failed |
+The codes Execution emits in `latest_snapshot.json`'s `findings`, their severity, and the
+recovery action Processing takes for each are the single source of truth in
+[`../contracts/findings.yaml`](../contracts/findings.yaml) (covers the submit, monitoring, and
+env-provisioning codes). Where each finding is written and read:
+[`../contracts/state_model.md`](../contracts/state_model.md).
 
 ## Output files
 

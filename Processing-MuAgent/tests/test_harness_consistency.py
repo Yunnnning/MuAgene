@@ -141,3 +141,14 @@ def test_revise_has_dry_run_flag():
     from executor.cli import main
     params = {p.name for p in main.commands["revise"].params}
     assert "dry_run" in params, f"revise is missing the --dry-run flag; has {sorted(params)}"
+
+
+# --- Stage 7: README values that are restated must match the SSOT ---
+
+def test_readme_clustering_resolutions_match_defaults():
+    """The README states the fixed Leiden resolutions in prose; they must match
+    executor/defaults.py so the doc can't drift from the code."""
+    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text()
+    d = defaults.QC_DEFAULTS["s7_clustering"]
+    assert f"RNA = {d['rna_resolution']}" in readme, "README RNA resolution out of sync with defaults.py"
+    assert f"ATAC = {d['atac_resolution']}" in readme, "README ATAC resolution out of sync with defaults.py"
