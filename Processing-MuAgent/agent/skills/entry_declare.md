@@ -58,7 +58,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 >
 > Ready to send me the paths?
 
-Then proceed to Step 2 (`stage_prompts/inputs_intake.md`).
+Then proceed to Step 2 (`inputs_intake.md`).
 
 ## Corner cases
 

@@ -80,7 +80,7 @@ Use this when `execution.mode` is `pbs` or `slurm`.
    executor hpc-status --config $CFG     # one-shot: report, then re-poll on a scheduled wakeup
    ```
 
-   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see `interaction_flow.md`). Never run a blocking loop or `tail -f | grep`.
+   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see `workflow.md`). Never run a blocking loop or `tail -f | grep`.
 
 5. **QC reports regenerate automatically.** The inferred submit target is the gate-arming localrule `post_qc_review_propose`, which Snakemake reaches after the revised QC execute stages complete — so the head job re-runs the changed stages **and** rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and the checkpoint figures under `deliverables/figures/`, then arms the gate (`post_qc_review` becomes `awaiting_approval`). You do not need to run `propose` by hand on the happy path.
 

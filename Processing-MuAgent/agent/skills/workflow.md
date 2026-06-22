@@ -40,7 +40,7 @@ None yet — Step 1 is purely conversational. No executor calls until Step 2.
 
 After the user answers, confirm back in one line which of the four `workflow_branch` values you inferred (`paired`, `separate`, `rna_only`, `atac_only`) and what the run dir is. Then proceed to Step 2.
 
-See [`stage_prompts/entry.md`](stage_prompts/entry.md) for the canonical Step 1 script and corner cases.
+See [`entry_declare.md`](entry_declare.md) for the canonical Step 1 script and corner cases.
 
 ---
 
@@ -151,7 +151,7 @@ Once the user answers, in order:
 - If HPC mode was configured, confirm `execution.mode`, the `compute.device` (cpu/gpu) recorded, and the path to `deliverables/plan/config/hpc.env`; remind the user to `source` it before cluster submit/resume. When `device=gpu` on SLURM, also confirm GPU partition/gres and the pinned `gpu_image_uri` (container image pulled from registry — not a conda env).
 - After the planning phase completes (`plan_review_propose`), surface `deliverables/plan/context_summary.md` if populated (conflicts or inferred values). Do not paraphrase — paste the markdown back.
 
-See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the canonical Step 2 script and the per-context-form handling details.
+See [`inputs_intake.md`](inputs_intake.md) for the canonical Step 2 script and the per-context-form handling details.
 
 ---
 
@@ -223,7 +223,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
    - Escalate the wording to **strongly recommended** when contamination is elevated
      (high `qc_explore` median rho).
    - **Never invent, suggest, look up, or supply gene names yourself** (hard rule,
-     [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md)).
+     [`qc_review_and_revise.md`](qc_review_and_revise.md)).
    - The user must make one explicit choice; record it:
      - **provide genes** → `executor revise s1a_ambient "marker_genes=[gene1, gene2, ...]" --config $CFG --rationale "Marker genes provided at plan review"` (stored in `parameters.yaml` as `s1a_ambient.marker_genes`, plotted automatically during S1a).
      - **defer to QC review** → carried as `--defer-marker-genes` on the approve call below (or `--marker-genes defer` on submit).
@@ -246,7 +246,7 @@ See [`stage_prompts/inputs_intake.md`](stage_prompts/inputs_intake.md) for the c
 
 6. On user decision:
    - **Approve** → `executor approve plan_review --config $CFG --note "approved after review"`, adding `--defer-marker-genes` or `--skip-marker-genes` to match the user's marker-gene choice when no genes were provided. **The executor refuses to approve while the marker-gene decision is unresolved** — if you see that error, you skipped the mandatory question above; go ask it. (On HPC, the same decision is carried as `--marker-genes defer|skip` on `submit --auto-approve`.)
-   - **Revise inputs or parameters** → `executor revise <stage> <param>=<value> --config $CFG --rationale "<user's reason>"` (the stage prefix is auto-added to the key, so `revise s1_rna_qc min_counts_floor=500` stores `s1_rna_qc.min_counts_floor=500`). While `plan_review` is unapproved, `revise` **automatically regenerates** `plan_review_<run>.md` / `plan_summary_<run>.html` (and re-derives the cheap QC preview from persisted metrics) so the overlay shows the new value — you do not refresh them by hand. The override wins over the frozen plan when the stage runs. Stage is re-set to awaiting_approval; re-surface the updated deliverable and ask if more revisions are needed before re-approving. (Revise the input knobs — or pin a MAD-derived bound to an exact value with its `*_override` key (e.g. `n_genes_min_override=300`); revising the MAD-derived output key directly has no effect — see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) "Common revise keys" and "Pinning a bound to an exact value".)
+   - **Revise inputs or parameters** → `executor revise <stage> <param>=<value> --config $CFG --rationale "<user's reason>"` (the stage prefix is auto-added to the key, so `revise s1_rna_qc min_counts_floor=500` stores `s1_rna_qc.min_counts_floor=500`). While `plan_review` is unapproved, `revise` **automatically regenerates** `plan_review_<run>.md` / `plan_summary_<run>.html` (and re-derives the cheap QC preview from persisted metrics) so the overlay shows the new value — you do not refresh them by hand. The override wins over the frozen plan when the stage runs. Stage is re-set to awaiting_approval; re-surface the updated deliverable and ask if more revisions are needed before re-approving. (Revise the input knobs — or pin a MAD-derived bound to an exact value with its `*_override` key (e.g. `n_genes_min_override=300`); revising the MAD-derived output key directly has no effect — see [`qc_review_and_revise.md`](qc_review_and_revise.md) "Common revise keys" and "Pinning a bound to an exact value".)
    - **Abort** → stop. Tell the user the run dir is intact; they can resume later by re-invoking you on the same config.
 
 ### WHAT_TO_SURFACE_BACK
@@ -265,7 +265,7 @@ If marker genes were stored at this step, confirm the stored gene list in one li
 
 - **`p1_context`** (all branches): biological context extraction + conflict resolution. Already handled in Step 2 flow in most cases, but if the user skipped context in Step 2, P1 will stop here.
 - **`plan_review`** (all branches): covered in Step 3 — checkpoint **#1**.
-- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `deliverables/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies. **Hard rule — close the marker-gene loop here:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"** (this is the second chance when the check was deferred or skipped at plan review), you **must** relay that notice verbatim and obtain an explicit user decision — provide genes → run `executor marker-gene-check --config $CFG <genes...>` (plots before/after and refreshes the QC report), or explicitly decline — **before** approving QC. Do not auto-approve `post_qc_review` past an unaddressed "strongly recommended" notice. Follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact procedure. Never supply gene names yourself.
+- **`post_qc_review`** (all branches): QC review checkpoint **#2** between doublet removal and S4/S5. Generates QC figures in `deliverables/figures/` and `deliverables/qc_review/qc_review_<run_name>.md` (quality-filter and doublet metrics; on **paired**, includes union doublet policy for confirmation). Point the user at `deliverables/qc_review/` for the reports (figures are embedded; raw plots live in `deliverables/figures/`). They may revise thresholds and re-run affected stages before approving. On `separate` / single-modality branches, no cross-modal doublet policy applies. **Hard rule — close the marker-gene loop here:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"** (this is the second chance when the check was deferred or skipped at plan review), you **must** relay that notice verbatim and obtain an explicit user decision — provide genes → run `executor marker-gene-check --config $CFG <genes...>` (plots before/after and refreshes the QC report), or explicitly decline — **before** approving QC. Do not auto-approve `post_qc_review` past an unaddressed "strongly recommended" notice. Follow [`qc_review_and_revise.md`](qc_review_and_revise.md) for the exact procedure. Never supply gene names yourself.
 - **`s7_clustering`** (all branches): **not a user checkpoint.** Leiden clustering runs automatically at fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5). Separate / single-modality: these are the **final** `leiden_rna` / `leiden_atac` labels; paired: diagnostic labels for UMAP only. If the user wants different values, `executor revise s7_clustering s7_clustering.rna_resolution=<x>` at plan review.
 - **`s3_doublets`**: not a separate user checkpoint — runs before QC review; policy is confirmed at checkpoint **#2** on paired runs. Auto-approve unless the user asked for stage-by-stage review.
 
@@ -287,10 +287,10 @@ Approve, revise, or abort?"
      c. If the stage has a linked summary under `deliverables/qc_review/` (e.g., `qc_review_<run>.md` for post_qc_review), read that too and surface both.
      d. Based on user decision:
         - Approve → `executor approve <stage> --config $CFG`.
-        - Revise → if the current stage is `post_qc_review`, follow [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
+        - Revise → if the current stage is `post_qc_review`, follow [`qc_review_and_revise.md`](qc_review_and_revise.md) in full; otherwise `executor revise <stage> <key>=<value> --config $CFG`; re-surface the updated proposal; loop.
      e. Re-invoke the appropriate run command (see HPC section below). Continue until `manifest` completes.
 
-**QC threshold revision and post-QC marker gene check:** see [`stage_prompts/qc_threshold_revision.md`](stage_prompts/qc_threshold_revision.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, what to surface back, and the procedure for running a marker gene check at QC review when no genes were provided at planning time. At QC review, `marker-gene-check` plots and refreshes reports in one command; use `--plot-only` to skip report refresh.
+**QC threshold revision and post-QC marker gene check:** see [`qc_review_and_revise.md`](qc_review_and_revise.md) for the exact HPC and local procedures, artifact deletion rules, plan-vs-`parameters.yaml` behavior, what to surface back, and the procedure for running a marker gene check at QC review when no genes were provided at planning time. At QC review, `marker-gene-check` plots and refreshes reports in one command; use `--plot-only` to skip report refresh.
 
 2. When `manifest` finishes:
    - Read `deliverables/results/run_manifest.json` and extract `workflow_branch`, `outputs`.

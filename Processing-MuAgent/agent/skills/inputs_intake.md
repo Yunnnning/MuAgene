@@ -254,7 +254,7 @@ Omit `--target` — `submit` auto-infers `plan_review_propose`. S0's QC explorat
 needs 100+ GB, so it runs on a compute node inside the head-job (never the login
 node). `submit` routes through Execution-MuAgent (kill-on-hang, survives SSH
 disconnect) and returns in ≤90 s. After `submit`, follow **report-and-repoll** (see
-`interaction_flow.md`): report one-shot `hpc-status`, then re-poll on a non-blocking
+`workflow.md`): report one-shot `hpc-status`, then re-poll on a non-blocking
 scheduled wakeup (~295s, per the `Next check:` line) — reporting only when the `State:`
 fingerprint changes — until `monitor.pid` is removed or `plan_review` becomes
 `awaiting_approval`.
