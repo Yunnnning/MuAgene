@@ -52,3 +52,12 @@ def test_emitted_code_literals_are_registered():
         seen |= set(pat.findall(py.read_text()))
     unregistered = seen - reg
     assert not unregistered, f"emitted finding codes not in registry: {sorted(unregistered)}"
+
+
+def test_every_cli_command_is_documented():
+    import importlib
+    cli = importlib.import_module("execution_muagent.cli")
+    grp = getattr(cli, "cli", None) or getattr(cli, "main", None)
+    tools = (pathlib.Path(__file__).resolve().parents[1] / "agent" / "tools.md").read_text()
+    missing = [c for c in grp.commands if c not in tools]
+    assert not missing, f"Execution commands missing from agent/tools.md: {sorted(missing)}"

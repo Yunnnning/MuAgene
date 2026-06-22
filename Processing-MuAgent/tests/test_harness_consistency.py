@@ -110,3 +110,12 @@ def test_post_qc_manifest_representative_validates_against_schema():
     bad["modality_branch"] = "bogus"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(bad, schema)
+
+
+# --- Stage 5: every CLI command has a tool contract ---
+
+def test_every_executor_command_is_documented():
+    from executor.cli import main
+    tools = (pathlib.Path(__file__).resolve().parents[1] / "agent" / "tools.md").read_text()
+    missing = [c for c in main.commands if c not in tools]
+    assert not missing, f"executor commands missing from agent/tools.md: {sorted(missing)}"
