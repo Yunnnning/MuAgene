@@ -1,0 +1,30 @@
+# MuAgene agent registry — declares the two subagents and the contract boundary
+# between them. The single machine-readable place that says "these agents exist and
+# this is how they hand off". Prose (READMEs, system prompts) references this.
+schema_version: "1"
+
+agents:
+  processing:
+    path: Processing-MuAgent
+    manifest: Processing-MuAgent/AGENT.md
+    owns: scientific intent (plan, gates, parameter provenance, deliverables)
+    tool: executor
+  execution:
+    path: Execution-MuAgent
+    manifest: Execution-MuAgent/AGENT.md
+    owns: platform mechanics + environment provisioning
+    tool: Execution-MuAgent
+
+# The inter-agent contract boundary (shapes live in contracts/).
+boundary:
+  processing_emits: [site_config, head_job, stage_meta]   # Execution reads these
+  execution_emits:  [latest_snapshot]                      # findings + monitor_state + kill_action; Processing reads
+  registry: contracts/findings.yaml                        # the codes carried in latest_snapshot.findings
+  state_model: contracts/state_model.md
+
+# Versioned artifacts handed to downstream consumers.
+handoff_contracts:
+  post_qc_manifest: "muagene.post_qc_handoff/1"
+  run_manifest: "1.0.0"
+
+shared_contracts_dir: contracts
