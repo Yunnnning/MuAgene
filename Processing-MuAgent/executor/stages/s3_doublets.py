@@ -20,6 +20,7 @@ from ..methods import doublet_policy as _pol
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
+from ..defaults import QC_DEFAULTS as _D
 
 
 def _resolve_doublet_rate(value: Any, n_cells: int) -> tuple[float, str]:
@@ -160,7 +161,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         rate_param = s3_plan_params["scrublet_expected_rate"]["value"]
         expected_rate, rate_reason = _resolve_doublet_rate(rate_param, int(rna.n_obs))
         rna_score_threshold = float(
-            _resolve_param(params_path, s3_plan_params, "rna_doublet_score_threshold", 0.25)
+            _resolve_param(params_path, s3_plan_params, "rna_doublet_score_threshold", _D["s3_doublets"]["rna_doublet_score_threshold"])
         )
         _prov.set_param(params_path, "s3_doublets.scrublet_expected_rate_resolved",
                         float(expected_rate),

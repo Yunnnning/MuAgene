@@ -35,6 +35,7 @@ from ..methods.qc_filter_stats import append_frip, marginal_removals
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
+from ..defaults import QC_DEFAULTS as _D
 
 
 def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any = None) -> Any:
@@ -410,12 +411,12 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                             "error": str(e)})
 
     plan_params = plan["stages"]["s2_atac_qc"]["parameters"]
-    k_mad = _resolve_param(params_path, plan_params, "n_fragments_k_mad", 5.0)
-    n_frag_floor = _resolve_param(params_path, plan_params, "n_fragments_floor", 1500)
-    tss_min = float(_resolve_param(params_path, plan_params, "tss_enrichment_min", 1.5))
-    tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", 50.0))
-    nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", 3.0))
-    frip_min = float(_resolve_param(params_path, plan_params, "frip_min", 0.2))
+    k_mad = _resolve_param(params_path, plan_params, "n_fragments_k_mad", _D["s2_atac_qc"]["n_fragments_k_mad"])
+    n_frag_floor = _resolve_param(params_path, plan_params, "n_fragments_floor", _D["s2_atac_qc"]["n_fragments_floor"])
+    tss_min = float(_resolve_param(params_path, plan_params, "tss_enrichment_min", _D["s2_atac_qc"]["tss_enrichment_min"]))
+    tss_max = float(_resolve_param(params_path, plan_params, "tss_enrichment_max", _D["s2_atac_qc"]["tss_enrichment_max"]))
+    nuc_signal_max = float(_resolve_param(params_path, plan_params, "nucleosome_signal_max", _D["s2_atac_qc"]["nucleosome_signal_max"]))
+    frip_min = float(_resolve_param(params_path, plan_params, "frip_min", _D["s2_atac_qc"]["frip_min"]))
     # Manual overrides pin the effective MAD-derived n_fragments bounds (the
     # MAD/floor derivation still runs and is recorded + shown grey). Absent →
     # derived behaviour unchanged.

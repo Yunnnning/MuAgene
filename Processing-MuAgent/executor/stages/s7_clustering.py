@@ -26,6 +26,7 @@ import scanpy as sc
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
+from ..defaults import QC_DEFAULTS as _D
 
 
 def _record_applied(params_path: Path, key: str, value: float) -> None:
@@ -47,11 +48,11 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
 
     plan_params = plan["stages"]["s7_clustering"]["parameters"]
     rna_res = float(_prov.effective_value(params_path, plan_params, "s7_clustering",
-                                          "rna_resolution", 0.7))
+                                          "rna_resolution", _D["s7_clustering"]["rna_resolution"]))
     atac_res = float(_prov.effective_value(params_path, plan_params, "s7_clustering",
-                                           "atac_resolution", 0.5))
+                                           "atac_resolution", _D["s7_clustering"]["atac_resolution"]))
     seed = int(_prov.effective_value(params_path, plan_params, "s7_clustering",
-                                     "random_state", 0))
+                                     "random_state", _D["s7_clustering"]["random_state"]))
 
     # --- RNA final labels ---
     if has_rna:

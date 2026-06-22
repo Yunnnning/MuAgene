@@ -71,19 +71,23 @@ QC_HIST_SUBPLOTS_TOP = 0.863
 QC_HIST_HSPACE = 0.50
 
 # Plan-default QC parameters — reference cutoff lines on explore histograms.
-DEFAULT_TOTAL_COUNTS_K_MAD = 5.0
-DEFAULT_N_GENES_K_MAD = 5.0
-DEFAULT_PCT_MT_K = 3.0
-DEFAULT_PCT_MT_CEILING = 20.0
-DEFAULT_PCT_MT_FLOOR = 5.0
-DEFAULT_MIN_COUNTS_FLOOR = 500.0
-DEFAULT_MIN_GENES_FLOOR = 250.0
-DEFAULT_PCT_RIBO_MAX = 50.0
-DEFAULT_N_FRAG_K_MAD = 5.0
-DEFAULT_N_FRAG_FLOOR = 1500.0
-DEFAULT_TSS_MIN = 1.5
-DEFAULT_TSS_MAX = 50.0
-DEFAULT_NUC_MAX = 3.0
+# Single source of truth: executor/defaults.py (re-exported here so qc_explore and
+# the figure helpers keep importing these names from `executor.figures`).
+from .defaults import (  # noqa: E402
+    DEFAULT_TOTAL_COUNTS_K_MAD,
+    DEFAULT_N_GENES_K_MAD,
+    DEFAULT_PCT_MT_K,
+    DEFAULT_PCT_MT_CEILING,
+    DEFAULT_PCT_MT_FLOOR,
+    DEFAULT_MIN_COUNTS_FLOOR,
+    DEFAULT_MIN_GENES_FLOOR,
+    DEFAULT_PCT_RIBO_MAX,
+    DEFAULT_N_FRAG_K_MAD,
+    DEFAULT_N_FRAG_FLOOR,
+    DEFAULT_TSS_MIN,
+    DEFAULT_TSS_MAX,
+    DEFAULT_NUC_MAX,
+)
 DEFAULT_PCT_MT_REFS: list[tuple[float, str]] = [
     (5.0, "5%"), (10.0, "10%"), (20.0, "20%"),
 ]

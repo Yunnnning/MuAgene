@@ -12,6 +12,7 @@ from typing import Any
 from . import hashing as _h
 from . import provenance
 from .hpc import load_execution_settings
+from .defaults import QC_DEFAULTS as _D
 
 
 # Per-branch stage set. Keys are stage IDs; values are the stages that should
@@ -128,7 +129,7 @@ def assemble_plan(
     # RNA QC mitochondrial ceiling: a single fixed cap (20%). Together with
     # pct_mt_floor (5%), this bounds the MAD-derived pct_mt threshold to a
     # standard filtering range.
-    pct_mt_ceil = 20.0
+    pct_mt_ceil = _D["s1_rna_qc"]["pct_mt_ceiling"]
     pct_mt_rat = ("Fixed standard cap bounding the MAD-derived mito threshold to a "
                   "sensible range (with pct_mt_floor); not sample-type-specific.")
 
@@ -151,39 +152,39 @@ def assemble_plan(
         },
         "s1_rna_qc": {
             "parameters": {
-                "total_counts_k_mad": p(5.0, "default", "MAD multiplier for total_counts bounds.", "high"),
-                "n_genes_k_mad": p(5.0, "default", "MAD multiplier for n_genes bounds.", "high"),
-                "pct_mt_k": p(3.0, "default", "MAD multiplier for mito upper bound.", "high"),
+                "total_counts_k_mad": p(_D["s1_rna_qc"]["total_counts_k_mad"], "default", "MAD multiplier for total_counts bounds.", "high"),
+                "n_genes_k_mad": p(_D["s1_rna_qc"]["n_genes_k_mad"], "default", "MAD multiplier for n_genes bounds.", "high"),
+                "pct_mt_k": p(_D["s1_rna_qc"]["pct_mt_k"], "default", "MAD multiplier for mito upper bound.", "high"),
                 "pct_mt_ceiling": p(pct_mt_ceil, "default", pct_mt_rat, "high"),
-                "pct_mt_floor": p(5.0, "default", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),
-                "pct_ribo_max": p(50.0, "default",
+                "pct_mt_floor": p(_D["s1_rna_qc"]["pct_mt_floor"], "default", "Floor for pct_mt ceiling; avoids overly permissive cap on pristine samples.", "medium"),
+                "pct_ribo_max": p(_D["s1_rna_qc"]["pct_ribo_max"], "default",
                                     "Soft ceiling on pct_counts_ribo (Rps/Rpl/Mrps/Mrpl). "
                                     "Stressed/dying cells often exceed this; tissues with very high "
                                     "ribo expression (e.g. plasma cells) may need a higher value.", "medium"),
-                "min_cells_per_gene": p(3, "default", "scanpy convention.", "high"),
-                "min_counts_floor": p(500, "default",
+                "min_cells_per_gene": p(_D["s1_rna_qc"]["min_cells_per_gene"], "default", "scanpy convention.", "high"),
+                "min_counts_floor": p(_D["s1_rna_qc"]["min_counts_floor"], "default",
                                         "Absolute minimum total_counts per cell; also clamps the "
                                         "MAD-derived lower bound when it falls below this value.", "medium"),
-                "min_genes_floor": p(250, "default",
+                "min_genes_floor": p(_D["s1_rna_qc"]["min_genes_floor"], "default",
                                       "Absolute minimum n_genes_by_counts per cell; also clamps the "
                                       "MAD-derived lower bound when it falls below this value.", "medium"),
             }
         },
         "s2_atac_qc": {
             "parameters": {
-                "tss_enrichment_min": p(1.5, "default",
+                "tss_enrichment_min": p(_D["s2_atac_qc"]["tss_enrichment_min"], "default",
                                         "Minimum TSS enrichment; cells at or below are removed.", "high"),
-                "tss_enrichment_max": p(50.0, "default",
+                "tss_enrichment_max": p(_D["s2_atac_qc"]["tss_enrichment_max"], "default",
                                          "Maximum TSS enrichment; very high values often indicate artifacts.",
                                          "medium"),
-                "n_fragments_k_mad": p(5.0, "default", "Symmetric MAD on log fragments per cell.", "high"),
-                "n_fragments_floor": p(1500, "default",
+                "n_fragments_k_mad": p(_D["s2_atac_qc"]["n_fragments_k_mad"], "default", "Symmetric MAD on log fragments per cell.", "high"),
+                "n_fragments_floor": p(_D["s2_atac_qc"]["n_fragments_floor"], "default",
                                         "Absolute minimum fragments per cell; also clamps the "
                                         "MAD-derived lower bound when it falls below this value.", "medium"),
-                "nucleosome_signal_max": p(3.0, "default",
+                "nucleosome_signal_max": p(_D["s2_atac_qc"]["nucleosome_signal_max"], "default",
                                             "Upper bound on nucleosome signal (mono/nucleosome-free fragment "
                                             "ratio). Cells at or above are removed.", "medium"),
-                "frip_min": p(0.2, "default",
+                "frip_min": p(_D["s2_atac_qc"]["frip_min"], "default",
                                "Minimum Fraction of Reads in Peaks (FRiP) per cell. "
                                "Cells below this value are removed. Set to 0 to disable. "
                                "Only applied when a peak set is available "
@@ -197,10 +198,10 @@ def assemble_plan(
                                               "If 'auto', the rate scales as min(0.10, 0.0008 * n_cells) "
                                               "to track 10x's empirical doublet curve (~0.8% per 1000 cells). "
                                               "Override with a float to force a fixed rate.", "high"),
-                "rna_doublet_score_threshold": p(0.25, "default",
+                "rna_doublet_score_threshold": p(_D["s3_doublets"]["rna_doublet_score_threshold"], "default",
                                                  "RNA Scrublet doublet-score cutoff; cells with "
                                                  "scrublet_score above this value are flagged.", "medium"),
-                "atac_doublet_probability_threshold": p(0.5, "default",
+                "atac_doublet_probability_threshold": p(_D["s3_doublets"]["atac_doublet_probability_threshold"], "default",
                                                         "SnapATAC2 scrublet doublet-probability cutoff; "
                                                         "cells with doublet_probability above this value "
                                                         "are flagged (SnapATAC2 default is 0.5).", "medium"),
@@ -249,9 +250,9 @@ def assemble_plan(
             "parameters": {
                 # Fixed per-modality Leiden resolutions (no sweep / no user checkpoint).
                 # ATAC sits lower than RNA to avoid over-fragmentation.
-                "rna_resolution":  p(0.7, "default", "Fixed Leiden resolution for RNA clustering.", "high"),
-                "atac_resolution": p(0.5, "default", "Fixed Leiden resolution for ATAC clustering.", "high"),
-                "random_state": p(0, "default", "Leiden random seed.", "high"),
+                "rna_resolution":  p(_D["s7_clustering"]["rna_resolution"], "default", "Fixed Leiden resolution for RNA clustering.", "high"),
+                "atac_resolution": p(_D["s7_clustering"]["atac_resolution"], "default", "Fixed Leiden resolution for ATAC clustering.", "high"),
+                "random_state": p(_D["s7_clustering"]["random_state"], "default", "Leiden random seed.", "high"),
             }
         },
         "s8_umap": {
