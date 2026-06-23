@@ -1014,12 +1014,30 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
 
     Also writes per-stage job spec YAMLs to internal/specs/ so Execution-MuAgent
     can read science intent, resource hints, and progress_timeout_hint per stage.
+
+    This command is a *renderer*: it requires the planning compute (P1 → S0 → P2)
+    to have finished and produced preprocessing_plan.json. Calling it before that
+    would emit placeholder deliverables and a false awaiting_approval signal.
     """
     run_dir = _resolve_run_dir(config_path)
+    paths = RunPaths(run_dir)
     if intro_context_only:
         import json as _json
         click.echo(_json.dumps(_pr.build_intro_context(run_dir), indent=2))
         return
+    # Guard against rendering before planning compute has produced the plan.
+    missing = []
+    if not paths.preprocessing_plan.exists():
+        missing.append(str(paths.preprocessing_plan))
+    if not paths.validation_report.exists():
+        missing.append(str(paths.validation_report))
+    if missing:
+        raise click.ClickException(
+            "Cannot render plan review — S0 ingest has not finished yet.\n"
+            f"Missing: {', '.join(missing)}\n"
+            "Wait for the planning job (target plan_review_propose) to complete, "
+            "then re-run this command."
+        )
     text = _pr.render_merged_markdown(run_dir, intro=intro_text)
     click.echo(text)
     out = _pr.write_summary(run_dir, intro=intro_text)
@@ -1038,8 +1056,9 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
             click.echo(f"Wrote {len(written)} stage metadata file(s) to {RunPaths(run_dir).stage_meta_dir}/")
     except Exception:
         pass  # spec writing is best-effort; never block plan-review
-    # Arm the plan_review gate — makes the CLI a complete gate-arming path
-    # independent of whether the Snakemake propose rule ran.
+    # Arm the plan_review gate only when the plan actually exists. The primary
+    # gate-arming path is the plan_review_propose Snakemake rule; this CLI path
+    # is a re-render convenience after planning compute has finished.
     approval.mark_awaiting(run_dir, "plan_review")
 
 

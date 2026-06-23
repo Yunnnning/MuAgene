@@ -43,6 +43,14 @@ downgraded or pairing is ambiguous, surface `validation_report.json` verbatim.
 
 ## 2. Render the plan with an intro paragraph
 
+**Prerequisite:** `executor plan-review` is a *renderer* that requires the planning
+compute (`plan_review_propose`) to have finished and produced
+`internal/artifacts/p2_plan/preprocessing_plan.json` and
+`internal/artifacts/s0_ingest/validation_report.json`. Do **not** run it before the
+Snakemake planning job has completed — the CLI will now refuse and the command would
+otherwise emit placeholder deliverables and a false `plan_review.awaiting_approval`
+sentinel.
+
 1. `executor plan-review --intro-context --config $CFG` — prints JSON (sample metadata,
    cell counts, barcode matching). Write nothing yet.
 2. Write a 100–150-word intro paragraph from that data. Cover organism, tissue,
