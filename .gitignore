@@ -31,7 +31,7 @@ results/
 # Per-run output dirs when created at repo root
 run_*/
 
-# Processing-MuAgent scheduler logs (head PBS/SLURM jobs)
+# Processing-MuAgent scheduler logs (head SLURM jobs)
 Processing-MuAgent/logs/
 
 # Execution-MuAgent scratch runs and scheduler logs

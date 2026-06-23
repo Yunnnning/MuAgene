@@ -8,7 +8,7 @@
 # `provision-env`/`init-machine` run `singularity pull <image> <gpu_image_uri>`, never
 # `singularity build`. This removes the --fakeroot/subuid requirement from the per-
 # machine setup path entirely. GPU-capable child jobs run inside the pulled image via
-# `singularity exec --nv` (see workflow/profiles/*/{slurm,pbs}-submit.sh).
+# `singularity exec --nv` (see workflow/profiles/*/slurm-submit.sh).
 #
 # Why a container (not a conda env): the full RAPIDS + single-cell conda solve OOMs
 # even at 62 GB / hits channel errors. NVIDIA's prebuilt RAPIDS base image carries a

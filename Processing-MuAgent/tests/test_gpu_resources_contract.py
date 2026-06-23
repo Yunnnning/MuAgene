@@ -1,7 +1,7 @@
 """Contract test for the GPU-resource growth path (workflow/resources.smk).
 
 Preprocessing is CPU-only (_GPU_CAPABLE is empty). The preprocessing submit profiles
-(slurm/pbs) do not pass a gpu resource to the scheduler — {resources.gpu} was removed
+(slurm) do not pass a gpu resource to the scheduler — {resources.gpu} was removed
 because no preprocessing stage uses it and Snakemake's default-resources fallback is
 unreliable across versions.
 

@@ -1,7 +1,7 @@
 """launch_runner.sh must put the repo on PYTHONPATH so every job tier imports `executor`
 from source (parity with the GPU container wrapper + the head job's cwd=repo_root). This
 makes a submit-time auto-provisioned env (created from the lock, no `pip install -e`)
-sufficient for CPU child jobs, which inherit PYTHONPATH via sbatch/qsub --export=ALL.
+sufficient for CPU child jobs, which inherit PYTHONPATH via sbatch --export=ALL.
 """
 import unittest
 from pathlib import Path

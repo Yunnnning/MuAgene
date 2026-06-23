@@ -73,6 +73,7 @@ from .log import log_event
 from .methods import qc_thresholds as _qct
 from .methods.qc_filter_stats import marginal_removals
 from .run_paths import RunPaths
+from .defaults import QC_DEFAULTS as _D
 
 S1_FIGURE_STEM = "s0_rna_data_explore"
 S2_FIGURE_STEM = "s0_atac_data_explore"
@@ -292,7 +293,7 @@ def _atac_qc_from_metrics(
     tss_min = float(_pval(params, "tss_enrichment_min", DEFAULT_TSS_MIN))
     tss_max = float(_pval(params, "tss_enrichment_max", DEFAULT_TSS_MAX))
     nuc_max = float(_pval(params, "nucleosome_signal_max", DEFAULT_NUC_MAX))
-    frip_min = float(_pval(params, "frip_min", 0.2))
+    frip_min = float(_pval(params, "frip_min", _D["s2_atac_qc"]["frip_min"]))
     nf_min_ov = _pval(params, "n_fragments_min_override", None)
     nf_max_ov = _pval(params, "n_fragments_max_override", None)
 

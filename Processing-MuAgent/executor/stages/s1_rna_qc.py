@@ -15,6 +15,7 @@ from ..methods.qc_metrics import compute_rna_qc_metrics
 from .. import io as _io
 from .. import provenance as _prov
 from ..log import log_event
+from ..defaults import QC_DEFAULTS as _D
 
 
 def _resolve_param(params_path: Path, plan_params: dict, name: str, default: Any = None) -> Any:
@@ -57,17 +58,17 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # Parameters from plan, overlaid with any parameters.yaml override (a user
     # `revise` of a recipe knob wins over the frozen plan — same rule as S2/S3).
     params = plan["stages"]["s1_rna_qc"]["parameters"]
-    total_counts_k_mad = _resolve_param(params_path, params, "total_counts_k_mad", 5.0)
-    n_genes_k_mad = _resolve_param(params_path, params, "n_genes_k_mad", 5.0)
-    pct_mt_k = _resolve_param(params_path, params, "pct_mt_k", 3.0)
-    pct_mt_ceil = _resolve_param(params_path, params, "pct_mt_ceiling", 20.0)
-    pct_mt_floor = _resolve_param(params_path, params, "pct_mt_floor", 5.0)
-    min_cells = int(_resolve_param(params_path, params, "min_cells_per_gene", 3))
-    min_counts_floor = _resolve_param(params_path, params, "min_counts_floor", 500)
-    min_genes_floor = float(_resolve_param(params_path, params, "min_genes_floor", 250))
+    total_counts_k_mad = _resolve_param(params_path, params, "total_counts_k_mad", _D["s1_rna_qc"]["total_counts_k_mad"])
+    n_genes_k_mad = _resolve_param(params_path, params, "n_genes_k_mad", _D["s1_rna_qc"]["n_genes_k_mad"])
+    pct_mt_k = _resolve_param(params_path, params, "pct_mt_k", _D["s1_rna_qc"]["pct_mt_k"])
+    pct_mt_ceil = _resolve_param(params_path, params, "pct_mt_ceiling", _D["s1_rna_qc"]["pct_mt_ceiling"])
+    pct_mt_floor = _resolve_param(params_path, params, "pct_mt_floor", _D["s1_rna_qc"]["pct_mt_floor"])
+    min_cells = int(_resolve_param(params_path, params, "min_cells_per_gene", _D["s1_rna_qc"]["min_cells_per_gene"]))
+    min_counts_floor = _resolve_param(params_path, params, "min_counts_floor", _D["s1_rna_qc"]["min_counts_floor"])
+    min_genes_floor = float(_resolve_param(params_path, params, "min_genes_floor", _D["s1_rna_qc"]["min_genes_floor"]))
     # Ribosomal upper-bound is recommended (not enforced strictly): some
     # tissues legitimately have very high ribo-protein expression.
-    pct_ribo_max = float(_resolve_param(params_path, params, "pct_ribo_max", 50.0))
+    pct_ribo_max = float(_resolve_param(params_path, params, "pct_ribo_max", _D["s1_rna_qc"]["pct_ribo_max"]))
     # Manual overrides pin the effective MAD-derived bound to an exact value (the
     # MAD/floor derivation still runs and is recorded as the rationale + grey
     # reference line). Absent → derived behaviour unchanged.

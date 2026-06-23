@@ -1,4 +1,4 @@
-"""Per-stage resource declarations — single source of truth for PBS and SLURM profiles.
+"""Per-stage resource declarations — single source of truth for SLURM profiles.
 
 Included by the top-level Snakefile. The values in `RESOURCES` and `RUNTIME` are
 referenced by `<stage>_execute` rules via `resources: mem_mb=..., runtime=..., cpus_per_task=...`.
@@ -6,9 +6,8 @@ referenced by `<stage>_execute` rules via `resources: mem_mb=..., runtime=..., c
 Conventions:
 - `mem_mb` is total job memory in megabytes (snakemake-standard resource name).
 - `runtime` is wall-clock walltime in MINUTES (snakemake-standard; required by
-  snakemake>=8). PBS profile converts to `HH:MM:SS` in its submit script;
-  SLURM accepts minutes directly.
-- `cpus` becomes `cpus_per_task` (SLURM) / `ncpus` (PBS) via the profile templates.
+  snakemake>=8). SLURM accepts minutes directly.
+- `cpus` becomes `cpus_per_task` (SLURM) via the profile templates.
 
 Defaults are sized for ~10 000-cell datasets. Two scaling knobs:
   1. PMA_RESOURCES_SCALE environment variable: multiplies mem_mb and walltime
@@ -46,7 +45,7 @@ def _scaled_runtime_min(minutes: int) -> int:
     return int(minutes * _scale_factor() + _NFS_OVERHEAD_MIN)
 
 
-# Base resource table. Edit here; both PBS and SLURM profiles pick this up.
+# Base resource table. Edit here; the SLURM profile picks this up.
 _BASE_RESOURCES: dict[str, dict[str, int]] = {
     # Local rules — declared for completeness.
     "p1_context":     {"cpus": 1, "mem_mb": 1_000},
@@ -94,7 +93,7 @@ _BASE_RUNTIME_MIN: dict[str, int] = {
 # When a preprocessing stage gains GPU support in the future, three edits are
 # needed in lockstep:
 #   1. Add the stage name to _GPU_CAPABLE (the gate).
-#   2. Re-wire the submit profiles (slurm/pbs config.yaml + submit scripts) to
+#   2. Re-wire the submit profile (slurm/config.yaml + slurm-submit.sh) to
 #      accept and route a `gpu` resource — the preprocessing profiles intentionally
 #      omit {resources.gpu} today because no preprocessing stage uses it.
 #   3. Give the stage a `compute.use_gpu()` branch for its compute path.
@@ -113,7 +112,7 @@ def gpu_for(stage: str) -> int:
 # Public API ----------------------------------------------------------------
 
 # `gpu` is intentionally absent from RESOURCES: preprocessing submit profiles do not
-# pass a gpu resource to the scheduler (see slurm/pbs config.yaml). When a stage is
+# pass a gpu resource to the scheduler (see slurm/config.yaml). When a stage is
 # added to _GPU_CAPABLE in the future, the submit profiles must be re-wired first.
 RESOURCES: dict[str, dict[str, int]] = {
     name: {"cpus": v["cpus"], "mem_mb": _scaled_mem(v["mem_mb"])}
@@ -121,7 +120,6 @@ RESOURCES: dict[str, dict[str, int]] = {
 }
 
 # Walltime in MINUTES — directly usable as a snakemake `runtime` resource.
-# PBS submit script converts minutes → HH:MM:SS at qsub time.
 RUNTIME: dict[str, int] = {name: _scaled_runtime_min(v) for name, v in _BASE_RUNTIME_MIN.items()}
 
 

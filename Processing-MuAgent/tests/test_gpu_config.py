@@ -82,19 +82,6 @@ class SiteConfigGpuRoundTripTests(unittest.TestCase):
             hpc.write_hpc_env(envsh, site)
             self.assertNotIn("PMA_GPU_BIND", envsh.read_text())
 
-    def test_pbs_gpu_select_extra_round_trip(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            site = Path(tmp) / "site.config"
-            hpc.write_site_config(site, mode="pbs", settings={
-                "pbs_queue": "workq", "pbs_project": "vaquerizas",
-                "conda_env": "muagene", "gpu_conda_env": "muagene-gpu",
-                "device": "gpu", "pbs_gpu_select_extra": "ngpus=1",
-                "pbs_gpu_queue": "gpuq", "resources_scale": "1",
-            })
-            cfg = hpc.load_site_config(site)
-            self.assertEqual(cfg["pbs"]["gpu_select_extra"], "ngpus=1")
-            self.assertEqual(cfg["pbs"]["gpu_queue"], "gpuq")
-
 
 class ConfigureExecutionLocalGpuTests(unittest.TestCase):
     def test_local_mode_rejects_device_gpu(self):

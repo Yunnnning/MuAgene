@@ -14,24 +14,22 @@ from pathlib import Path
 from typing import Literal
 
 
-Executor = Literal["local", "pbs", "slurm"]
+Executor = Literal["local", "slurm"]
 
 # Repo root: Processing-MuAgent/ — derived from this file's location.
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
 PROFILE_DIR = {
-    "pbs":   REPO_ROOT / "workflow" / "profiles" / "pbs",
     "slurm": REPO_ROOT / "workflow" / "profiles" / "slurm",
 }
 
 RUNNER_SCRIPT = {
-    "pbs":   REPO_ROOT / "scripts" / "runner.pbs",
     "slurm": REPO_ROOT / "scripts" / "runner.slurm",
 }
 
 LAUNCHER = REPO_ROOT / "scripts" / "launch_runner.sh"
 
-# Default directory for head-job and PBS child-job stdout/stderr (see pbs-submit.sh).
+# Default directory for head-job and SLURM child-job stdout/stderr.
 DEFAULT_LOG_DIR = REPO_ROOT / "logs"
 
 # Fallback re-poll delay (seconds) used by `hpc-status` when latest_snapshot.json
@@ -144,7 +142,7 @@ def _conda_activation_block() -> str:
     """POSIX-sh snippet that activates ``$PMA_CONDA_ENV`` when set.
 
     Snakemake child jobscripts start with ``#!/bin/sh`` and are launched via
-    ``sbatch/qsub --export=ALL``, which propagates the submitter's environment
+    ``sbatch --export=ALL``, which propagates the submitter's environment
     *variables* but does NOT activate the project conda env — so env-local tools
     (``bgzip``/``tabix`` and the like) are absent from ``PATH`` inside the job.
     This block self-activates the env so every child rule runs with the same
@@ -186,7 +184,7 @@ def sanitize_snakemake_jobscript_text(text: str) -> str:
     use and prevents post-job hangs during output syncing, as all I/O should occur
     directly over NFS. Also injects a conda-activation block so child jobs run inside
     ``$PMA_CONDA_ENV`` (otherwise env-local tools like ``bgzip``/``tabix`` are not on
-    PATH under ``sbatch/qsub --export=ALL``).
+    PATH under ``sbatch --export=ALL``).
     """
     text = re.sub(r"(?<=\s)storage-local-copies(?=\s)", "", text)
     text = re.sub(r"--mode\s+'remote'", "--mode 'subprocess'", text)
@@ -307,19 +305,15 @@ def resolve_log_dir() -> Path:
 def head_job_log_path(executor: Executor) -> Path:
     """Default head-job log path for the given scheduler."""
     log_dir = resolve_log_dir()
-    if executor == "slurm":
-        return log_dir / "pma_runner-%j.out"
-    return log_dir
+    return log_dir / "pma_runner-%j.out"
 
 
 def detect_scheduler() -> Executor:
     """Best-effort detection of which scheduler is available on PATH.
 
-    Returns 'pbs' if qsub is present, 'slurm' if sbatch is present, 'local' otherwise.
+    Returns 'slurm' if sbatch is present, 'local' otherwise.
     Used for friendlier default behaviour when --executor is omitted on a known cluster.
     """
-    if shutil.which("qsub"):
-        return "pbs"
     if shutil.which("sbatch"):
         return "slurm"
     return "local"
@@ -531,7 +525,6 @@ def env_diagnostics() -> dict[str, str | None]:
     to show the user what's wired up.
     """
     keys = (
-        "PMA_PBS_QUEUE", "PMA_PBS_PROJECT",
         "PMA_SLURM_PARTITION", "PMA_SLURM_ACCOUNT",
         "PMA_RESOURCES_SCALE", "PMA_CONDA_ENV", "PMA_LOG_DIR",
     )
@@ -548,18 +541,6 @@ def _run_cmd(cmd: list[str], *, timeout: int = 15) -> str:
     except (subprocess.TimeoutExpired, OSError):
         pass
     return ""
-
-
-def _parse_pbs_queues(text: str) -> list[str]:
-    queues: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("-") or line.startswith("Queue"):
-            continue
-        parts = line.split()
-        if parts and parts[0] not in {"Queue", "---"}:
-            queues.append(parts[0])
-    return sorted(set(queues))
 
 
 def _parse_slurm_partitions(text: str) -> list[str]:
@@ -627,47 +608,12 @@ def discover_site() -> dict[str, object]:
         "detected_scheduler": detected,
         "user": user,
         "current_env": env_diagnostics(),
-        "pbs": {"queues": [], "projects": [], "suggested_queue": None, "suggested_project": None},
         "slurm": {"partitions": [], "accounts": [], "suggested_partition": None,
                   "suggested_account": None, "gpu_partitions": [],
                   "suggested_gpu_partition": None, "suggested_gpu_gres": None},
     }
 
-    if detected == "pbs":
-        pbs = info["pbs"]
-        assert isinstance(pbs, dict)
-        queue_text = _run_cmd(["qstat", "-Q"])
-        queues = _parse_pbs_queues(queue_text)
-        pbs["queues"] = queues
-
-        # Site-specific hints already in the environment.
-        for key in ("PMA_PBS_QUEUE", "PBS_DEFAULT_QUEUE", "PBS_QUEUE"):
-            val = os.environ.get(key)
-            if val:
-                pbs["suggested_queue"] = val
-                break
-        if not pbs["suggested_queue"] and queues:
-            pbs["suggested_queue"] = queues[0]
-
-        for key in ("PMA_PBS_PROJECT", "PBS_PROJECT", "PBS_ACCOUNT"):
-            val = os.environ.get(key)
-            if val:
-                pbs["projects"] = [val]
-                pbs["suggested_project"] = val
-                break
-
-        # Recent jobs may expose a project code (-P).
-        if user:
-            recent = _run_cmd(["qstat", "-u", user, "-f"])
-            for line in recent.splitlines():
-                if "Project" in line:
-                    proj = line.split("=", 1)[-1].strip()
-                    if proj and proj not in pbs["projects"]:
-                        pbs["projects"].append(proj)
-            if not pbs["suggested_project"] and pbs["projects"]:
-                pbs["suggested_project"] = pbs["projects"][0]
-
-    elif detected == "slurm":
+    if detected == "slurm":
         slurm = info["slurm"]
         assert isinstance(slurm, dict)
         part_text = _run_cmd(["sinfo", "-h", "-o", "%P"])
@@ -735,16 +681,6 @@ def write_site_config(path: Path | str, *, mode: Executor, settings: dict[str, s
             "gpu_partition": settings.get("slurm_gpu_partition"),
             "gpu_gres": settings.get("slurm_gpu_gres"),
         }
-    elif mode == "pbs":
-        scheduler_section["pbs"] = {
-            "queue": settings.get("pbs_queue"),
-            "project": settings.get("pbs_project"),
-            # GPU routing: appended to the select chunk (e.g. "ngpus=1" or
-            # "ngpus=1:gpu_type=a100"); optional separate GPU queue. PBS GPU
-            # syntax is site-variable, hence a free-form template.
-            "gpu_select_extra": settings.get("pbs_gpu_select_extra"),
-            "gpu_queue": settings.get("pbs_gpu_queue"),
-        }
     try:
         scale = int(float(settings["resources_scale"])) if settings.get("resources_scale") else 1
     except (ValueError, TypeError):
@@ -763,7 +699,7 @@ def write_site_config(path: Path | str, *, mode: Executor, settings: dict[str, s
             "container": None,
             # Optional node-local/fast scratch path. When set, it is exported as
             # PMA_GPU_BIND and appended to the GPU container's binds (see the bind
-            # contract in workflow/profiles/*/{slurm,pbs}-submit.sh).
+            # contract in workflow/profiles/slurm/slurm-submit.sh).
             "scratch": settings.get("scratch"),
         },
         # Provisioning recipe consumed by Execution-MuAgent provision-env/validate-env.
@@ -798,7 +734,6 @@ def write_hpc_env(path: Path | str, site_config_path: Path | str) -> Path:
     mode = cfg.get("scheduler", "local")
     common = cfg.get("common", {}) or {}
     slurm = cfg.get("slurm", {}) or {}
-    pbs = cfg.get("pbs", {}) or {}
     envs = cfg.get("environments", {}) or {}
     gpu_env = envs.get("gpu", {}) or {}
 
@@ -811,10 +746,6 @@ def write_hpc_env(path: Path | str, site_config_path: Path | str) -> Path:
         "",
     ]
     exports: dict[str, str | None] = {
-        "PMA_PBS_QUEUE":            pbs.get("queue"),
-        "PMA_PBS_PROJECT":          pbs.get("project"),
-        "PMA_PBS_GPU_SELECT_EXTRA": pbs.get("gpu_select_extra"),
-        "PMA_PBS_GPU_QUEUE":        pbs.get("gpu_queue"),
         "PMA_SLURM_PARTITION":      slurm.get("partition"),
         "PMA_SLURM_ACCOUNT":        slurm.get("account"),
         "PMA_SLURM_GPU_PARTITION":  slurm.get("gpu_partition"),
@@ -850,7 +781,7 @@ def load_execution_mode(parameters_path: Path | str) -> Executor:
         params = yaml.safe_load(f) or {}
     entry = params.get("execution.mode") or {}
     mode = entry.get("value") if isinstance(entry, dict) else entry
-    if mode in ("local", "pbs", "slurm"):
+    if mode in ("local", "slurm"):
         return mode
     return "local"
 
@@ -888,8 +819,6 @@ def load_execution_settings(run_dir: Path | str) -> dict[str, object]:
         return from_file.get(env_key) or live.get(env_key)
 
     settings: dict[str, str | None] = {
-        "pbs_queue": _get("PMA_PBS_QUEUE", "pbs_queue"),
-        "pbs_project": _get("PMA_PBS_PROJECT", "pbs_project"),
         "slurm_partition": _get("PMA_SLURM_PARTITION", "slurm_partition"),
         "slurm_account": _get("PMA_SLURM_ACCOUNT", "slurm_account"),
         "resources_scale": _get("PMA_RESOURCES_SCALE", "resources_scale"),

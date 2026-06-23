@@ -21,7 +21,6 @@ pip-wheel-metadata/
 # Per-run output directories (when placed inside the package tree)
 run_*/
 
-# Scheduler head-job and PBS child-job logs
 logs/
 pma_runner*.out
 pma_runner.o*

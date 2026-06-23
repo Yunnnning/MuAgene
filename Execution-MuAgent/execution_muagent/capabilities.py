@@ -43,8 +43,6 @@ def detect_container_runtime() -> str | None:
 def detect_scheduler() -> str:
     if shutil.which("sbatch"):
         return "slurm"
-    if shutil.which("qsub"):
-        return "pbs"
     return "local"
 
 

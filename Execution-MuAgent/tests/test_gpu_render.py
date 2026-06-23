@@ -54,16 +54,6 @@ class GpuRenderTests(unittest.TestCase):
         self.assertIn("export PMA_SLURM_GPU_GRES=gpu:A5000:1", script)
         self.assertIn("export PMA_CONDA_ENV_GPU=muagene-gpu", script)
 
-    def test_pbs_gpu_vars_exported(self):
-        sc = SiteConfig(scheduler="pbs", queue="workq", project="vaquerizas",
-                        conda_env="muagene", device="gpu",
-                        gpu_select_extra="ngpus=1:gpu_type=a100", gpu_queue="gpuq",
-                        gpu_conda_env="muagene-gpu")
-        script = _render(sc)
-        self.assertIn("export PMA_DEVICE=gpu", script)
-        self.assertIn('export PMA_PBS_GPU_SELECT_EXTRA="ngpus=1:gpu_type=a100"', script)
-        self.assertIn("export PMA_PBS_GPU_QUEUE=gpuq", script)
-        self.assertIn("export PMA_CONDA_ENV_GPU=muagene-gpu", script)
 
     def test_load_site_config_round_trips_gpu_fields(self):
         with tempfile.TemporaryDirectory() as tmp:

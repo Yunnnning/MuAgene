@@ -19,10 +19,10 @@ from .run_paths import RunPaths
 PACKAGE_DIR = Path(__file__).resolve().parent.parent  # Processing-MuAgent/
 SNAKEFILE = PACKAGE_DIR / "workflow" / "Snakefile"
 
-EXECUTOR_CHOICE = click.Choice(["local", "pbs", "slurm"])
-# Cluster-only executors for `submit` — `run` is local-only, so `local` is not a
+EXECUTOR_CHOICE = click.Choice(["local", "slurm"])
+# Cluster-only executor for `submit` — `run` is local-only, so `local` is not a
 # valid submit target (all cluster execution is owned by Execution-MuAgent).
-CLUSTER_EXECUTOR_CHOICE = click.Choice(["pbs", "slurm"])
+CLUSTER_EXECUTOR_CHOICE = click.Choice(["slurm"])
 
 # s0_ingest is the merged planning compute (load + validate + assemble plan +
 # QC exploration); the former standalone p2_plan stage no longer exists.
@@ -213,38 +213,89 @@ _QC_INVALIDATION: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def _invalidate_qc_downstream(run_dir: Path, stage: str) -> list[str]:
-    """Delete stale artifacts so a re-run from `stage` actually re-executes.
+def _qc_downstream_targets(run_dir: Path, stage: str) -> list[Path]:
+    """The artifacts a revise of `stage` invalidates (whether or not they exist).
 
-    Removes the revised QC stage's own outputs, every strictly-downstream QC
-    stage's outputs, AND the `post_qc_review_propose` gate outputs (proposal,
-    awaiting_approval sentinel, qc_review_<run>.md, qc_summary_<run>.html).
+    The revised QC stage's own outputs, every strictly-downstream QC stage's
+    outputs, AND the `post_qc_review_propose` gate outputs (proposal,
+    awaiting_approval sentinel, qc_review_<run>.md, qc_summary_<run>.html). The
+    gate outputs are always included: while they exist Snakemake reports "Nothing
+    to be done" and silently skips the re-run even though upstream was invalidated.
 
-    The gate deletion is essential: while those outputs exist, Snakemake reports
-    "Nothing to be done" and silently skips the re-run even though upstream inputs
-    were invalidated (the terminal target looks satisfied). Deleting non-existent
-    files is a no-op, so this is safe to call before QC has ever run (e.g. a
-    marker-gene revise at plan review).
-
-    Returns the list of paths actually deleted (for transparent logging).
+    Pure — computes paths only, deletes nothing (so `revise --dry-run` can preview
+    exactly what `revise` would remove).
     """
     if stage not in _QC_INVALIDATION:
         return []
     rp = RunPaths(run_dir)
     targets = [rp.artifact(s, f) for (s, f) in _QC_INVALIDATION[stage]]
-    # Gate outputs — always invalidated so post_qc_review_propose re-runs.
     targets += [
         rp.proposal("post_qc_review"),
         rp.awaiting_sentinel("post_qc_review"),
         rp.qc_review_summary_md,
         rp.qc_summary_html,
     ]
+    return targets
+
+
+def _invalidate_qc_downstream(run_dir: Path, stage: str) -> list[str]:
+    """Delete the stale artifacts from `_qc_downstream_targets` so a re-run from
+    `stage` actually re-executes. Deleting non-existent files is a no-op (safe to
+    call before QC has ever run, e.g. a marker-gene revise at plan review).
+    Returns the paths actually deleted (for transparent logging).
+    """
     deleted: list[str] = []
-    for p in targets:
+    for p in _qc_downstream_targets(run_dir, stage):
         if p.exists():
             p.unlink()
             deleted.append(str(p))
     return deleted
+
+
+def _echo_binding_constraint(paths: RunPaths, stage: str) -> None:
+    """Print the current QC thresholds for a QC stage so the user can see which
+    bound (MAD-derived vs floor vs ceiling) is actually binding before revising —
+    the pct_mt floor-vs-ceiling case is the classic gotcha."""
+    if stage not in ("s1_rna_qc", "s2_atac_qc"):
+        return
+    import json as _json
+    qexp = paths.artifact("qc_explore", "qc_explore.json")
+    if not qexp.exists():
+        return
+    try:
+        th = (_json.loads(qexp.read_text()).get(stage) or {}).get("thresholds")
+    except Exception:
+        return
+    if th:
+        click.echo(f"  binding-constraint check ({stage}) — current thresholds "
+                   "(compare MAD-derived vs floor/ceiling to see which is active):")
+        for k, v in th.items():
+            click.echo(f"    {k} = {v}")
+
+
+def _revise_dry_run(run_dir: Path, paths: RunPaths, stage: str, key: str, value_parsed) -> None:
+    """Preview a `revise`: the parameter change, the binding-constraint context, and
+    the EXACT artifacts that would be deleted — mutating nothing. Closes the
+    destructive-revise gap (revise at post_qc_review used to delete downstream
+    outputs with no preview or undo)."""
+    click.echo("DRY RUN — no changes made.")
+    current = provenance.get_value(str(paths.parameters_yaml), key, None)
+    cur_disp = repr(current) if current is not None else "(plan default; no override set)"
+    click.echo(f"  param: {key}: {cur_disp} -> {value_parsed!r}")
+    if not approval.is_approved(run_dir, "plan_review"):
+        click.echo("  checkpoint: plan_review (not yet approved) -> would re-render the plan "
+                   "deliverables (overlay); NO artifacts deleted.")
+    else:
+        existing = [p for p in _qc_downstream_targets(run_dir, stage) if p.exists()]
+        if existing:
+            click.echo(f"  checkpoint: post_qc_review -> WOULD DELETE {len(existing)} artifact(s):")
+            for p in existing:
+                click.echo(f"    - {p}")
+            click.echo("  Re-running the affected stages regenerates them. Confirm before "
+                       "running the real `revise`.")
+        else:
+            click.echo("  checkpoint: post_qc_review -> no existing downstream artifacts to delete.")
+    _echo_binding_constraint(paths, stage)
 
 
 def _regenerate_plan_deliverables(run_dir: Path) -> list[str]:
@@ -380,15 +431,13 @@ def hpc_info() -> None:
 @main.command(name="configure-execution")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--mode", "mode", required=True, type=EXECUTOR_CHOICE,
-              help="Execution backend: local, pbs, or slurm.")
+              help="Execution backend: local or slurm.")
 @click.option("--confirmed-by-user/--not-confirmed", "confirmed_by_user",
               default=False,
               help="Record that the USER explicitly confirmed this execution mode "
                    "(local vs HPC). `run`/`submit` refuse to launch any compute job "
                    "until this is set. Never pass it on the user's behalf without "
                    "having actually confirmed.")
-@click.option("--pbs-queue", default=None, help="PBS queue name (PMA_PBS_QUEUE).")
-@click.option("--pbs-project", default=None, help="PBS project code (PMA_PBS_PROJECT).")
 @click.option("--slurm-partition", default=None, help="SLURM partition (PMA_SLURM_PARTITION).")
 @click.option("--slurm-account", default=None, help="SLURM account (PMA_SLURM_ACCOUNT).")
 @click.option("--resources-scale", default=None, type=float,
@@ -396,17 +445,12 @@ def hpc_info() -> None:
 @click.option("--conda-env", default=None, help="Conda env name for cluster jobs (PMA_CONDA_ENV).")
 @click.option("--device", type=click.Choice(["cpu", "gpu"]), default="cpu", show_default=True,
               help="Compute device for GPU-capable stages (compute.device). 'gpu' is cluster-only "
-                   "(--mode pbs|slurm + submit): routes those stages to the GPU partition/gres and "
+                   "(--mode slurm + submit): routes those stages to the GPU partition/gres and "
                    "container; local mode (--mode local) is always CPU.")
 @click.option("--gpu-partition", default=None,
               help="SLURM GPU partition for GPU-capable stages (PMA_SLURM_GPU_PARTITION).")
 @click.option("--gpu-gres", default=None,
               help="SLURM GPU gres request, e.g. gpu:A5000:1 (PMA_SLURM_GPU_GRES). Run hpc-info to discover.")
-@click.option("--pbs-gpu-select-extra", default=None,
-              help="PBS select-chunk GPU suffix for GPU-capable stages, e.g. 'ngpus=1' or "
-                   "'ngpus=1:gpu_type=a100' (PMA_PBS_GPU_SELECT_EXTRA).")
-@click.option("--gpu-queue", default=None,
-              help="Optional separate PBS GPU queue for GPU-capable stages (PMA_PBS_GPU_QUEUE).")
 @click.option("--gpu-conda-env", default=None,
               help="Conda env activated for GPU child jobs (PMA_CONDA_ENV_GPU), e.g. muagene-gpu.")
 @click.option("--gpu-image", default=None,
@@ -428,8 +472,6 @@ def configure_execution(
     config_path: str,
     mode: str,
     confirmed_by_user: bool,
-    pbs_queue: str | None,
-    pbs_project: str | None,
     slurm_partition: str | None,
     slurm_account: str | None,
     resources_scale: float | None,
@@ -437,8 +479,6 @@ def configure_execution(
     device: str,
     gpu_partition: str | None,
     gpu_gres: str | None,
-    pbs_gpu_select_extra: str | None,
-    gpu_queue: str | None,
     gpu_conda_env: str | None,
     gpu_image: str | None,
     gpu_image_uri: str | None,
@@ -464,7 +504,7 @@ def configure_execution(
 
     if mode == "local" and device == "gpu":
         raise click.ClickException(
-            "GPU is cluster-only: --device gpu requires --mode pbs or slurm (use submit). "
+            "GPU is cluster-only: --device gpu requires --mode slurm (use submit). "
             "Local runs use --mode local with the default --device cpu.")
 
     # On HPC, gpu routes GPU-capable stages to the GPU partition/gres and container
@@ -522,8 +562,6 @@ def configure_execution(
     # image/env names per run. Precedence: explicit flag > machine.config > env var.
     mc = hpc.load_machine_config()
     settings: dict[str, str | None] = {
-        "pbs_queue": pbs_queue or os.environ.get("PMA_PBS_QUEUE"),
-        "pbs_project": pbs_project or os.environ.get("PMA_PBS_PROJECT"),
         "slurm_partition": slurm_partition or os.environ.get("PMA_SLURM_PARTITION"),
         "slurm_account": slurm_account or os.environ.get("PMA_SLURM_ACCOUNT"),
         "resources_scale": (
@@ -535,8 +573,6 @@ def configure_execution(
         "device": device,
         "slurm_gpu_partition": gpu_partition or os.environ.get("PMA_SLURM_GPU_PARTITION"),
         "slurm_gpu_gres": gpu_gres or os.environ.get("PMA_SLURM_GPU_GRES"),
-        "pbs_gpu_select_extra": pbs_gpu_select_extra or os.environ.get("PMA_PBS_GPU_SELECT_EXTRA"),
-        "pbs_gpu_queue": gpu_queue or os.environ.get("PMA_PBS_GPU_QUEUE"),
         "gpu_conda_env": gpu_conda_env or mc.get("gpu_conda_env") or os.environ.get("PMA_CONDA_ENV_GPU"),
         "gpu_image": gpu_image or mc.get("gpu_image") or os.environ.get("PMA_GPU_IMAGE"),
         "gpu_image_uri": gpu_image_uri or mc.get("gpu_image_uri") or os.environ.get("PMA_GPU_IMAGE_URI"),
@@ -554,9 +590,6 @@ def configure_execution(
         click.echo(f"Execution mode: local (device={device}; no hpc.env written).")
         return
 
-    if mode == "pbs" and not settings["pbs_queue"]:
-        raise click.ClickException(
-            "PBS mode requires --pbs-queue or PMA_PBS_QUEUE in the environment.")
     if mode == "slurm" and not settings["slurm_partition"]:
         raise click.ClickException(
             "SLURM mode requires --slurm-partition or PMA_SLURM_PARTITION in the environment.")
@@ -573,8 +606,7 @@ def configure_execution(
         # SLURM GPU is container-only: the job runs inside the PULLED image, so fail
         # loud now if the pinned image reference is missing rather than writing
         # image_uri: null and only discovering it at provision/submit
-        # (gpu_image_unavailable). PBS GPU is deferred — it keeps a conda-env fallback
-        # for now; apply the same check when PBS goes container-only.
+        # (gpu_image_unavailable).
         if mode == "slurm" and not settings["gpu_image_uri"]:
             raise click.ClickException(
                 "SLURM --device gpu requires --gpu-image-uri — a pinned registry reference the GPU "
@@ -585,10 +617,6 @@ def configure_execution(
             raise click.ClickException(
                 "SLURM --device gpu requires --gpu-gres (e.g. gpu:A5000:1). Run `hpc-info` to discover "
                 "the GPU partition/gres on this cluster.")
-        if mode == "pbs" and not settings["pbs_gpu_select_extra"]:
-            settings["pbs_gpu_select_extra"] = "ngpus=1"
-            click.echo("NOTE: --device gpu on PBS without --pbs-gpu-select-extra; defaulting to 'ngpus=1'.",
-                       err=True)
 
     site_cfg = hpc.write_site_config(paths.site_config, mode=mode, settings=settings)
     out = hpc.write_hpc_env(paths.hpc_env_sh, paths.site_config)
@@ -669,7 +697,10 @@ def regenerate_locks(platforms: tuple[str, ...]) -> None:
 @click.argument("param_kv")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--rationale", default="User revision")
-def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
+@click.option("--dry-run", is_flag=True,
+              help="Preview the parameter change and exactly which artifacts would be "
+                   "deleted (plus the current QC thresholds) — mutate nothing.")
+def revise(stage: str, param_kv: str, config_path: str, rationale: str, dry_run: bool) -> None:
     """Update one parameter and reset the stage to awaiting_approval.
 
     PARAM_KV is key=value, e.g. s1_rna_qc.pct_counts_mt_max=10.0
@@ -691,6 +722,9 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str) -> None:
         value_parsed = yaml.safe_load(value)
     except Exception:
         value_parsed = value
+    if dry_run:
+        _revise_dry_run(run_dir, paths, stage, key, value_parsed)
+        return
     provenance.set_param(
         str(paths.parameters_yaml),
         key, value_parsed,
@@ -1153,12 +1187,12 @@ def _enforce_execution_mode_gate(run_dir: Path, paths: RunPaths) -> None:
             "confirm local vs HPC with the user before any compute job runs "
             "(this applies to resume sessions too, not only the first S0 ingest).\n"
             "  1. Ask the user: run locally on this machine, or submit to an HPC "
-            "cluster (PBS Pro or SLURM)?\n"
+            "cluster (SLURM)?\n"
             "  2. For HPC, probe the login node first: Processing-MuAgent hpc-info\n"
             "  3. Record the user's explicit choice:\n"
             f"     Processing-MuAgent configure-execution --config {paths.run_yaml} "
             "--mode local --confirmed-by-user\n"
-            "     (or --mode pbs|slurm with queue/partition + account, "
+            "     (or --mode slurm with partition + account, "
             "plus --confirmed-by-user)"
         )
     if not confirmed:
@@ -1191,7 +1225,7 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
     `run` is local-only: it executes on this machine (local mode) or runs the
     login-node localrules (propose / planning / manifest). All cluster job
     submission and monitoring is owned by Execution-MuAgent via `submit` — there
-    is no `run --executor pbs|slurm` path.
+    is no `run --executor slurm` path.
 
     Use --auto-approve-except <stage> to keep specific gates honoured (e.g.
     qc_review in headless HPC mode).
@@ -1201,7 +1235,7 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
 
     _enforce_execution_mode_gate(run_dir, paths)
     mode = provenance.get_value(str(paths.parameters_yaml), "execution.mode", None)
-    if mode in {"pbs", "slurm"}:
+    if mode == "slurm":
         raise click.ClickException(
             f"execution.mode is {mode!r}, but `run` is local-only. Heavy stages "
             "(starting with S0 ingest) must run on a compute node, never the login "
@@ -1325,7 +1359,7 @@ def _prepare_submit_approvals(
 @main.command()
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--executor", type=CLUSTER_EXECUTOR_CHOICE, required=True,
-              help="Scheduler to submit the head-job to (pbs or slurm). "
+              help="Scheduler to submit the head-job to (slurm). "
                    "For local foreground runs use `run` (which is local-only).")
 @click.option("--target", default=None,
               help="Override the Snakemake target. Omit to auto-infer the first "
@@ -1360,7 +1394,7 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
            marker_genes_ack: str | None,
            output_log: str | None, unlock_stale_locks: bool,
            watch: bool) -> None:
-    """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
+    """Submit the snakemake runner as a SLURM head-job.
 
     This is the ONLY cluster-execution path: Processing-MuAgent prepares the
     head-job spec + site.config and Execution-MuAgent owns submission and
@@ -1460,7 +1494,7 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
     if not paths.site_config.exists():
         raise click.ClickException(
             f"site.config not found at {paths.site_config}. "
-            "Run `Processing-MuAgent configure-execution --mode slurm|pbs ...` first."
+            "Run `Processing-MuAgent configure-execution --mode slurm ...` first."
         )
 
     # Write the head-job spec so Execution-MuAgent can render + submit it.

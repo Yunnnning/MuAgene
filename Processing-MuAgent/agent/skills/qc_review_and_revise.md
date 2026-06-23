@@ -1,8 +1,35 @@
-# QC threshold revision at `post_qc_review`
+---
+name: qc_review_and_revise
+domain: QC
+purpose: Drive the post_qc_review gate (#2) — relay QC reports verbatim (science) and apply threshold/doublet revisions (action) behind the dry-run guardrail. Canonical home of the never-invent-genes rule.
+activation: status shows post_qc_review awaiting_approval, or any QC-threshold change request
+inputs: [deliverables/qc_review/qc_review_<run>.md, internal/proposals/post_qc_review.yaml, internal/parameters.yaml]
+outputs: [internal/parameters.yaml, post_qc_review.approved]
+calls_tools: [status, revise, "revise --dry-run", approve, marker-gene-check, propose, submit, run]
+reads_contracts: [parameters, latest_snapshot]
+writes_state: [parameters.yaml, post_qc_review.approved]
+handoff: { next: run_execution, when: post_qc_review approved (→ finish batch), on_error: troubleshooting }
+---
+
+# QC review & revise — the post_qc_review gate (#2)
 
 Use this procedure whenever the user asks to adjust QC filtering or doublet thresholds while the pipeline is paused at the **QC review checkpoint** (`post_qc_review`).
 
 Canonical user-facing report after re-run: `deliverables/qc_review/qc_review_<run_name>.md`. The rendered HTML report is `deliverables/qc_review/qc_summary_<run_name>.html`.
+
+---
+
+## Before you revise — diagnose, dry-run, confirm (guardrail)
+
+At `post_qc_review` a `revise` is **destructive**: it deletes the revised stage's outputs and everything downstream through S3 (plus the gate outputs). Before issuing a real `revise` here:
+
+1. **Diagnose the binding constraint.** For a MAD-derived bound the effective cutoff is `max(MAD, floor)` (lower) or `min(MAD, ceiling)` (upper) — so changing a non-binding knob has no effect. Classic gotcha: when median `pct_mt` is low, `pct_mt_floor` (not `pct_mt_ceiling`) is the binding lower constraint.
+2. **Dry-run first:** `executor revise <stage> <key>=<value> --config $CFG --dry-run`. It prints the parameter change, the **exact** artifacts that would be deleted, and the current thresholds (so you can see which bound is active) — and mutates nothing.
+3. **Confirm with the user** before running the real (mutating) `revise` at this gate — the cost of a mistaken revise is a forced re-run of the deleted stages.
+
+To pin a MAD-derived bound to an exact value, revise its `*_override` key (e.g. `n_genes_min_override=300`); revising the derived output key directly has no effect.
+
+**Recovery if a revise ran by mistake:** the deleted artifacts regenerate by re-running the affected stages — re-approve the revised stage (and `s3_doublets` if S1/S2 changed), then `run`/`submit`. There is no in-place undo; the dry-run + confirm above is the safeguard.
 
 ---
 
@@ -31,7 +58,7 @@ Do not edit `parameters.yaml`, `state.yaml`, biological-context files, or checkp
 
 ## Procedure for HPC runs
 
-Use this when `execution.mode` is `pbs` or `slurm`.
+Use this when `execution.mode` is `slurm`.
 
 1. **Update parameters (this also invalidates stale artifacts + gate automatically).** For each changed value, run:
 
@@ -76,11 +103,11 @@ Use this when `execution.mode` is `pbs` or `slurm`.
 
    ```bash
    source deliverables/plan/config/hpc.env
-   executor submit --config $CFG --executor pbs|slurm
+   executor submit --config $CFG --executor slurm
    executor hpc-status --config $CFG     # one-shot: report, then re-poll on a scheduled wakeup
    ```
 
-   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see `interaction_flow.md`). Never run a blocking loop or `tail -f | grep`.
+   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see [`hpc_monitoring.md`](hpc_monitoring.md)). Never run a blocking loop or `tail -f | grep`.
 
 5. **QC reports regenerate automatically.** The inferred submit target is the gate-arming localrule `post_qc_review_propose`, which Snakemake reaches after the revised QC execute stages complete — so the head job re-runs the changed stages **and** rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and the checkpoint figures under `deliverables/figures/`, then arms the gate (`post_qc_review` becomes `awaiting_approval`). You do not need to run `propose` by hand on the happy path.
 
@@ -142,7 +169,7 @@ If the user wants to proceed:
    This **plots the figure and refreshes QC reports in one command** (no separate `propose post_qc_review` step). Use `--plot-only` when iterating on layout without updating the markdown/HTML reports.
    **Login node vs cluster:** check whether `internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` exists and the cell set is unchanged.
    - **Cache present:** run on the **login node** — t-SNE is skipped and the pipeline opens `rna_decontaminated.h5ad` in backed (disk) mode, loading only the requested marker columns plus cached per-cell totals (`cell_totals.parquet`). This avoids loading the full counts matrix into RAM.
-   - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM/PBS job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
+   - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
    Do **not** submit a cluster job when the cache already exists unless the login node still OOMs (rare after backed mode; try a modest ~16G cluster job before 48G).
 3. Relay `deliverables/qc_review/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
 

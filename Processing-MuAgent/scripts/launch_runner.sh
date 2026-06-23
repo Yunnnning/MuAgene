@@ -2,10 +2,10 @@
 # launch_runner.sh — activate project env and invoke snakemake.
 #
 # Used by both interactive mode (called from executor.cli._snakemake when
-# --executor != local) and headless mode (called from runner.pbs / runner.slurm).
+# --executor != local) and headless mode (called from runner.slurm).
 #
 # All trailing args are forwarded to snakemake. Typical invocation:
-#   launch_runner.sh --profile workflow/profiles/pbs --configfile $CFG all
+#   launch_runner.sh --profile workflow/profiles/slurm --configfile $CFG all
 set -euo pipefail
 
 # Locate the Processing-MuAgent repo root (parent of this script's dir).
@@ -15,7 +15,7 @@ cd "$REPO_ROOT"
 export PMA_REPO_ROOT="${PMA_REPO_ROOT:-$REPO_ROOT}"
 
 # Put the repo on PYTHONPATH so `import executor` resolves from source in EVERY job tier —
-# this process AND the child jobs snakemake submits (they inherit it via sbatch/qsub
+# this process AND the child jobs snakemake submits (they inherit it via sbatch
 # --export=ALL). The head job already finds executor via cwd=repo_root and GPU child jobs
 # via the container wrapper's --env PYTHONPATH; this closes the CPU child-job gap so a
 # submit-time auto-provisioned env (created from the lock, no `pip install -e`) still
@@ -96,7 +96,7 @@ fi
 extra_args=()
 using_cluster_profile=0
 for arg in "$@"; do
-    if [[ "$arg" == */profiles/slurm* ]] || [[ "$arg" == */profiles/pbs* ]]; then
+    if [[ "$arg" == */profiles/slurm* ]]; then
         using_cluster_profile=1
     fi
     if [[ "$arg" == */profiles/slurm* ]]; then

@@ -472,7 +472,7 @@ def _execution_review_items(run_dir: Path, plan: dict[str, Any]) -> list[dict[st
         "value": mode,
         "reason": exec_block.get(
             "s0_policy",
-            "How heavy stages (S0 onward) are dispatched: local machine vs PBS/SLURM.",
+            "How heavy stages (S0 onward) are dispatched: local machine vs SLURM.",
         ),
         "certainty": "certain" if user_configured else "needs confirmation",
     }]
@@ -490,31 +490,19 @@ def _execution_review_items(run_dir: Path, plan: dict[str, Any]) -> list[dict[st
         })
         return items
 
-    # PBS or SLURM — surface scheduler settings for review
+    # SLURM — surface scheduler settings for review
     parts: list[str] = []
     missing: list[str] = []
-    if mode == "pbs":
-        for label, key in (("queue", "pbs_queue"), ("project", "pbs_project")):
-            val = settings.get(key)
-            if val:
-                parts.append(f"{label}={val}")
-            elif key == "pbs_queue":
-                missing.append("pbs_queue")
-        for label, key in (("scale", "resources_scale"), ("conda", "conda_env")):
-            val = settings.get(key)
-            if val:
-                parts.append(f"{label}={val}")
-    else:
-        for label, key in (("partition", "slurm_partition"), ("account", "slurm_account")):
-            val = settings.get(key)
-            if val:
-                parts.append(f"{label}={val}")
-            elif key == "slurm_partition":
-                missing.append("slurm_partition")
-        for label, key in (("scale", "resources_scale"), ("conda", "conda_env")):
-            val = settings.get(key)
-            if val:
-                parts.append(f"{label}={val}")
+    for label, key in (("partition", "slurm_partition"), ("account", "slurm_account")):
+        val = settings.get(key)
+        if val:
+            parts.append(f"{label}={val}")
+        elif key == "slurm_partition":
+            missing.append("slurm_partition")
+    for label, key in (("scale", "resources_scale"), ("conda", "conda_env")):
+        val = settings.get(key)
+        if val:
+            parts.append(f"{label}={val}")
 
     items.append({
         "label": "HPC configuration",

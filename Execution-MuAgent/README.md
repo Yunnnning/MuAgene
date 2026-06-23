@@ -1,10 +1,12 @@
 # Execution-MuAgent (Internal Runtime Orchestrator)
 
-The Execution Agent operates entirely in the background as MuAgene's execution layer. It **translates** workflow specifications into scheduler-ready jobs, **submits** them to PBS/SLURM, and **supervises** execution using a dual-clock state machine (heartbeat signals + walltime tracking), and **reports** the job status to Processing-MuAgent. By continuously collecting telemetry, identifying failures, detecting stalled jobs, and generating diagnostics, it maintains execution observability and traceability throughout the job lifecycle. It is an internal support agent with **no direct user interaction**.
+The Execution Agent operates entirely in the background as MuAgene's execution layer. It **translates** workflow specifications into scheduler-ready jobs, **submits** them to SLURM, and **supervises** execution using a dual-clock state machine (heartbeat signals + walltime tracking), and **reports** the job status to Processing-MuAgent. By continuously collecting telemetry, identifying failures, detecting stalled jobs, and generating diagnostics, it maintains execution observability and traceability throughout the job lifecycle. It is an internal support agent with **no direct user interaction**.
 
 ```
 Head-job Spec → Job Rendering → Cluster Submission → Runtime Monitoring → Diagnostics → Status Report.
 ```
+
+**Harness layout.** Agent manifest + identity: [`AGENT.md`](AGENT.md). Run-time + provisioning procedures: [`agent/skills/`](agent/skills/) (start at `index.md`); policy + hard rules: [`agent/system_prompt.md`](agent/system_prompt.md); per-command tool contracts: [`agent/tools.md`](agent/tools.md). Finding codes + state model live once in [`../contracts/`](../contracts/). Repo overview: [`../README.md`](../README.md).
 
 ## Architecture
 
@@ -12,7 +14,7 @@ Processing-MuAgent and Execution-MuAgent share a two-file contract:
 
 | File | Written by | Read by | Contains |
 |------|-----------|---------|----------|
-| `deliverables/plan/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition/queue, account/QOS, **compute device + GPU routing**, env identity, resource scale, and the **`environments:`** provisioning recipe (provider + definition per device) |
+| `deliverables/plan/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition, account/QOS, **compute device + GPU routing**, env identity, resource scale, and the **`environments:`** provisioning recipe (provider + definition per device) |
 | `internal/stage_meta/head_job.yaml` | Processing-MuAgent (`submit`) | Execution-MuAgent | Head-job submission spec: resources (CPU/mem/walltime), input config path, progress_timeout_hint, snakemake_target |
 | `internal/stage_meta/<stage>.yaml` | Processing-MuAgent (`plan-review`) | Execution-MuAgent (monitoring) | Per-stage metadata: science_description, resources, inputs/outputs, progress_timeout_hint. Not submitted — used for output validation and monitoring hints. |
 
@@ -37,10 +39,10 @@ Execution-MuAgent execute-spec \
 ```
 
 Steps performed in order:
-1. **Validate** — checks resources > 0, scheduler supported, input files exist. On error: writes `spec_validation_error` finding to `latest_report.md` and exits non-zero.
+1. **Validate** — checks resources > 0, scheduler supported, input files exist. On error: writes `spec_validation_error` finding to `latest_snapshot.json` and exits non-zero.
 2. **Render** — maps spec resources to scheduler directives (partition, account, QOS, CPU, memory, walltime); wraps command in container invocation if `site.config` specifies one. Writes script to `internal/hpc_monitor/scripts/<stage>_<timestamp>.sh`.
-3. **Submit** — `sbatch --parsable` (SLURM) or `qsub -terse` (PBS).
-   - **Policy rejection** (invalid partition/account, walltime over site limit): writes `submit_rejected_policy` finding to `latest_report.md`; exits non-zero. Processing-MuAgent relays this as an adjustable hint to the user.
+3. **Submit** — ``sbatch --parsable`.
+   - **Policy rejection** (invalid partition/account, walltime over site limit): writes `submit_rejected_policy` finding to `latest_snapshot.json`; exits non-zero. Processing-MuAgent relays this as an adjustable hint to the user.
    - **Transient failure**: retries up to 2× with 10 s backoff; reports `submit_rejected_transient` if still failing.
 4. **Record** — appends to `internal/hpc_monitor/execution_manifest.jsonl` (stage, science_description, job_id, spec_path, script_path, expected_outputs).
 5. **Register** — writes to `internal/hpc_monitor/submissions.jsonl` with `spec_path` and `progress_timeout_hint`.
@@ -58,15 +60,15 @@ Execution-MuAgent resume-monitor \
 
 This is not a command you call directly — Processing-MuAgent starts it as a background daemon. It removes `monitor.pid` when it finishes (whether the job completed, was killed, or the command crashed).
 
-### `report` — read the latest diagnostic report
+### `report` — read the latest debug/audit report
 
-Prints `<run_dir>/internal/hpc_monitor/latest_report.md` — the findings and diagnostics from the most recent monitor check.
+Prints `<run_dir>/internal/hpc_monitor/latest_report.md` — a daemon-internal markdown copy of the most recent monitor check. Processing-MuAgent never parses this file; the live machine contract is `latest_snapshot.json` (consumed by `Processing-MuAgent hpc-status`).
 
 ```bash
 Execution-MuAgent report --run-dir /path/to/run
 ```
 
-`report` is the human-facing diagnostic command; `execute-spec` and `resume-monitor` are machine entry points invoked by Processing-MuAgent. There is no manual-submission path beyond these.
+`report` is a human/debug helper only; `execute-spec` and `resume-monitor` are machine entry points invoked by Processing-MuAgent. There is no manual-submission path beyond these.
 
 ### `init-machine` / `provision-env` / `validate-env` / `doctor` — environment provisioning (runtime infra)
 
@@ -126,7 +128,7 @@ Definitive signals (`scheduler_failed`, `workflow_error_marker`) bypass the sile
 
 If the workflow has finished cleanly (no errors) but the scheduler still shows the job running, the orchestrator process is **lingering** rather than progressing. The monitor recognises this, cancels the leftover job so it does not burn its allocation to walltime, and exits — this is a clean completion, not a failure, so no kill report is raised.
 
-An unhealthy verdict (`CONFIRMED_DEAD` or `FS_HANG`) is killed for cleanup and reported. Execution-MuAgent never holds for a human and never resubmits — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
+An unhealthy verdict (`CONFIRMED_DEAD` or `FS_HANG`) is killed for cleanup and reported. Execution-MuAgent never holds for a human and never resubmits — Processing-MuAgent reads `latest_snapshot.json`, escalates to the human, fixes, and resubmits.
 
 ### Investigation evidence
 
@@ -154,7 +156,6 @@ Liveness is judged by **CPU activity between checks**, not mere presence: a fini
 6. Filesystem responsive + scheduler RUNNING + a measured-flat CPU sample → `confirmed_dead` (catches a lingering/deadlocked process)
 7. No prior sample yet / no reading → `recovered` (conservative default; a kill needs two samples)
 
-GPU child jobs are discovered, hang-detected, and killed-on-hang by the **same** daemon and rules as CPU jobs; the only GPU-specific signal is rule 5b. Two refinements are deferred to the integration effort (when GPU stages actually run): treating CPU-idle as non-fatal for a `device=gpu` job when GPU TRES is *unavailable* (today rule 6 could still fire), and PBS GPU supervision (the probe is SLURM-only).
 
 ### Output verification (per step + terminal)
 
@@ -171,25 +172,15 @@ Because stages write outputs atomically (`/tmp` stage + fsync + `os.rename`), a 
 
 ### Unhealthy runs: no human fallback in Execution
 
-When a run is unhealthy (`CONFIRMED_DEAD` or `FS_HANG`), Execution-MuAgent kills the job (children first, then head) for cleanup and writes diagnostics. It never holds for a human and never resubmits. Processing-MuAgent reads the report, reports to the human, implements the fix, and resubmits. There is no `fs_hang_policy` knob — filesystem hangs follow the same kill-and-report path as any other confirmed-dead verdict.
+When a run is unhealthy (`CONFIRMED_DEAD` or `FS_HANG`), Execution-MuAgent kills the job (children first, then head) for cleanup and writes diagnostics. It never holds for a human and never resubmits. Processing-MuAgent reads `latest_snapshot.json`, reports to the human, implements the fix, and resubmits. There is no `fs_hang_policy` knob — filesystem hangs follow the same kill-and-report path as any other confirmed-dead verdict.
 
 ### Finding codes
 
-| Code | Severity | Meaning |
-|---|---|---|
-| `submit_rejected_policy` | error | Scheduler policy rejection (partition/account/walltime) |
-| `scheduler_failed` | error | Scheduler state in terminal failure set |
-| `workflow_error_marker` | error | Error keywords in logs; message appends `Root cause — <child_log>: <exception>` scraped from the failing child rule log |
-| `output_missing` | error | Stage output missing, empty, or corrupt after COMPLETED |
-| `stage_output_verified` | info | A stage's declared outputs verified complete and loadable |
-| `workflow_complete` | info | Workflow finished cleanly but the job was lingering; the leftover job was cancelled and the daemon exits |
-| `stall_suspected` | warning | silence_intervals ≥ tolerance_n; entering investigation |
-| `stall_confirmed` | error | Investigation confirmed dead — kill was sent |
-| `stall_recovered` | warning | Investigation found life; monitoring continues |
-| `filesystem_hang_suspected` | error | D-state / degraded storage hang — kill was sent |
-| `no_progress_files` | warning | No progress files found yet (early stage) |
-| `scheduler_completing` | warning | Job in COMPLETING; may indicate epilog/NFS stall |
-| `scheduler_query_failed` | warning | Scheduler query timed out or failed |
+The codes Execution emits in `latest_snapshot.json`'s `findings`, their severity, and the
+recovery action Processing takes for each are the single source of truth in
+[`../contracts/findings.yaml`](../contracts/findings.yaml) (covers the submit, monitoring, and
+env-provisioning codes). Where each finding is written and read:
+[`../contracts/state_model.md`](../contracts/state_model.md).
 
 ## Output files
 
@@ -200,8 +191,8 @@ internal/hpc_monitor/
 ├── submissions.jsonl            ← append-only registration log
 ├── latest_submission.json       ← most recent submission record (used by resume-monitor)
 ├── execution_manifest.jsonl     ← append-only per-submit record (execute-spec path)
-├── latest_report.md             ← most recent findings (Processing-MuAgent reads this)
-├── latest_snapshot.json         ← full snapshot + monitor_state at last check
+├── latest_snapshot.json         ← THE machine contract: full snapshot + monitor_state + findings (Processing-MuAgent hpc-status reads this)
+├── latest_report.md             ← daemon-internal debug/audit copy (never parsed by Processing)
 ├── monitor.pid                  ← PID of the running supervision daemon (removed on exit)
 ├── monitor.log                  ← symlink → most recent monitor_<timestamp>.log
 ├── monitor_<timestamp>.log      ← daemon output for each submit or supervisor-restart
@@ -275,7 +266,7 @@ outputs:
 
 ```yaml
 schema_version: '1'
-scheduler: slurm       # slurm | pbs
+scheduler: slurm       # slurm
 device: gpu            # cpu (default) | gpu — routes GPU-capable stages to the GPU env/partition
 slurm:
   partition: cpu-medium
@@ -309,7 +300,6 @@ environments:                  # HOW each device's env is provisioned (consumed 
     imports: workflow/envs/muagene-gpu.imports.txt
 ```
 
-PBS GPU sites set `pbs.gpu_select_extra` (e.g. `ngpus=1`) and optionally `pbs.gpu_queue` instead of the slurm gpu keys. `hpc.env` is derived from this file by Processing-MuAgent and cannot drift from it. Env *identity* lives in `common.conda_env`/`gpu_conda_env` (and the GPU `image_uri`); the `environments:` section is the *provisioning recipe* — no duplication.
 
 ## Install
 

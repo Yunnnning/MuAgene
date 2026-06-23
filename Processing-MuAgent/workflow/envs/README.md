@@ -30,7 +30,7 @@ builds the container locally, so there is no `--fakeroot`/subuid requirement. GP
 stages run inside it via `singularity exec --nv`; `rapids-singlecell` supplies the GPU
 drop-ins (`pp.scrublet`, `pp.pca`, `pp.neighbors`, `tl.leiden`, `tl.umap`, `pp.harmony_integrate`).
 
-**Container bind contract** (`workflow/profiles/*/{slurm,pbs}-submit.sh`): the wrapper binds
+**Container bind contract** (`workflow/profiles/*/slurm-submit.sh`): the wrapper binds
 **both** the resolved repo root (`PMA_REPO_ROOT`, for `launch_runner.sh` + the `executor`
 package on `PYTHONPATH`) **and** the resolved run directory (`PMA_RUN_DIR`, for
 `internal/artifacts/…` I/O) — the run data may sit under a nested mount that singularity's
@@ -68,7 +68,7 @@ Execution-MuAgent provision-env --site-config <site.config> --repo-root <Process
 **`executor` importability does not depend on `pip install -e`.** Every job tier puts the repo
 on the path: the head job runs `python -m snakemake` from the repo root (cwd on `sys.path`); CPU
 child jobs inherit `PYTHONPATH=$PMA_REPO_ROOT` (exported by `scripts/launch_runner.sh`) via
-`sbatch`/`qsub --export=ALL`; GPU child jobs get it from the container wrapper's `--env PYTHONPATH`.
+`sbatch --export=ALL`; GPU child jobs get it from the container wrapper's `--env PYTHONPATH`.
 So a submit-time auto-provisioned env (created from the lock, no editable install) still imports
 `executor` in child jobs. `init-machine`'s `pip install --no-deps -e` is for the interactive
 `Processing-MuAgent`/`executor` console scripts (`--no-deps` because the lock already supplies

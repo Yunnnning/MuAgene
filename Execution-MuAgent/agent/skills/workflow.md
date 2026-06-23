@@ -22,13 +22,12 @@ Processing-MuAgent calls this after it has written `site.config` and the per-sta
 
 1. Map spec resources → scheduler header directives:
    - SLURM: `#SBATCH --cpus-per-task`, `--mem`, `--time`, `--partition`, `--account`, `--qos`
-   - PBS: `#PBS -l select=1:ncpus=...:mem=...mb`, `-l walltime=`, `-q`, `-P`
 2. If `site_config.container` is set: wrap command in `apptainer exec --bind <run_dir> <container> bash <launch_runner.sh>`.
 3. Write script to `internal/hpc_monitor/scripts/<stage>_<timestamp>.sh`.
 
 ### Step 3 — Submit and diagnose
 
-1. Run `sbatch --parsable <script>` or `qsub -terse <script>`.
+1. Run `sbatch --parsable <script>`.
 2. On success: capture job_id from stdout.
 3. On failure:
    - **Policy rejection** (invalid partition/account, walltime over limit): write `submit_rejected_policy` finding to `latest_report.md`; exit non-zero. Processing-MuAgent reads this and tells the user what to adjust.
@@ -125,7 +124,7 @@ The first command run on a new machine. In order:
 1. `probe_capabilities()` → env manager, container runtime, scheduler, gpu_present.
 2. Write `~/.muagene/machine.config` (manager, container_runtime, singularity_module, gpu_image, pinned `gpu_image_uri`, policy, `processing_repo`, env names, detected scheduler/gpu_present).
 3. Provision the **CPU env** from the committed conda-lock lock (no science site.config needed — the recipe is synthesized from machine.config + `<processing-repo>/workflow/envs/manifest.yaml`).
-4. `pip install --no-deps -e` **both** agent packages (Processing-MuAgent and Execution-MuAgent) into the CPU env so **login-node** `Processing-MuAgent submit` can spawn `python -m execution_muagent` from that env (`--no-deps`: the lock already supplies every dependency, so pip only links source + console scripts and never re-resolves conda packages from PyPI). Cluster **child jobs** do not need this — they import `executor` from the repo via `PYTHONPATH=$PMA_REPO_ROOT` (exported by `scripts/launch_runner.sh` and inherited through `sbatch`/`qsub --export=ALL`).
+4. `pip install --no-deps -e` **both** agent packages (Processing-MuAgent and Execution-MuAgent) into the CPU env so **login-node** `Processing-MuAgent submit` can spawn `python -m execution_muagent` from that env (`--no-deps`: the lock already supplies every dependency, so pip only links source + console scripts and never re-resolves conda packages from PyPI). Cluster **child jobs** do not need this — they import `executor` from the repo via `PYTHONPATH=$PMA_REPO_ROOT` (exported by `scripts/launch_runner.sh` and inherited through `sbatch --export=ALL`).
 5. If `--device` includes gpu: **pull** the pinned image to the local `.sif` (never build). Requires `--gpu-image-uri`.
 6. `validate_env` per device; print a readiness report. Fail loud on any error.
 

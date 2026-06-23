@@ -178,8 +178,6 @@ class SiteConfig:
     partition: str | None = None
     account: str | None = None
     qos: str | None = None
-    queue: str | None = None
-    project: str | None = None
     resources_scale: int = 1
     conda_env: str | None = None
     container: str | None = None
@@ -190,8 +188,6 @@ class SiteConfig:
     device: str = "cpu"
     gpu_partition: str | None = None      # slurm GPU partition
     gpu_gres: str | None = None           # slurm gres, e.g. gpu:A5000:1
-    gpu_select_extra: str | None = None   # pbs select-chunk suffix, e.g. ngpus=1
-    gpu_queue: str | None = None          # pbs GPU queue
     gpu_conda_env: str | None = None      # conda env for GPU child jobs
     # Environment provisioning recipe (the `environments:` section). Authoritative
     # for HOW each device's env is built/validated; env *identity* stays in
@@ -229,19 +225,13 @@ def load_site_config(path: Path | str) -> SiteConfig:
     p = Path(path)
     data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     scheduler = str(data.get("scheduler", "slurm"))
-    sched_section: dict[str, Any] = {}
-    if scheduler == "slurm":
-        sched_section = data.get("slurm") or {}
-    elif scheduler == "pbs":
-        sched_section = data.get("pbs") or {}
+    sched_section: dict[str, Any] = data.get("slurm") or {}
     common: dict[str, Any] = data.get("common") or {}
     return SiteConfig(
         scheduler=scheduler,
         partition=sched_section.get("partition"),
         account=sched_section.get("account"),
         qos=sched_section.get("qos"),
-        queue=sched_section.get("queue"),
-        project=sched_section.get("project"),
         resources_scale=int(common.get("resources_scale") or 1),
         conda_env=common.get("conda_env"),
         container=common.get("container"),
@@ -249,8 +239,6 @@ def load_site_config(path: Path | str) -> SiteConfig:
         device=str(data.get("device") or "cpu"),
         gpu_partition=sched_section.get("gpu_partition"),
         gpu_gres=sched_section.get("gpu_gres"),
-        gpu_select_extra=sched_section.get("gpu_select_extra"),
-        gpu_queue=sched_section.get("gpu_queue"),
         gpu_conda_env=common.get("gpu_conda_env"),
         environments=data.get("environments") or {},
     )
@@ -403,8 +391,8 @@ def validate_spec(spec: StageSpec, site_config: SiteConfig) -> list[str]:
         errors.append(f"spec.resources.mem_mb must be > 0, got {spec.resources.get('mem_mb')}")
     if spec.resources.get("walltime_min", 0) <= 0:
         errors.append(f"spec.resources.walltime_min must be > 0, got {spec.resources.get('walltime_min')}")
-    if site_config.scheduler not in ("slurm", "pbs"):
-        errors.append(f"site_config.scheduler must be slurm or pbs, got {site_config.scheduler!r}")
+    if site_config.scheduler != "slurm":
+        errors.append(f"site_config.scheduler must be slurm, got {site_config.scheduler!r}")
     for key, path in spec.inputs.items():
         if path and not Path(path).exists():
             errors.append(f"spec input {key!r} not found: {path}")
@@ -450,20 +438,8 @@ def render_submission_script(
             lines.append(f"#SBATCH --account={site_config.account}")
         if site_config.qos:
             lines.append(f"#SBATCH --qos={site_config.qos}")
-    else:  # pbs
-        hh, mm = divmod(walltime_min, 60)
-        lines = [
-            "#!/bin/bash",
-            f"#PBS -N pma_{spec.stage}_{run_name}",
-            f"#PBS -o {log_path_s}",
-            "#PBS -j oe",
-            f"#PBS -l select=1:ncpus={cpus}:mem={mem_mb}mb",
-            f"#PBS -l walltime={hh:02d}:{mm:02d}:00",
-        ]
-        if site_config.queue:
-            lines.append(f"#PBS -q {site_config.queue}")
-        if site_config.project:
-            lines.append(f"#PBS -P {site_config.project}")
+    else:
+        raise ValueError(f"unsupported scheduler {site_config.scheduler!r}")
 
     run_dir_path = Path(run_dir).resolve()
     lines += [
@@ -506,15 +482,6 @@ def render_submission_script(
             lines.append(f"export PMA_SLURM_GPU_PARTITION={site_config.gpu_partition}")
         if site_config.gpu_gres:
             lines.append(f"export PMA_SLURM_GPU_GRES={site_config.gpu_gres}")
-    elif site_config.scheduler == "pbs":
-        if site_config.queue:
-            lines.append(f"export PMA_PBS_QUEUE={site_config.queue}")
-        if site_config.project:
-            lines.append(f"export PMA_PBS_PROJECT={site_config.project}")
-        if site_config.gpu_select_extra:
-            lines.append(f'export PMA_PBS_GPU_SELECT_EXTRA="{site_config.gpu_select_extra}"')
-        if site_config.gpu_queue:
-            lines.append(f"export PMA_PBS_GPU_QUEUE={site_config.gpu_queue}")
     lines.append("")
 
     profile = repo_root / "workflow" / "profiles" / site_config.scheduler
@@ -544,7 +511,7 @@ def submit_from_spec(
     target: str,
     timeout_s: int = 60,
 ) -> dict[str, Any]:
-    """Render a submission script, write it to disk, and submit via sbatch/qsub.
+    """Render a submission script, write it to disk, and submit via sbatch.
 
     Returns a dict with job_id, script_path, rejected_as ('policy'|'transient'|None),
     stdout, and stderr. The caller registers the submission and starts monitoring.
@@ -566,10 +533,7 @@ def submit_from_spec(
     )
 
     def _try_submit() -> tuple[int | None, str, str]:
-        if site_config.scheduler == "slurm":
-            cmd = ["sbatch", "--parsable", str(script_path)]
-        else:
-            cmd = ["qsub", "-terse", str(script_path)]
+        cmd = ["sbatch", "--parsable", str(script_path)]
         return _run_cmd(cmd, timeout_s)
 
     rc, out, err = _try_submit()
@@ -673,47 +637,9 @@ def query_slurm(job_id: str, timeout_s: int = 5) -> dict[str, str | None]:
     return info
 
 
-def query_pbs(job_id: str, timeout_s: int = 5) -> dict[str, str | None]:
-    info: dict[str, str | None] = {
-        "scheduler": "pbs",
-        "job_id": job_id,
-        "state": None,
-        "elapsed": None,
-        "timelimit": None,
-        "exit_code": None,
-        "reason": None,
-        "query_error": None,
-    }
-    if not shutil.which("qstat"):
-        info["query_error"] = "qstat not found"
-        return info
-    rc, out, err = _run_cmd(["qstat", "-f", job_id], timeout_s)
-    if rc is None:
-        info["query_error"] = err
-        return info
-    if rc != 0:
-        rc, out, err = _run_cmd(["qstat", "-fx", job_id], timeout_s)
-        if rc is None:
-            info["query_error"] = err
-            return info
-    if out:
-        for line in out.splitlines():
-            if "job_state" in line and "=" in line:
-                info["state"] = line.split("=", 1)[1].strip()
-            elif "Exit_status" in line and "=" in line:
-                info["exit_code"] = line.split("=", 1)[1].strip()
-            elif "resources_used.walltime" in line and "=" in line:
-                info["elapsed"] = line.split("=", 1)[1].strip()
-            elif "Resource_List.walltime" in line and "=" in line:
-                info["timelimit"] = line.split("=", 1)[1].strip()
-    return info
-
-
 def query_scheduler(executor: str, job_id: str, timeout_s: int = 5) -> dict[str, str | None]:
     if executor == "slurm":
         return query_slurm(job_id, timeout_s)
-    if executor == "pbs":
-        return query_pbs(job_id, timeout_s)
     return {"scheduler": executor, "job_id": job_id, "state": None, "query_error": "unsupported executor"}
 
 
@@ -1082,12 +1008,9 @@ def submission_jobs_active(
 
 
 def cancel_job(executor: str, job_id: str, timeout_s: int = 5) -> dict[str, Any]:
-    if executor == "slurm":
-        cmd = ["scancel", _normalize_job_id(job_id)]
-    elif executor == "pbs":
-        cmd = ["qdel", job_id]
-    else:
+    if executor != "slurm":
         return {"attempted": False, "reason": f"unsupported executor {executor!r}"}
+    cmd = ["scancel", _normalize_job_id(job_id)]
     rc, out, err = _run_cmd(cmd, timeout_s)
     return {"attempted": True, "returncode": rc, "stdout": out, "stderr": err, "cmd": cmd}
 
