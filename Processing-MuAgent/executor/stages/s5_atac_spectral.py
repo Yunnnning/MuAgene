@@ -55,6 +55,40 @@ def _resolve_add_chr_prefix(params_path: Path | str) -> bool:
     return cbf.endswith("_chrnorm.tsv.gz")
 
 
+def _build_atac_working(run_dir: Path, dst: Path):
+    """Materialise S5's working ATAC object (atac_spectral.h5ad) as a SnapATAC2-native
+    backed file from the canonical post-QC h5mu's ``atac`` modality (fragments + chrom
+    sizes). The caller then runs add_tile_matrix (which rebuilds the tile matrix in
+    backed mode) + spectral on it, and S6/S8 reopen this same snap-native file. A
+    snap-native file is required here: persisting the tile matrix via anndata is ~2x
+    larger and OOMs S6's ``snap.read``.
+
+    Legacy / transition fallback: copy the transient s3 ``atac_post_doublet.h5ad`` (or
+    the s2 ``atac_qc.h5ad``) when the h5mu is absent (a pre-dedup run, or qc_handoff
+    not yet run on this run dir).
+    """
+    import snapatac2 as snap
+    from ..run_paths import RunPaths
+    h5mu = RunPaths(run_dir).post_qc_h5mu
+    if h5mu.exists():
+        import mudata as mu
+        mod = mu.read_h5ad(str(h5mu), "atac")  # fragments in obsm, chrom sizes in uns
+        barcodes = list(mod.obs_names)
+        sd = snap.AnnData(filename=str(dst), obs=mod.obs.copy())
+        sd.obs_names = barcodes  # snap.AnnData ignores the DataFrame index; set explicitly
+        for key in list(mod.obsm.keys()):  # fragment_paired / fragment_single
+            sd.obsm[key] = mod.obsm[key]
+        if "reference_sequences" in mod.uns:
+            sd.uns["reference_sequences"] = mod.uns["reference_sequences"]
+        return sd
+    src = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
+    if not src.exists():
+        src = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
+    shutil.copy(src, dst)
+    _io.sync_path(dst)
+    return snap.read(str(dst))
+
+
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     import snapatac2 as snap
     import json
@@ -77,15 +111,13 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                             "branch": branch})
         return {"skipped": True, "branch": branch}
 
-    src = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
-    if not src.exists():
-        src = run_dir / "internal" / "artifacts" / "s2_atac_qc" / "atac_qc.h5ad"
     dst = art / "atac_spectral.h5ad"
     if dst.exists():
         dst.unlink()
-    shutil.copy(src, dst)
-    _io.sync_path(dst)
-    adata = snap.read(str(dst))
+    # Build the working object from the canonical post-QC h5mu (snap-native; the
+    # existing add_tile_matrix call below rebuilds the tile matrix). Legacy runs with
+    # the transient s3 h5ad still present fall back to the old copy path.
+    adata = _build_atac_working(run_dir, dst)
 
     p = plan["stages"]["s5_atac_spectral"]["parameters"]
     n_components = int(p["n_components"]["value"])

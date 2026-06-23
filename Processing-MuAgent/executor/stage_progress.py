@@ -17,6 +17,7 @@ MONITOR_PIPELINE: tuple[str, ...] = (
     "s2_atac_qc",
     "s3_doublets",
     "post_qc_review",
+    "qc_handoff",
     "s4_rna_norm",
     "s5_atac_spectral",
     "s6_neighbors",
@@ -28,6 +29,11 @@ HUMAN_GATES: frozenset[str] = frozenset({
     "plan_review", "post_qc_review",
 })
 
+# Stages that run on every branch but are NOT plan stages (absent from
+# _STAGES_BY_BRANCH): qc_handoff (the post-QC Integration bundle, a cluster job).
+# Always shown in the monitor pipeline regardless of branch.
+ALWAYS_APPLIES: frozenset[str] = frozenset({"qc_handoff"})
+
 MONITOR_LABELS: dict[str, str] = {
     "plan_review": "plan_review",
     "s1a_ambient": "S1a",
@@ -35,6 +41,7 @@ MONITOR_LABELS: dict[str, str] = {
     "s2_atac_qc": "S2",
     "s3_doublets": "S3",
     "post_qc_review": "qc_review",
+    "qc_handoff": "handoff",
     "s4_rna_norm": "S4",
     "s5_atac_spectral": "S5",
     "s6_neighbors": "S6",
@@ -49,6 +56,7 @@ MONITOR_TASKS: dict[str, str] = {
     "s2_atac_qc": "ATAC QC filtering",
     "s3_doublets": "Doublet removal",
     "post_qc_review": "QC review",
+    "qc_handoff": "Integration handoff",
     "s4_rna_norm": "RNA normalization",
     "s5_atac_spectral": "ATAC spectral embedding",
     "s6_neighbors": "PCA (RNA) + neighbor graph",
@@ -98,6 +106,7 @@ _RULE_TO_MONITOR_ID: dict[str, str] = {
     "s8_umap_execute": "s8_umap",
     "plan_review_propose": "plan_review",
     "post_qc_review_propose": "post_qc_review",
+    "qc_handoff": "qc_handoff",  # single cluster rule (no propose/execute pair)
 }
 
 
@@ -111,6 +120,8 @@ def monitor_task(monitor_id: str) -> str:
 
 def snakemake_rules_for_monitor(monitor_id: str) -> tuple[str, ...]:
     """Snakemake rule names whose logs indicate success/failure for a monitor row."""
+    if monitor_id == "qc_handoff":
+        return ("qc_handoff",)  # single cluster rule, not a propose/execute pair
     if monitor_id in HUMAN_GATES:
         return (f"{monitor_id}_propose",)
     if monitor_id in EXECUTE_MARKERS:
@@ -123,12 +134,16 @@ def _branch_stages(paths: RunPaths) -> set[str]:
 
 
 def _applies(monitor_id: str, branch_stages: set[str]) -> bool:
-    if monitor_id in HUMAN_GATES:
+    if monitor_id in HUMAN_GATES or monitor_id in ALWAYS_APPLIES:
         return True
     return monitor_id in branch_stages
 
 
 def execute_artifact(paths: RunPaths, stage: str) -> Path:
+    if stage == "qc_handoff":
+        # qc_handoff writes to deliverables/qc/, not internal/artifacts/<stage>/;
+        # its post_qc_manifest.json is the done-marker.
+        return paths.post_qc_manifest_json
     return paths.artifact(stage, EXECUTE_MARKERS[stage])
 
 
@@ -334,7 +349,7 @@ def _automated_state(
     killed_monitor_ids: frozenset[str],
 ) -> str:
     """Unified pending / in_progress / failed / cancelled / done / skipped for processing steps."""
-    if stage_id not in branch_stages:
+    if stage_id not in branch_stages and stage_id not in ALWAYS_APPLIES:
         return "skipped"
     if _monitor_outputs_done(paths, monitor_id):
         return "done"

@@ -74,13 +74,14 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "atac_h5ad": "{run_dir}/internal/artifacts/s2_atac_qc/atac_qc.h5ad",
         },
         "outputs": {
-            "rna_post":  "{run_dir}/internal/artifacts/s3_doublets/rna_post_doublet.h5ad",
-            "atac_post": "{run_dir}/internal/artifacts/s3_doublets/atac_post_doublet.h5ad",
+            # Durable stage-done marker + DAG edge to qc_handoff. The post-doublet
+            # h5ads are transient working files (deleted by qc_handoff), not declared.
+            "calls": "{run_dir}/internal/artifacts/s3_doublets/calls.parquet",
         },
     },
     "s4_rna_norm": {
         "inputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s3_doublets/rna_post_doublet.h5ad",
+            "post_qc_h5mu": "{run_dir}/deliverables/qc/post_qc_{run}.h5mu",
         },
         "outputs": {
             "rna_h5ad": "{run_dir}/internal/artifacts/s4_rna_norm/rna_norm.h5ad",
@@ -88,7 +89,7 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
     },
     "s5_atac_spectral": {
         "inputs": {
-            "atac_h5ad": "{run_dir}/internal/artifacts/s3_doublets/atac_post_doublet.h5ad",
+            "post_qc_h5mu": "{run_dir}/deliverables/qc/post_qc_{run}.h5mu",
         },
         "outputs": {
             "summary": "{run_dir}/internal/artifacts/s5_atac_spectral/spectral_summary.json",
@@ -120,8 +121,8 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
     },
     "qc_handoff": {
         "inputs": {
-            "rna_post":  "{run_dir}/internal/artifacts/s3_doublets/rna_post_doublet.h5ad",
-            "atac_post": "{run_dir}/internal/artifacts/s3_doublets/atac_post_doublet.h5ad",
+            # Durable S3 marker (reads the transient post-doublet h5ads by path).
+            "calls": "{run_dir}/internal/artifacts/s3_doublets/calls.parquet",
         },
         "outputs": {
             "post_qc_h5mu": "{run_dir}/deliverables/qc/post_qc_{run}.h5mu",

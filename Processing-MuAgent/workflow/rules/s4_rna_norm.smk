@@ -1,6 +1,7 @@
 rule s4_rna_norm_propose:
     input:
-        rna_post = str(INTERNAL / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"),
+        # Reads RNA from the canonical post-QC h5mu, not the transient s3 h5ad.
+        post_qc_h5mu = str(QC / f"post_qc_{RUN_DIR.name}.h5mu"),
     output:
         proposal = str(INTERNAL / "proposals" / "s4_rna_norm.yaml"),
     params:
@@ -19,7 +20,7 @@ rule s4_rna_norm_execute:
         plan               = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done   = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         qc_review_done     = str(INTERNAL / "checkpoints" / "post_qc_review.approved"),
-        rna_post           = str(INTERNAL / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"),
+        post_qc_h5mu       = str(QC / f"post_qc_{RUN_DIR.name}.h5mu"),
     output:
         h5ad = str(INTERNAL / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad"),
     params:

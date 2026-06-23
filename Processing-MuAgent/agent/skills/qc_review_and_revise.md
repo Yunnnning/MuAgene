@@ -209,7 +209,7 @@ When the user approves QC (marker gene check complete or explicitly waived, thre
 
 4. **Tell the user** the integration handoff artifacts are ready, then ask whether to proceed with the finish batch (S4–S8). **Do not submit the finish batch without explicit user approval.**
 
-**Why this is mandatory:** `qc_handoff` depends only on the S3 post-doublet outputs + `post_qc_review.approved` — it is orthogonal to S4–S8 and must produce the integration bundle regardless of when the user decides to start the finish batch. When S4–S8 later run (target `all`), Snakemake sees the outputs already exist and skips `qc_handoff` — no recomputation.
+**Why this is mandatory:** `qc_handoff` depends only on the durable S3 marker (`calls.parquet`) + `post_qc_review.approved`. It writes the integration bundle (`post_qc_<run>.h5mu` + manifest) and then **deletes the now-redundant internal `s3_doublets/{rna,atac}_post_doublet.h5ad`** — the h5mu is the canonical post-QC store, which **S4/S5 read** (so `qc_handoff` is upstream of the finish batch, not orthogonal to it). Running it now produces the bundle early; when S4–S8 later run (target `all`), Snakemake sees the h5mu already exists and skips `qc_handoff` — no recomputation, and deleting the h5ads never triggers a spurious S3 re-run (S3 declares only the durable `calls.parquet`).
 
 ---
 

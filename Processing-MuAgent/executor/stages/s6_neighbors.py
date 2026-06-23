@@ -140,9 +140,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     if has_atac:
         import snapatac2 as snap
         from ..atac_latent import ATAC_LATENT_KEY
+        # S5's snap-native working file (carries X_spectral). The post-doublet s3
+        # h5ad is gone after qc_handoff, so there is no fallback — S5 must have run.
         atac_h5 = run_dir / "internal" / "artifacts" / "s5_atac_spectral" / "atac_spectral.h5ad"
-        if not atac_h5.exists():
-            atac_h5 = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
         if atac_h5.exists():
             adata = snap.read(str(atac_h5))
             try:

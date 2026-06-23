@@ -1,7 +1,8 @@
 rule s5_atac_spectral_propose:
     input:
-        # s5 consumes ATAC post-doublet (the s3 output for the ATAC side).
-        atac_h5 = str(INTERNAL / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"),
+        # s5 rebuilds the ATAC working object from the canonical post-QC h5mu
+        # (atac mod = fragments + chrom sizes), not the transient s3 h5ad.
+        post_qc_h5mu = str(QC / f"post_qc_{RUN_DIR.name}.h5mu"),
     output:
         proposal = str(INTERNAL / "proposals" / "s5_atac_spectral.yaml"),
     params:
@@ -20,7 +21,7 @@ rule s5_atac_spectral_execute:
         plan               = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done   = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         qc_review_done     = str(INTERNAL / "checkpoints" / "post_qc_review.approved"),
-        atac_post          = str(INTERNAL / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"),
+        post_qc_h5mu       = str(QC / f"post_qc_{RUN_DIR.name}.h5mu"),
     output:
         summary = str(INTERNAL / "artifacts" / "s5_atac_spectral" / "spectral_summary.json"),
     params:

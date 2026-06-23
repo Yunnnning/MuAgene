@@ -25,9 +25,9 @@ report progress and recognise a healthy finish.
 
 | Stage | What it does |
 |---|---|
-| `qc_handoff` | **Already ran at QC approval** — `deliverables/qc/post_qc_manifest.json` + `deliverables/qc/post_qc_<run>.h5mu` exist. Snakemake skips it here. |
-| S4 `s4_rna_norm` | RNA normalization (log-normalize, `target_sum=1e4`) + HVG (`seurat_v3` on counts). |
-| S5 `s5_atac_spectral` | ATAC spectral embedding via SnapATAC2 (+ flexible peak/feature export). |
+| `qc_handoff` | **Already ran at QC approval** — wrote `deliverables/qc/post_qc_<run>.h5mu` (+ manifest) and **deleted** the internal `s3_doublets/{rna,atac}_post_doublet.h5ad` (the h5mu is the canonical post-QC store). Snakemake skips it here. |
+| S4 `s4_rna_norm` | RNA normalization (log-normalize, `target_sum=1e4`) + HVG (`seurat_v3` on counts). **Reads RNA from the post-QC h5mu** (rna mod), not the internal h5ad. |
+| S5 `s5_atac_spectral` | ATAC spectral embedding via SnapATAC2 (+ flexible peak/feature export). **Reads ATAC from the post-QC h5mu** — rebuilds a snap-native working file from the atac mod's fragments. |
 | S6 `s6_neighbors` | PCA (RNA) + neighbor graph — RNA PCA+neighbors; ATAC KNN on the S5 spectral embedding. |
 | S7 `s7_clustering` | Leiden clustering at **fixed per-modality resolutions** (values live in `executor/defaults.py` → `s7_clustering`; change them only at plan review via `revise s7_clustering …`). |
 | S8 `s8_umap` | UMAP per modality + final write: `processed_<run>.h5mu` (paired) or separate `*_processed.h5ad`. **Hard stop.** |

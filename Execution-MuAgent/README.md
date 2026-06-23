@@ -239,8 +239,7 @@ inputs:
   rna_h5ad: /path/to/run/internal/artifacts/s1_rna_qc/rna_qc.h5ad
   atac_h5ad: /path/to/run/internal/artifacts/s2_atac_qc/atac_qc.h5ad
 outputs:
-  rna_post: /path/to/run/internal/artifacts/s3_doublets/rna_post_doublet.h5ad
-  atac_post: /path/to/run/internal/artifacts/s3_doublets/atac_post_doublet.h5ad
+  calls: /path/to/run/internal/artifacts/s3_doublets/calls.parquet
 progress_timeout_hint: 60
 ```
 

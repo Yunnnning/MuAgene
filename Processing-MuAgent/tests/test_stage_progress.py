@@ -105,6 +105,23 @@ class StageProgressTests(unittest.TestCase):
             self.assertEqual(states["S1"], "done")
             self.assertEqual(states["S2"], "done")
 
+    def test_qc_handoff_shown_in_pipeline(self):
+        """qc_handoff (a heavy SLURM job) must be a visible monitor row between the QC
+        review gate and S4 — not skipped — and 'done' once its manifest exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._init_run(tmp)
+            paths.approved_sentinel("plan_review").write_text("")
+            paths.approved_sentinel("post_qc_review").write_text("")
+            labels = [lbl for lbl, _task, _state in stage_states(paths)]
+            self.assertIn("handoff", labels)
+            self.assertEqual(labels.index("handoff"), labels.index("qc_review") + 1)
+            self.assertEqual(_states_by_label(paths)["handoff"], "pending")
+            # Done once qc_handoff's manifest (its deliverables/qc/ done-marker) exists.
+            man = paths.post_qc_manifest_json
+            man.parent.mkdir(parents=True, exist_ok=True)
+            man.write_text("{}")
+            self.assertEqual(_states_by_label(paths)["handoff"], "done")
+
     def test_s7_clustering_runs_automatically(self):
         """S7 has no resolution checkpoint: it is done once rna_clustered.h5ad exists."""
         with tempfile.TemporaryDirectory() as tmp:

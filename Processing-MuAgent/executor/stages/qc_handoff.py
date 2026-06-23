@@ -26,10 +26,14 @@ Integration-MuAgent reads the manifest to merge >=2 samples and re-count ATAC
 fragments against a consensus peak set, so the prepared fragments + peaks BED must
 survive the QC gate — see cli._cleanup_qc_intermediates (retain_for_integration).
 
-Independently buildable terminal target (`run --target qc_handoff`); orthogonal to
-S4–S8, which still produce run_manifest.json. When S4–S8 move to Integration-MuAgent
-this becomes Preprocessing's terminus. NOT a localrule — on HPC it runs as a SLURM
-job because the ATAC materialisation is too heavy for the login/head node.
+Independently buildable (`run --target qc_handoff`); depends only on the durable S3
+marker (calls.parquet) + the gate, never on S4–S8 — but it is now UPSTREAM of S4/S5,
+which read the h5mu it writes. As its last step it DELETES the redundant internal
+post-doublet h5ads (the h5mu is the canonical post-QC store); only the durable S3
+markers (calls.parquet, joint_barcodes, overlap_summary) + peaks + fragments remain.
+When S4–S8 move to Integration-MuAgent this becomes Preprocessing's terminus. NOT a
+localrule — on HPC it runs as a SLURM job (the ATAC materialisation is too heavy for
+the login/head node).
 """
 from __future__ import annotations
 
@@ -216,11 +220,27 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(manifest, indent=2, default=str))
 
+    # Dedup: the post-doublet h5ads now hold the same post-QC, post-doublet cells as
+    # the h5mu we just wrote — they are redundant. Delete them as the final step; the
+    # h5mu is the canonical post-QC store and S4/S5 read it. KEPT: calls.parquet,
+    # joint_barcodes.txt, overlap_summary.json (S3), the peaks BED + prepared fragments
+    # (Integration's consensus re-count). The h5ads are undeclared S3 outputs (see
+    # s3_doublets.smk), so removing them never triggers a spurious S3 re-run. The snap
+    # read handle in _load_atac_mod is already closed, so the file is unlocked here.
+    deleted: list[str] = []
+    for name in ("rna_post_doublet.h5ad", "atac_post_doublet.h5ad"):
+        p = paths.artifact(s3, name)
+        if p.exists():
+            p.unlink()
+            deleted.append(rel(p))
+
     log_event(run_dir, {"stage": "qc_handoff", "event": "handoff_written",
-                        "h5mu": rel(h5mu_path), "n_cells": n_cells})
+                        "h5mu": rel(h5mu_path), "n_cells": n_cells,
+                        "deleted_post_doublet_h5ads": deleted})
     return {
         "post_qc_h5mu": rel(h5mu_path),
         "manifest": rel(out),
         "modality_branch": workflow_branch,
         "n_cells": n_cells,
+        "deleted_post_doublet_h5ads": deleted,
     }

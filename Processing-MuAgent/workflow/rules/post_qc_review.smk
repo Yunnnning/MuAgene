@@ -13,9 +13,9 @@ rule post_qc_review_propose:
     confirmation at this checkpoint.
     """
     input:
-        rna_post  = str(INTERNAL / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"),
-        atac_post = str(INTERNAL / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"),
-        calls     = str(INTERNAL / "artifacts" / "s3_doublets" / "calls.parquet"),
+        # Durable S3 marker only — post_qc_review reads doublet scores + cell counts
+        # from calls.parquet (not the post-doublet h5ads, which qc_handoff deletes).
+        calls = str(INTERNAL / "artifacts" / "s3_doublets" / "calls.parquet"),
     output:
         proposal = str(INTERNAL / "proposals" / "post_qc_review.yaml"),
         awaiting = str(INTERNAL / "proposals" / "post_qc_review.awaiting_approval"),

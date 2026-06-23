@@ -69,9 +69,15 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         _record_applied(params_path, "s7_clustering.atac_resolution", atac_res)
         try:
             import snapatac2 as snap
+            # S5's snap-native working file (carries X_spectral + real barcodes). No
+            # s3 fallback — the post-doublet h5ad is deleted by qc_handoff, so S5 must
+            # have produced this; a missing file is a hard, clear error.
             atac_h5 = run_dir / "internal" / "artifacts" / "s5_atac_spectral" / "atac_spectral.h5ad"
             if not atac_h5.exists():
-                atac_h5 = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
+                raise FileNotFoundError(
+                    f"s7_clustering: ATAC spectral embedding not found at {atac_h5}. "
+                    "S5 (s5_atac_spectral) must run before S7."
+                )
             adata = snap.read(str(atac_h5))
             snap.tl.leiden(adata, resolution=atac_res, random_state=seed,
                            key_added="leiden_atac")

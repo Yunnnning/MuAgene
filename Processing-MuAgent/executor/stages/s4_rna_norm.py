@@ -12,6 +12,29 @@ from .. import provenance as _prov
 from ..log import log_event
 
 
+def _load_rna_postqc(run_dir: Path):
+    """Read the post-QC, post-doublet RNA AnnData (carries ``layers['counts']``).
+
+    Canonical source: the ``rna`` modality of the post-QC handoff h5mu
+    (``deliverables/qc/post_qc_<run>.h5mu``, written by qc_handoff) — read with
+    ``mudata.read_h5ad(path, "rna")`` so the atac modality is not loaded. Legacy /
+    transition fallback: the transient ``s3_doublets/rna_post_doublet.h5ad`` when the
+    h5mu is absent (a pre-dedup run, or qc_handoff not yet run).
+    """
+    from ..run_paths import RunPaths
+    h5mu = RunPaths(run_dir).post_qc_h5mu
+    if h5mu.exists():
+        import mudata as mu
+        return mu.read_h5ad(str(h5mu), "rna")
+    legacy = run_dir / "internal" / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"
+    if legacy.exists():
+        return ad.read_h5ad(legacy)
+    raise FileNotFoundError(
+        f"s4_rna_norm: post-QC RNA not found — neither {h5mu} nor {legacy} exists. "
+        "Run qc_handoff (after post_qc_review approval) before S4."
+    )
+
+
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     run_dir = Path(run_dir)
     art = run_dir / "internal" / "artifacts" / "s4_rna_norm"
@@ -26,7 +49,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                             "branch": branch})
         return {"n_cells": 0, "branch": branch}
 
-    a = ad.read_h5ad(run_dir / "internal" / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad")
+    a = _load_rna_postqc(run_dir)
 
     p = plan["stages"]["s4_rna_norm"]["parameters"]
     target_sum = p["target_sum"]["value"]

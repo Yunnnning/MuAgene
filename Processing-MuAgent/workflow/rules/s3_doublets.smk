@@ -36,11 +36,13 @@ rule s3_doublets_execute:
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
     output:
-        # Both h5ad outputs are always declared; the stage writes an empty
-        # placeholder for the missing-modality side in single-modality branches
-        # so the declared DAG is satisfied regardless of branch.
-        rna_post  = str(INTERNAL / "artifacts" / "s3_doublets" / "rna_post_doublet.h5ad"),
-        atac_post = str(INTERNAL / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"),
+        # calls.parquet is the durable stage-done marker — written on every branch
+        # and the DAG edge S3 -> qc_handoff. The post-doublet h5ads
+        # (rna_post_doublet.h5ad, atac_post_doublet.h5ad) are written by the run body
+        # below but are intentionally NOT declared outputs: they are transient working
+        # files that qc_handoff deletes once the post-QC h5mu exists (same pattern as
+        # rna_qc.h5ad vs qc_summary.json in S1/S2). Declaring them would make their
+        # deletion look like a missing output and trigger a spurious S3 re-run on `all`.
         calls     = str(INTERNAL / "artifacts" / "s3_doublets" / "calls.parquet"),
     params:
         run_dir = str(RUN_DIR),

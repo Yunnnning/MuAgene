@@ -13,7 +13,7 @@ Supported workflow branches: `paired`, `separate`, `rna_only`, `atac_only`. Decl
 ```
   P1 context extraction → S0 ingest (load + validate + assemble plan + QC explore) → (CHECKPOINT 1) plan_review
   → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets → (CHECKPOINT 2) post_qc_review
-  → qc_handoff (post-QC Integration bundle; after QC approval, orthogonal to S4–S8)
+  → qc_handoff (post-QC h5mu + Integration manifest; deletes the internal post-doublet h5ads — h5mu is the canonical post-QC store that S4/S5 read)
   → S4 RNA normalization + HVG → S5 ATAC spectral embedding → S6 PCA (RNA) + neighbor graph
   → S7 clustering (fixed resolutions) → S8 UMAP → manifest
 ```
@@ -91,7 +91,7 @@ Every RNA and ATAC QC metric can be **tightened/loosened**, **pinned to an exact
 - **S7 Clustering** — Leiden clustering at fixed per-modality resolutions (RNA = 0.7, ATAC = 0.5; `s7_clustering.rna_resolution` / `atac_resolution`). Runs automatically with no sweep and no checkpoint. Separate / single-modality branches: these become the final `leiden_rna` / `leiden_atac` labels. Paired branch: diagnostic per-modality labels for UMAP only (not joint embedding).
 - **S8 UMAP** — Per-modality UMAP. **Paired** → `processed_<run>.h5mu`; **separate** → `rna_processed.h5ad` + `atac_processed.h5ad`. On the paired branch, S8 expects matching barcodes from S3; final assembly includes a defensive re-intersection logged only when it filters cells.
 - **manifest** — `run_manifest.json` preprocessing handoff contract (v1.0.0), the review notebook, and `layout.json`.
-- **qc_handoff** — After QC approval (gated on `post_qc_review.approved`; reads S3 post-doublet artifacts only). Writes `deliverables/qc/post_qc_<run>.h5mu` (post-QC, post-doublet, **un-normalized** cells for Integration-MuAgent; h5mu on all branches — paired, separate, rna_only, atac_only) and `deliverables/qc/post_qc_manifest.json` (schema `muagene.post_qc_handoff/1`). Orthogonal to S4–S8; `rule all` requires both this bundle and `run_manifest.json`. Independently buildable via `run --target qc_handoff`.
+- **qc_handoff** — After QC approval (gated on `post_qc_review.approved`; its declared Snakemake dep is the durable S3 marker `calls.parquet`, and it reads the S3 post-doublet h5ads by path). Writes `deliverables/qc/post_qc_<run>.h5mu` (post-QC, post-doublet, **un-normalized** cells; h5mu on all branches — paired, separate, rna_only, atac_only) and `deliverables/qc/post_qc_manifest.json` (schema `muagene.post_qc_handoff/1`), then **deletes the now-redundant internal `s3_doublets/{rna,atac}_post_doublet.h5ad`**. The **h5mu is the canonical post-QC store** — S4/S5 read it (so qc_handoff is upstream of the finish batch); `calls.parquet`, `joint_barcodes.txt`, `overlap_summary.json`, the peaks BED and prepared fragments are kept. `rule all` requires both this bundle and `run_manifest.json`. Independently buildable via `run --target qc_handoff`.
 
 ## Paired multiome
 

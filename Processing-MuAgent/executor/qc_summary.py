@@ -449,6 +449,22 @@ def _stage_counts(run_dir: Path) -> dict[str, Any]:
             except Exception: pass
         except Exception:
             pass
+    # Post-handoff fallback: qc_handoff deletes the post-doublet h5ads once the
+    # canonical post-QC h5mu exists, but its manifest records the same post-doublet
+    # counts (n_cells.rna/atac). Read them when the h5ads are gone. (Normally the QC
+    # report is rendered at the gate, pre-handoff, so the h5ads are still present.)
+    if counts["rna_post_doublet"] is None or counts["atac_post_doublet"] is None:
+        from .run_paths import RunPaths
+        man_path = RunPaths(run_dir).post_qc_manifest_json
+        if man_path.exists():
+            try:
+                n = (json.loads(man_path.read_text()).get("n_cells") or {})
+                if counts["rna_post_doublet"] is None and n.get("rna") is not None:
+                    counts["rna_post_doublet"] = int(n["rna"])
+                if counts["atac_post_doublet"] is None and n.get("atac") is not None:
+                    counts["atac_post_doublet"] = int(n["atac"])
+            except Exception:
+                pass
 
     # S3 paired-intersection sentinel — present on the paired branch only.
     joint_path = A / "s3_doublets" / "joint_barcodes.txt"

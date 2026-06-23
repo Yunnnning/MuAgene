@@ -46,7 +46,7 @@ Append to `internal/hpc_monitor/execution_manifest.jsonl`:
   "spec_path": ".../internal/stage_meta/s3_doublets.yaml",
   "script_path": ".../internal/hpc_monitor/scripts/s3_doublets_20260602T140000Z.sh",
   "run_dir": "/path/to/run",
-  "expected_outputs": { "rna_post": "...", "atac_post": "..." }
+  "expected_outputs": { "calls": ".../internal/artifacts/s3_doublets/calls.parquet" }
 }
 ```
 

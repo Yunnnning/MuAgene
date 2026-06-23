@@ -128,9 +128,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     atac_adata = None
     if has_atac:
         import snapatac2 as snap
+        # S5's snap-native working file (X_spectral + S6 KNN graph). The post-doublet
+        # s3 h5ad is gone after qc_handoff, so there is no fallback — S5 must have run.
         atac_h5 = run_dir / "internal" / "artifacts" / "s5_atac_spectral" / "atac_spectral.h5ad"
-        if not atac_h5.exists():
-            atac_h5 = run_dir / "internal" / "artifacts" / "s3_doublets" / "atac_post_doublet.h5ad"
         atac = snap.read(str(atac_h5))
         try:
             snap.tl.umap(atac, min_dist=min_dist, random_state=seed, use_rep=ATAC_LATENT_KEY)

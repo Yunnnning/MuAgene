@@ -134,6 +134,10 @@ class QcHandoffTests(unittest.TestCase):
             self.assertTrue(man["atac"]["add_chr_prefix"])
             self.assertEqual(man["atac"]["frag_chrom_convention"], "ucsc")
             self.assertIn("deliverables/qc/", result["post_qc_h5mu"])
+            # Dedup: the redundant post-doublet h5ads are deleted after the bundle.
+            self.assertFalse(paths.artifact("s3_doublets", "rna_post_doublet.h5ad").exists())
+            self.assertFalse(paths.artifact("s3_doublets", "atac_post_doublet.h5ad").exists())
+            self.assertEqual(len(result["deleted_post_doublet_h5ads"]), 2)
 
     def test_atac_mod_is_retileable(self):
         """The lean ATAC mod, extracted from the h5mu, must rebuild its tile matrix —
@@ -189,6 +193,41 @@ class QcHandoffTests(unittest.TestCase):
             _write_empty(paths.artifact("s3_doublets", "atac_post_doublet.h5ad"))
             with self.assertRaises(RuntimeError):
                 _run(paths, "paired")
+
+    def test_deletes_h5ads_but_keeps_s3_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp, branch="paired")
+            _write_rna(paths.artifact("s3_doublets", "rna_post_doublet.h5ad"))
+            _write_atac_snap(paths.artifact("s3_doublets", "atac_post_doublet.h5ad"))
+            # S3 markers that must survive the dedup deletion.
+            calls = paths.artifact("s3_doublets", "calls.parquet"); calls.write_bytes(b"PARQUET")
+            jb = paths.artifact("s3_doublets", "joint_barcodes.txt"); jb.write_text("cell0\n")
+            ov = paths.artifact("s3_doublets", "overlap_summary.json"); ov.write_text("{}")
+
+            _run(paths, "paired")
+
+            self.assertFalse(paths.artifact("s3_doublets", "rna_post_doublet.h5ad").exists())
+            self.assertFalse(paths.artifact("s3_doublets", "atac_post_doublet.h5ad").exists())
+            self.assertTrue(calls.exists())
+            self.assertTrue(jb.exists())
+            self.assertTrue(ov.exists())
+
+    def test_atac_only_deletes_h5ads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp, branch="atac_only")
+            _write_empty(paths.artifact("s3_doublets", "rna_post_doublet.h5ad"))
+            _write_atac_snap(paths.artifact("s3_doublets", "atac_post_doublet.h5ad"))
+            _run(paths, "atac_only")
+            self.assertFalse(paths.artifact("s3_doublets", "atac_post_doublet.h5ad").exists())
+            self.assertFalse(paths.artifact("s3_doublets", "rna_post_doublet.h5ad").exists())
+
+    def test_s3_declares_only_durable_marker(self):
+        """Durability tripwire: S3 declares calls.parquet (durable) and NOT the
+        post-doublet h5ads, so qc_handoff deleting them never triggers an S3 re-run."""
+        from executor import specs
+        outs = " ".join(specs._STAGE_IO["s3_doublets"]["outputs"].values())
+        self.assertIn("calls.parquet", outs)
+        self.assertNotIn("post_doublet", outs)
 
     def test_raises_when_branch_expects_atac_but_missing(self):
         """Loud failure: a paired run with RNA but an empty ATAC placeholder must
