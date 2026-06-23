@@ -1,6 +1,7 @@
 # Processing-MuAgent — tool contracts
 
-The `executor` CLI is the **only** state-mutating interface (hard rule 3). Each command
+The `Processing-MuAgent` CLI (also available as the backward-compatible alias
+`executor`) is the **only** state-mutating interface (hard rule 3). Each command
 below lists purpose · what it mutates · failure/idempotency. All take `--config <run.yaml>`
 (canonical: `deliverables/plan/config/run.yaml` after `init`). State-file lifecycle:
 [`../../contracts/state_model.md`](../../contracts/state_model.md). A tripwire test asserts

@@ -37,6 +37,7 @@ dev = ["conda-lock>=2.5"]
 
 [project.scripts]
 Processing-MuAgent = "executor.cli:main"
+executor = "executor.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["executor*"]

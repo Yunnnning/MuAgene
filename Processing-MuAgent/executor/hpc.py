@@ -360,10 +360,21 @@ def _manifest_entry_count(run_dir: Path | str) -> int:
     return sum(1 for line in p.read_text().splitlines() if line.strip())
 
 
-def _wait_for_manifest(run_dir: Path | str, baseline_count: int = 0,
-                       timeout_s: float = 90.0) -> str | None:
+def _wait_for_manifest(
+    run_dir: Path | str,
+    baseline_count: int = 0,
+    timeout_s: float = 90.0,
+    monitor_log: Path | str | None = None,
+    max_provisioning_timeout_s: float = 600.0,
+) -> str | None:
     """Poll execution_manifest.jsonl until a NEW entry appears (count exceeds
     `baseline_count` captured just before this submission), or timeout elapses.
+
+    If `monitor_log` is provided and the log file is growing, the wait deadline
+    is extended up to `max_provisioning_timeout_s`. This covers the case where
+    Execution-MuAgent's daemon is still provisioning the conda env silently
+    before it can submit the head-job, without making the normal fast-path wait
+    unnecessarily long.
 
     Returns the newest job_id string, or None on timeout. Waiting on the entry
     COUNT — not merely "a job_id exists" — is essential: a prior submission's
@@ -374,11 +385,29 @@ def _wait_for_manifest(run_dir: Path | str, baseline_count: int = 0,
     """
     import time as _time
     deadline = _time.monotonic() + timeout_s
+    absolute_deadline = _time.monotonic() + max_provisioning_timeout_s
+    last_log_size = 0
+    if monitor_log:
+        try:
+            last_log_size = Path(monitor_log).stat().st_size
+        except OSError:
+            last_log_size = 0
     while _time.monotonic() < deadline:
         if _manifest_entry_count(run_dir) > baseline_count:
             job_id = last_manifest_job_id(run_dir)
             if job_id:
                 return job_id
+        if monitor_log and _time.monotonic() < absolute_deadline:
+            try:
+                current_size = Path(monitor_log).stat().st_size
+            except OSError:
+                current_size = last_log_size
+            if current_size > last_log_size:
+                # Daemon is writing (likely env provisioning). Extend the wait
+                # window by the original timeout so the user sees a stable
+                # deadline while work is clearly in progress.
+                deadline = _time.monotonic() + timeout_s
+                last_log_size = current_size
         _time.sleep(0.5)
     return None
 
@@ -503,7 +532,12 @@ def submit_via_execution_muagent(
             result = start_supervisor_daemon(run_dir, cmd, env)
             if result is None:
                 return None
-            job_id = _wait_for_manifest(run_dir, baseline_count=baseline, timeout_s=90.0)
+            job_id = _wait_for_manifest(
+                run_dir,
+                baseline_count=baseline,
+                timeout_s=90.0,
+                monitor_log=result.get("log"),
+            )
             return {
                 "watch": True,
                 "pid": result["pid"],

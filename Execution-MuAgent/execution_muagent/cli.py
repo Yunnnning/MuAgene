@@ -58,6 +58,11 @@ def execute_spec(
     writes the head_job.yaml spec and site.config; this command handles the rest without
     user interaction. Snakemake submits per-stage child jobs from within the head-job.
     """
+    # Normalize repo-root to an absolute path early. Relative paths propagate into
+    # the rendered SLURM script and break Snakemake profile resolution on compute
+    # nodes whose working directory differs from the login-node invocation.
+    repo_root = str(Path(repo_root).resolve())
+
     spec = load_stage_spec(spec_path)
     site_cfg = load_site_config(site_config_path)
 
