@@ -1,3 +1,16 @@
+---
+name: hpc_monitoring
+domain: monitor
+purpose: Canonical report-and-repoll rule — report one-shot hpc-status, re-poll on a non-blocking scheduled wakeup, drive the gate on signal. Other skills link here.
+activation: after executor submit, while a cluster job is running
+inputs: [internal/hpc_monitor/latest_snapshot.json, internal/hpc_monitor/monitor.pid]
+outputs: [user-facing status report]
+calls_tools: [hpc-status]
+reads_contracts: [latest_snapshot, findings]
+writes_state: []
+handoff: { next: re-enter index.md router, when: monitor.pid gone or gate awaiting_approval, on_error: troubleshooting }
+---
+
 # Skill: hpc_monitoring — report-and-repoll
 
 **Trigger:** after `executor submit`, while a cluster job is running. This is the

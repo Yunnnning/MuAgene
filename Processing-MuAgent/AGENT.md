@@ -22,7 +22,7 @@ deliverables. It translates science into specs and **delegates all cluster execu
 environment provisioning to [Execution-MuAgent](../Execution-MuAgent/AGENT.md)**.
 
 ## Responsibilities
-- Drive the conversational flow (declare → intake → plan → run-with-checkpoints); see `agent/skills/`.
+- Drive the conversational flow (declare → intake → plan → run → QC gate → downstream → completion) as a stage-routed skill set; see `agent/skills/index.md`.
 - Author the plan (`preprocessing_plan.json`) with per-parameter provenance in `parameters.yaml`.
 - Run the two gates — `plan_review` and `post_qc_review` — and surface deterministic deliverables verbatim.
 - Write the execution spec + `site.config` and hand off to Execution-MuAgent via `submit`.

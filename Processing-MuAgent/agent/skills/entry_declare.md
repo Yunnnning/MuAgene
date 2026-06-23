@@ -1,4 +1,17 @@
-# Step 1 — Entry script (declare analysis type)
+---
+name: entry_declare
+domain: entry
+purpose: First turn — identify the workflow_branch and run_dir before asking for paths. Conversational only; no executor calls.
+activation: new conversation / no run dir yet
+inputs: []
+outputs: [workflow_branch (confirmed in chat), run_dir (confirmed in chat)]
+calls_tools: []
+reads_contracts: []
+writes_state: []
+handoff: { next: inputs_intake, when: modality + run_dir confirmed, on_error: troubleshooting }
+---
+
+# Entry — declare analysis type
 
 Canonical script for the very first turn with a user. The goal: identify the `workflow_branch` and the `run_dir` before you ask for file paths. Don't run any executor commands yet — this step is conversational.
 
@@ -58,7 +71,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 >
 > Ready to send me the paths?
 
-Then proceed to Step 2 (`inputs_intake.md`).
+Then hand off to [`inputs_intake.md`](inputs_intake.md).
 
 ## Corner cases
 
@@ -92,6 +105,6 @@ Peek at `<run_dir>/internal/state.yaml` (if it exists) and mention what's there 
 
 ## Explicit non-actions
 
-- Do NOT call `executor init` in Step 1 — wait until Step 2 when you have a draft `run.yaml`.
+- Do NOT call `executor init` here — that's the next skill ([`inputs_intake.md`](inputs_intake.md)), once you have a draft `run.yaml`.
 - Do NOT infer paths from filesystem hints. If the user didn't supply them, ask.
 - Do NOT auto-pick `paired` over `separate` when the user is ambiguous — both are valid workflows with different output shapes.

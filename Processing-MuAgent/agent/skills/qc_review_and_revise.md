@@ -1,4 +1,17 @@
-# QC threshold revision at `post_qc_review`
+---
+name: qc_review_and_revise
+domain: QC
+purpose: Drive the post_qc_review gate (#2) — relay QC reports verbatim (science) and apply threshold/doublet revisions (action) behind the dry-run guardrail. Canonical home of the never-invent-genes rule.
+activation: status shows post_qc_review awaiting_approval, or any QC-threshold change request
+inputs: [deliverables/qc_review/qc_review_<run>.md, internal/proposals/post_qc_review.yaml, internal/parameters.yaml]
+outputs: [internal/parameters.yaml, post_qc_review.approved]
+calls_tools: [status, revise, "revise --dry-run", approve, marker-gene-check, propose, submit, run]
+reads_contracts: [parameters, latest_snapshot]
+writes_state: [parameters.yaml, post_qc_review.approved]
+handoff: { next: run_execution, when: post_qc_review approved (→ finish batch), on_error: troubleshooting }
+---
+
+# QC review & revise — the post_qc_review gate (#2)
 
 Use this procedure whenever the user asks to adjust QC filtering or doublet thresholds while the pipeline is paused at the **QC review checkpoint** (`post_qc_review`).
 
@@ -94,7 +107,7 @@ Use this when `execution.mode` is `slurm`.
    executor hpc-status --config $CFG     # one-shot: report, then re-poll on a scheduled wakeup
    ```
 
-   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see `workflow.md`). Never run a blocking loop or `tail -f | grep`.
+   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see [`hpc_monitoring.md`](hpc_monitoring.md)). Never run a blocking loop or `tail -f | grep`.
 
 5. **QC reports regenerate automatically.** The inferred submit target is the gate-arming localrule `post_qc_review_propose`, which Snakemake reaches after the revised QC execute stages complete — so the head job re-runs the changed stages **and** rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and the checkpoint figures under `deliverables/figures/`, then arms the gate (`post_qc_review` becomes `awaiting_approval`). You do not need to run `propose` by hand on the happy path.
 

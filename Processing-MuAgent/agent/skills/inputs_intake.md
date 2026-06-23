@@ -1,6 +1,24 @@
-# Step 2 — Inputs intake (paths + optional biological context)
+---
+name: inputs_intake
+domain: intake
+purpose: Collect paths + biological context + execution mode, scaffold the run (init), and declare the branch. The SSOT for execution-mode intake heuristics.
+activation: analysis type known; run.yaml not written yet
+inputs: [user dialogue, raw input paths, genome assembly]
+outputs: [deliverables/plan/config/run.yaml, deliverables/plan/config/biological_context.md, deliverables/plan/config/hpc.env, deliverables/plan/config/site.config, parameters.yaml]
+calls_tools: [init, hpc-info, configure-execution, declare-branch]
+reads_contracts: [run_yaml, site_config]
+writes_state: [run.yaml, biological_context.md, hpc.env, site.config, parameters.yaml]
+handoff: { next: plan_confirm, when: run scaffolded + branch declared + exec-mode confirmed, on_error: troubleshooting }
+---
 
-Script for the turn(s) after the user has declared their analysis type in Step 1. Goal: collect enough to build a valid `run.yaml`, write it via `executor init`, populate biological context (if offered), configure execution mode (local vs HPC), declare the branch, and run up to the plan-review gate.
+# Inputs intake — paths + optional biological context
+
+Script for the turn(s) after the user has declared their analysis type
+([`entry_declare.md`](entry_declare.md)). Goal: collect enough to build a valid `run.yaml`,
+write it via `executor init`, populate biological context (if offered), configure execution
+mode (local vs HPC), and declare the branch. Then hand off to
+[`plan_confirm.md`](plan_confirm.md), which kicks off planning compute and drives the
+plan_review gate.
 
 ## What to say
 
@@ -189,8 +207,9 @@ Do not pass `--device gpu` with local mode — `configure-execution` rejects it.
 
 5. Write settings once the user confirms (or overrides):
    ```
+   executor configure-execution --config $CFG --mode slurm \
+       --slurm-partition <partition> --slurm-account <account> --confirmed-by-user
    ```
-   (or `--mode slurm --slurm-partition ... --slurm-account ... --confirmed-by-user`).
    `--confirmed-by-user` records the user's approval; without it `run`/`submit` refuse to launch.
 
    **If the user chose GPU**, add the device flags (sourced from `hpc-info`'s GPU fields):
@@ -215,57 +234,6 @@ executor declare-branch <rna_only|atac_only|paired|separate> --config $CFG
 
 This writes `plan.workflow_branch_declared` to `parameters.yaml` as a `source=user` assertion. S0 will confirm it against its own pairing detection and raise with a clear diff if they don't match.
 
-### 6. Run to the plan-review gate
-
-The planning target is **`plan_review_propose`** (auto-inferred by `submit` when
-`--target` is omitted). `plan_review_propose` depends on `s0_ingest_execute`, so
-Snakemake runs P1 → S0 → plan assembly → gate-arming in one invocation — the
-`plan_review` gate is armed at the end without a separate step. Do **not** target
-`s0_ingest_execute` alone: that stops one rule early and leaves the gate unarmed.
-
-S0 (merged planning compute: load + validate + pair + QC explore) runs inside that
-dependency chain. The former separate `p2_plan` rule was merged into S0 — there is no
-`p2_plan_execute` rule; requesting it raises `MissingRuleException`. A successful
-planning run produces the ingest h5ad, `validation_report.json`,
-`preprocessing_plan.json`, `qc_explore` artifacts, and `plan_review.awaiting_approval`.
-
-S0 execution location is determined by the configured mode. **`run` is local-only;
-`submit` is cluster-only** — Processing-MuAgent never submits cluster jobs itself.
-Both refuse to start until execution mode is user-confirmed (Section 4) — so do not
-reach this step before the user has chosen local vs HPC.
-
-**HPC mode (`execution.mode` is `slurm`) — submit the planning head-job:**
-
-```
-source deliverables/plan/config/hpc.env
-executor submit --config $CFG --executor slurm
-executor hpc-status --config $CFG             # one-shot: report, then re-poll on a scheduled wakeup
-```
-
-Omit `--target` — `submit` auto-infers `plan_review_propose`. S0's QC exploration
-needs 100+ GB, so it runs on a compute node inside the head-job (never the login
-node). `submit` routes through Execution-MuAgent (kill-on-hang, survives SSH
-disconnect) and returns in ≤90 s. After `submit`, follow **report-and-repoll** (see
-`workflow.md`): report one-shot `hpc-status`, then re-poll on a non-blocking
-scheduled wakeup (~295s, per the `Next check:` line) — reporting only when the `State:`
-fingerprint changes — until `monitor.pid` is removed or `plan_review` becomes
-`awaiting_approval`.
-
-**Local mode (`execution.mode` is `local`) — run everything locally:**
-
-```
-executor run --config $CFG --target plan_review_propose
-```
-
-Runs P1 → S0 (+ plan assembly + gate-arming). Small inputs: ~30s.
-
-**If S0 OOMs:** in HPC mode, raise `PMA_RESOURCES_SCALE` (`configure-execution
---resources-scale N`) and `submit` again (no `--target`). In local mode, the machine
-is too small — switch to HPC (`configure-execution --mode slurm`) and submit.
-There is no automatic local→cluster retry.
-
-Do **not** cluster-retry logic errors (pairing ambiguous, path missing, branch mismatch). Relay and let the user fix inputs or `declare-branch`.
-
 ## What to surface back
 
 After `executor init`: confirm the canonical config path and blank context template path.
@@ -274,15 +242,10 @@ After biological-context write (cases a/b/c): confirm the file exists at `delive
 
 After `configure-execution`: confirm `execution.mode` **and `compute.device` (cpu/gpu)** and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume. When `device=gpu` on SLURM, also confirm the GPU partition/gres and the pinned `gpu_image_uri` (the container image is **pulled** from that registry reference — recorded in `site.config` / `~/.muagene/machine.config`, not a conda env).
 
-After the planning phase completes (`plan_review_propose` — local `run` or HPC `submit`):
-
-- If `deliverables/plan/context_summary.md` exists, paste its content back verbatim. Any conflicts (e.g. "report says mouse, file fingerprint says human") surface here and must be resolved before Step 3.
-- If `executor run` errored:
-  - **Phase 1 gate error** — context template is blank and user didn't opt out. Ask for context OR tell them to re-invoke with `--no-context`.
-  - **S0 declared-vs-detected mismatch** — relay the raised error and ask the user to fix the declaration or the inputs.
-  - **S0 ambiguous pairing** — relay the raised error; ask paired vs separate; re-run `executor declare-branch` and re-try.
-
-Transition to Step 3 (`plan_review`) once `plan_review_<run>.md` exists under `deliverables/plan/` (written by `plan_review_propose` or `Processing-MuAgent plan-review`).
+Once the run is scaffolded, the branch is declared, and execution mode is confirmed, hand off
+to [`plan_confirm.md`](plan_confirm.md) — it runs the planning phase (P1 → S0 → P2), surfaces
+`context_summary.md` / `validation_report.json`, and drives the plan_review gate. Any S0 or
+context-gate errors at that point → [`troubleshooting.md`](troubleshooting.md).
 
 ## Explicit non-actions
 

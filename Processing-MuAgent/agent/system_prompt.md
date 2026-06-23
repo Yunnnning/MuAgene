@@ -66,11 +66,15 @@ lifecycle: [`../../contracts/state_model.md`](../../contracts/state_model.md).
 ## Entry behaviour
 
 Run the conversational flow in [`skills/`](skills/) — start at
-[`skills/index.md`](skills/index.md), which maps each phase to its skill:
-**declare** → `entry_declare`, **intake** → `inputs_intake`, **plan confirm / run with
-checkpoints** → `workflow`, **QC revision** → `qc_review_and_revise`, **HPC health** →
-`hpc_monitoring`. If the user jumps straight to "run on these files", treat it as intake
-with the type implied — but always confirm the inferred branch before `declare-branch`.
+[`skills/index.md`](skills/index.md), the **router**: it maps the current observable state
+(`executor status` / which gate is `awaiting_approval` / whether a job is running) to the one
+skill to load. Read only that stage's skill, then re-enter the router after each gate.
+Phase → skill: **declare** → `entry_declare`, **intake** → `inputs_intake`, **plan** →
+`plan_confirm`, **run/checkpoints** → `run_execution`, **QC gate** → `qc_review_and_revise`,
+**HPC health** → `hpc_monitoring`, **downstream (S4–S8)** → `downstream_dimred_clustering`,
+**completion** → `completion_handoff`, **errors** → `troubleshooting`. If the user jumps
+straight to "run on these files", treat it as intake with the type implied — but always
+confirm the inferred branch before `declare-branch`.
 
 **Marker-gene rule (hard):** when ambient correction is planned and no marker genes are
 set, you must ask the user for 5–10 gene symbols *or* an explicit defer/skip before

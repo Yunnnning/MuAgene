@@ -152,3 +152,65 @@ def test_readme_clustering_resolutions_match_defaults():
     d = defaults.QC_DEFAULTS["s7_clustering"]
     assert f"RNA = {d['rna_resolution']}" in readme, "README RNA resolution out of sync with defaults.py"
     assert f"ATAC = {d['atac_resolution']}" in readme, "README ATAC resolution out of sync with defaults.py"
+
+
+# --- Stage 8: stage-based skill router + per-skill frontmatter contracts ---
+
+def _skills_dir() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[1] / "agent" / "skills"
+
+
+# The contract keys every skill's YAML frontmatter must carry (index.md is the router,
+# not a skill, and is exempt). Mirrors the schema documented in agent/skills/index.md.
+_REQUIRED_FRONTMATTER = {
+    "name", "domain", "purpose", "activation", "inputs", "outputs",
+    "calls_tools", "reads_contracts", "writes_state", "handoff",
+}
+
+
+def test_every_skill_has_required_frontmatter():
+    """Each stage skill opens with a frontmatter contract carrying every required key.
+    A new skill that forgets purpose/activation/handoff (the routing+contract fields)
+    fails here."""
+    for md in sorted(_skills_dir().glob("*.md")):
+        if md.name == "index.md":
+            continue
+        text = md.read_text()
+        assert text.startswith("---\n"), f"{md.name}: missing YAML frontmatter block"
+        front = text.split("---\n", 2)[1]
+        top_keys = {
+            line.split(":", 1)[0].strip()
+            for line in front.splitlines()
+            if ":" in line and not line.startswith((" ", "\t"))
+        }
+        missing = _REQUIRED_FRONTMATTER - top_keys
+        assert not missing, f"{md.name}: frontmatter missing {sorted(missing)}"
+
+
+def test_skill_cross_links_resolve():
+    """Every relative .md link inside a skill points to a file that exists — guards
+    against dangling pointers after the workflow.md -> stage-skills split."""
+    import re
+    link_re = re.compile(r"\]\(([^)]+\.md)\)")
+    for md in sorted(_skills_dir().glob("*.md")):
+        for target in link_re.findall(md.read_text()):
+            if target.startswith("http"):
+                continue
+            resolved = (md.parent / target).resolve()
+            assert resolved.exists(), f"{md.name}: dangling link -> {target}"
+
+
+def test_router_lists_every_skill():
+    """index.md (the router) names every sibling skill; the router and the skill set
+    cannot drift apart."""
+    index = (_skills_dir() / "index.md").read_text()
+    for md in sorted(_skills_dir().glob("*.md")):
+        if md.name == "index.md":
+            continue
+        assert md.name in index, f"router index.md does not list {md.name}"
+
+
+def test_no_skill_references_deleted_workflow_md():
+    """workflow.md was dissolved into stage skills; nothing should reference it again."""
+    for md in sorted(_skills_dir().glob("*.md")):
+        assert "workflow.md" not in md.read_text(), f"{md.name} still references workflow.md"
