@@ -26,10 +26,10 @@ exception is the QC-revision artifact cleanup (see the `qc_review_and_revise` sk
 | `deliverables/plan/config/site.config` | `configure-execution` (HPC) | **Execution-MuAgent** | Platform description (scheduler, partition/account, device+GPU routing, env identity, `environments:` recipe). |
 | `deliverables/plan/config/hpc.env` | `configure-execution` (HPC) | sourced before `submit` | Shell exports for the cluster. |
 | `deliverables/plan/plan_review_<run>.md`, `plan_summary_<run>.html` | `plan-review` | user (checkpoint #1) | Re-rendered deterministically from canonical sources. |
-| `deliverables/qc_review/qc_review_<run>.md`, `qc_summary_<run>.html` | `post_qc_review` propose | user (checkpoint #2) | QC summary of filters actually applied. |
+| `deliverables/qc/qc_review_<run>.md`, `qc_summary_<run>.html` | `post_qc_review` propose | user (checkpoint #2) | QC summary of filters actually applied. |
+| `deliverables/qc/post_qc_<run>.h5mu`, `post_qc_manifest.json` | `qc_handoff` | downstream consumer | Post-QC handoff bundle — schema `muagene.post_qc_handoff/1` (see `post_qc_manifest.schema.json`). |
 | `deliverables/results/processed_<run>.h5mu` / `*_processed.h5ad` | S8 | user / downstream | Final per-modality processed output. |
 | `deliverables/results/run_manifest.json` | `manifest` | user / downstream | Preprocessing handoff manifest (v1.0.0). |
-| `deliverables/results/post_qc_manifest.json`, `post_qc_<run>.h5mu` | `s_handoff` | downstream consumer | Post-QC handoff bundle — schema `muagene.post_qc_handoff/1` (see `post_qc_manifest.schema.json`). |
 
 ## Run state — written by Execution-MuAgent (under `internal/hpc_monitor/`)
 

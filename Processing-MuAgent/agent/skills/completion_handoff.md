@@ -3,7 +3,7 @@ name: completion_handoff
 domain: finish
 purpose: After manifest, validate outputs, surface results + the Integration handoff bundle, then HARD STOP at S8.
 activation: manifest stage complete (finish batch done)
-inputs: [deliverables/results/run_manifest.json, deliverables/results/post_qc_manifest.json]
+inputs: [deliverables/results/run_manifest.json, deliverables/qc/post_qc_manifest.json]
 outputs: []
 calls_tools: [status]
 reads_contracts: [run_manifest, post_qc_manifest]
@@ -25,9 +25,9 @@ and stop.
    - the review notebook `review_processed_<run>.ipynb` (load + inspect + re-cluster at a
      custom resolution),
    - the UMAP figures in `deliverables/figures/`,
-   - the QC summary `deliverables/qc_review/qc_review_<run>.md`,
-   - the **Integration handoff bundle**: `post_qc_manifest.json` (`muagene.post_qc_handoff/1`)
-     + `post_qc_<run>.h5mu`.
+   - the QC summary `deliverables/qc/qc_review_<run>.md`,
+   - the **Integration handoff bundle** under `deliverables/qc/`:
+     `post_qc_manifest.json` (`muagene.post_qc_handoff/1`) + `post_qc_<run>.h5mu`.
 3. One-line sign-off, then **stop**:
    > Run complete. Outputs at `deliverables/results/`. I stop here — integration, annotation,
    > marker discovery, and GRN are out of scope (different subagents).

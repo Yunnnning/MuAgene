@@ -17,7 +17,7 @@ RNA_RM = {
 }
 
 ATAC_TH = {
-    "n_fragments_min": 1500, "n_fragments_max": 100000,
+    "n_fragments_min": 1000, "n_fragments_max": 100000,
     "tss_enrichment_min": 1.5, "tss_enrichment_max": 50,
     "nucleosome_signal_max": 3, "frip_min": 0.2,
 }
@@ -57,7 +57,7 @@ class AtacTableTests(unittest.TestCase):
         # Removal-condition format
         self.assertIn("| nucleosome_signal | ≥ 3 | 1 |", t)
         self.assertIn("| frip | < 0.20 | 6 |", t)
-        self.assertIn("| n_fragments | < 1500 or > 100000 | 4 |", t)
+        self.assertIn("| n_fragments | < 1000 or > 100000 | 4 |", t)
 
     def test_custom_frip_display_runtime(self):
         t = qc_tables.atac_removal_table(

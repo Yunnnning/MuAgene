@@ -50,7 +50,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 > Two user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan before heavy compute.
-> 2. **QC review** — inspect QC figures in `deliverables/figures/` and `deliverables/qc_review/qc_review_<run>.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the union doublet removal policy.
+> 2. **QC review** — inspect QC figures in `deliverables/figures/` and `deliverables/qc/qc_review_<run>.md`; revise thresholds if needed. On **paired**, this checkpoint also documents the union doublet removal policy.
 >
 > After QC approval the rest runs automatically: clustering uses fixed Leiden resolutions (RNA 0.7 / ATAC 0.5) and the pipeline proceeds through UMAP to the final outputs.
 >
@@ -65,7 +65,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 > Two user checkpoints during preprocessing:
 >
 > 1. **Plan review** — approve the preprocessing plan.
-> 2. **QC review** — inspect QC figures in `deliverables/figures/` and `deliverables/qc_review/qc_review_<run>.md`; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
+> 2. **QC review** — inspect QC figures in `deliverables/figures/` and `deliverables/qc/qc_review_<run>.md`; revise thresholds if needed (no cross-modal doublet policy on single-modality runs).
 >
 > After QC approval the rest runs automatically: clustering uses a fixed Leiden resolution and the pipeline proceeds through UMAP to the final processed output.
 >

@@ -12,9 +12,11 @@ Top-level layout (direct-write; external inputs referenced via symlinks):
           plan_review_<run>.md        ← plan review gate (summary + parameter appendix)
           plan_summary_<run>.html     ← self-contained web version (figures embedded)
         figures/                    all pipeline figures (PNG + PDF), any stage
-        qc_review/                  QC review checkpoint (summaries only; no figure files)
+        qc/                         QC checkpoint: reports + post-QC Integration handoff
           qc_review_<run>.md
           qc_summary_<run>.html
+          post_qc_<run>.h5mu         (after QC approval; all branches)
+          post_qc_manifest.json
         results/                    final deliverables (data + manifest; no figures)
           review_processed_<run>.{ipynb,py}
           processed_<run>.h5mu        (paired branch)
@@ -35,9 +37,10 @@ Key invariants:
 - External raw inputs (e.g. companion raw RNA matrix) are symlinked from S0, not copied.
 - Derived stage artifacts have a single canonical path under internal/artifacts/.
 - All figures live in deliverables/figures/; checkpoint dirs hold reports with embedded refs.
-- results/ contains processed data, final notebook, and manifest only.
+- results/ contains S8 processed data, final notebook, and run manifest only.
+- qc/ holds QC reports (before approval) and the post-QC Integration handoff (after approval).
 - plan/ contains only files the user reviews before approving the plan.
-- figures/, qc_review/, and results/ are created lazily when first written — not at init.
+- figures/, qc/, and results/ are created lazily when first written — not at init.
 """
 from __future__ import annotations
 
@@ -112,9 +115,9 @@ class RunPaths:
         return self.deliverables / "figures"
 
     @property
-    def deliv_qc_review(self) -> Path:
-        """qc_review/ — QC review reports (md/html only)."""
-        return self.deliverables / "qc_review"
+    def deliv_qc(self) -> Path:
+        """qc/ — QC checkpoint: reports + post-QC Integration handoff (after approval)."""
+        return self.deliverables / "qc"
 
     @property
     def deliv_results(self) -> Path:
@@ -219,17 +222,23 @@ class RunPaths:
 
     @property
     def qc_review_summary_md(self) -> Path:
-        name = f"qc_review_{self.run_dir.name}.md"
-        canonical = self.deliv_qc_review / name
-        legacy = self.deliverables / "checkpoints" / "qc_review" / name
-        return self._existing_file(canonical, legacy)
+        return self.deliv_qc / f"qc_review_{self.run_dir.name}.md"
 
     @property
     def qc_summary_html(self) -> Path:
-        name = f"qc_summary_{self.run_dir.name}.html"
-        canonical = self.deliv_qc_review / name
-        legacy = self.deliverables / "checkpoints" / "qc_review" / name
-        return self._existing_file(canonical, legacy)
+        return self.deliv_qc / f"qc_summary_{self.run_dir.name}.html"
+
+    @property
+    def post_qc_h5mu(self) -> Path:
+        name = f"post_qc_{self.run_dir.name}.h5mu"
+        return self._existing_file(self.deliv_qc / name, self.deliv_results / name)
+
+    @property
+    def post_qc_manifest_json(self) -> Path:
+        return self._existing_file(
+            self.deliv_qc / "post_qc_manifest.json",
+            self.deliv_results / "post_qc_manifest.json",
+        )
 
     @property
     def qc_summary_pre_dimred_md(self) -> Path:
@@ -289,12 +298,6 @@ class RunPaths:
         d = self.deliverables
         return (
             d / "figure" / f"{stem}.{ext}",
-            d / "checkpoint" / "qc_review" / "figures" / f"{stem}.{ext}",
-            d / "checkpoint" / "qc_review" / f"{stem}.{ext}",
-            d / "checkpoints" / "qc_review" / "figures" / f"{stem}.{ext}",
-            d / "checkpoints" / "qc_review" / f"{stem}.{ext}",
-            self.deliv_qc_review / "figures" / f"{stem}.{ext}",
-            self.deliv_qc_review / f"{stem}.{ext}",
             d / "checkpoint" / "resolution_review" / f"{stem}.{ext}",
             d / "checkpoints" / "resolution_review" / f"{stem}.{ext}",
             d / "post_run" / f"{stem}.{ext}",
@@ -317,11 +320,6 @@ class RunPaths:
         moved: list[Path] = []
         src_dirs = (
             self.deliverables / "figure",
-            self.deliverables / "checkpoint" / "qc_review" / "figures",
-            self.deliverables / "checkpoint" / "qc_review",
-            self.deliverables / "checkpoints" / "qc_review" / "figures",
-            self.deliverables / "checkpoints" / "qc_review",
-            self.deliv_qc_review,
             self.deliverables / "checkpoint" / "resolution_review",
             self.deliverables / "checkpoints" / "resolution_review",
             self.deliverables / "post_run",
@@ -345,7 +343,7 @@ class RunPaths:
     def ensure(self) -> None:
         """Create internal + plan scaffold only (idempotent).
 
-        figures/, qc_review/, and results/ are created lazily when first written.
+        figures/, qc/, and results/ are created lazily when first written.
         """
         for p in (
             self.internal,

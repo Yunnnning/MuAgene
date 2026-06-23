@@ -34,7 +34,7 @@ template); user approvals and revisions.
 
 ## Outputs (contracts it emits)
 `run.yaml`, `parameters.yaml`, `site.config`, `internal/stage_meta/head_job.yaml` +
-`<stage>.yaml`, the `plan_review`/`qc_review` deliverables, `post_qc_manifest.json`
+`<stage>.yaml`, the `plan_review`/`qc` deliverables, `post_qc_manifest.json`
 (`muagene.post_qc_handoff/1`), `run_manifest.json`, and the processed `*.h5mu`/`*.h5ad`.
 Shapes: [`../contracts/`](../contracts/).
 

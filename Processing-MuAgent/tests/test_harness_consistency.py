@@ -71,7 +71,7 @@ def test_figures_default_constants_match_qc_defaults():
 # --- Stage 2: contracts/post_qc_manifest.schema.json ---
 
 def _representative_manifest() -> dict:
-    """A manifest with exactly the keys/types s_handoff.run() emits."""
+    """A manifest with exactly the keys/types qc_handoff.run() emits."""
     from executor import HANDOFF_CONTRACT_VERSION
     return {
         "schema": "muagene.post_qc_handoff/1",
@@ -79,7 +79,7 @@ def _representative_manifest() -> dict:
         "sample_run_dir": "/runs/sampleA",
         "modality_branch": "paired",
         "genome_assembly": "GRCh38",
-        "post_qc_h5mu": "deliverables/results/post_qc_sampleA.h5mu",
+        "post_qc_h5mu": "deliverables/qc/post_qc_sampleA.h5mu",
         "atac": {
             "peaks_bed": "internal/artifacts/s2_atac_qc/peaks_macs3.bed",
             "fragments_prepared": "internal/artifacts/s2_atac_qc/atac_fragments_cbf.tsv.gz",

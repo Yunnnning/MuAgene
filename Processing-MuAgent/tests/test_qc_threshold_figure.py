@@ -55,12 +55,12 @@ class FragmentSizePanelTests(unittest.TestCase):
     def test_extra_panel_fills_fourth_slot(self):
         rng = np.random.default_rng(0)
         nf_markers, nf_lo, nf_hi = figures.build_mad_range_markers(
-            applied_lo=1500.0,
+            applied_lo=1000.0,
             applied_hi=60000.0,
-            default_lo=1500.0,
+            default_lo=1000.0,
             default_hi=60000.0,
-            default_mad_lo_raw=1500.0,
-            default_floor=1500.0,
+            default_mad_lo_raw=1000.0,
+            default_floor=1000.0,
             hi_skip_above=1_000_000,
             log_axis=True,
         )

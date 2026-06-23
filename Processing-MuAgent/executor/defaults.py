@@ -45,7 +45,7 @@ QC_DEFAULTS: dict[str, dict[str, Any]] = {
         "tss_enrichment_min": 1.5,
         "tss_enrichment_max": 50.0,
         "n_fragments_k_mad": 5.0,
-        "n_fragments_floor": 1500,
+        "n_fragments_floor": 1000,
         "nucleosome_signal_max": 3.0,
         "frip_min": 0.2,
     },

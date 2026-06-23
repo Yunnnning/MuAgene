@@ -35,9 +35,9 @@ def _fmt_range_removal(lo, hi, skip_above: float) -> str:
     skip values (hi >= skip_above) the upper bound is effectively infinite.
 
     Examples:
-      lo=1500, hi=251464 → "< 1500 or > 251464"
+      lo=1000, hi=251464 → "< 1000 or > 251464"
       lo=0,    hi=251464 → "> 251464"
-      lo=1500, hi=skip   → "< 1500"
+      lo=1000, hi=skip   → "< 1000"
       lo=0,    hi=skip   → "not applied"
     """
     lo_v = float(lo) if lo is not None else 0.0

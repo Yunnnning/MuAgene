@@ -18,9 +18,9 @@ Direct-write layout:
                                                       (run.yaml, biological_context.md,
                                                        context_summary.md, plan_review_<run>.md)
       FIGURES    = deliverables/figures             — all pipeline figures (PNG + PDF)
-      QC_REVIEW  = deliverables/qc_review           — QC review reports (md/html)
-      RESULTS    = deliverables/results             — final results (data, notebook,
-                                                      manifest; no figures)
+      QC         = deliverables/qc                  — QC reports + post-QC Integration handoff
+      RESULTS    = deliverables/results             — final results (S8 data, notebook,
+                                                      run manifest; no figures)
 Rule outputs land directly at their canonical location; no mirroring.
 """
 from pathlib import Path
@@ -30,7 +30,7 @@ INTERNAL = RUN_DIR / "internal"
 DELIVERABLES = RUN_DIR / "deliverables"
 PLAN = DELIVERABLES / "plan"
 FIGURES = DELIVERABLES / "figures"
-QC_REVIEW = DELIVERABLES / "qc_review"
+QC = DELIVERABLES / "qc"
 RESULTS = DELIVERABLES / "results"
 
 STAGES = [
@@ -38,7 +38,7 @@ STAGES = [
     "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
     "post_qc_review",
     "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
-    "s_handoff",
+    "qc_handoff",
 ]
 
 
@@ -58,7 +58,7 @@ include: "rules/s6_neighbors.smk"
 include: "rules/s7_clustering.smk"
 include: "rules/s8_umap.smk"
 include: "rules/manifest.smk"
-include: "rules/s_handoff.smk"
+include: "rules/qc_handoff.smk"
 
 
 # Rules that always run on the orchestrator host (login node or runner head-job),
@@ -70,6 +70,11 @@ include: "rules/s_handoff.smk"
 # s0_ingest_execute is NOT local — it is the merged planning compute job (load +
 # validate + assemble plan + QC exploration), pulled in as a dependency when submit
 # infers `plan_review_propose` as the planning-phase target.
+#
+# qc_handoff is NOT local either — it materialises the post-QC ATAC fragments
+# (snap.read of a Blosc-compressed matrix, then a portable re-encode) and the .h5mu,
+# which is too heavy for the login/head node. On HPC it runs as a SLURM job; under
+# `run` (local) it executes inline like every other stage.
 localrules:
     p1_context_propose, p1_context_execute,
     plan_review_propose,
@@ -85,10 +90,9 @@ localrules:
     s7_clustering_propose,
     s8_umap_propose,
     manifest,
-    s_handoff,
 
 
 rule all:
     input:
         str(RESULTS / "run_manifest.json"),
-        str(RESULTS / "post_qc_manifest.json"),
+        str(QC / "post_qc_manifest.json"),

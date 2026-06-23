@@ -2,8 +2,8 @@
 
 Runs after S3 doublet filtering and before S4/S5 and S6 PCA (RNA) + neighbor graph.
 Generates QC figures in deliverables/figures/ and writes the QC review summary at
-  deliverables/qc_review/qc_review_<run>.md
-  deliverables/qc_review/qc_summary_<run>.html
+  deliverables/qc/qc_review_<run>.md
+  deliverables/qc/qc_summary_<run>.html
 
 This is the single user-facing QC checkpoint: inspect S1/S2 QC figures, S3
 doublet histograms, and the cell-count waterfall; adjust S1/S2 thresholds or

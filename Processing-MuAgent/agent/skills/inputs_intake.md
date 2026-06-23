@@ -84,7 +84,7 @@ This creates:
 - `<run_dir>/internal/` — pipeline state scaffold
 - `<run_dir>/deliverables/plan/config/run.yaml` — canonical copy of the config
 - `<run_dir>/deliverables/plan/config/biological_context.md` — blank template
-- `<run_dir>/deliverables/plan/` — created at init; `figures/`, `qc_review/`, and `results/` appear when outputs are written
+- `<run_dir>/deliverables/plan/` — created at init; `figures/`, `qc/`, and `results/` appear when outputs are written
 
 From now on, `$CFG = <run_dir>/deliverables/plan/config/run.yaml` for every subsequent CLI call.
 

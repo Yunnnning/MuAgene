@@ -195,12 +195,12 @@ class TotalCountsBoundMarkersTests(unittest.TestCase):
 class NFragmentsBoundMarkersTests(unittest.TestCase):
     def test_shows_mad_when_floor_clamps_applied(self):
         markers, _, _ = figures.build_mad_range_markers(
-            applied_lo=1500.0,
+            applied_lo=1000.0,
             applied_hi=60000.0,
-            default_lo=1500.0,
+            default_lo=1000.0,
             default_hi=60000.0,
             default_mad_lo_raw=299.0,
-            default_floor=1500.0,
+            default_floor=1000.0,
             hi_skip_above=1_000_000,
             log_axis=True,
         )
@@ -209,12 +209,12 @@ class NFragmentsBoundMarkersTests(unittest.TestCase):
 
     def test_omits_mad_when_it_matches_applied(self):
         markers, _, _ = figures.build_mad_range_markers(
-            applied_lo=1500.0,
+            applied_lo=1000.0,
             applied_hi=60000.0,
-            default_lo=1500.0,
+            default_lo=1000.0,
             default_hi=60000.0,
-            default_mad_lo_raw=1500.0,
-            default_floor=1500.0,
+            default_mad_lo_raw=1000.0,
+            default_floor=1000.0,
             hi_skip_above=1_000_000,
             log_axis=True,
         )
@@ -225,11 +225,11 @@ class NFragmentsBoundMarkersTests(unittest.TestCase):
 class AtacFragmentBoundsTests(unittest.TestCase):
     def test_returns_mad_lower_before_floor_clamp(self):
         rng = np.random.default_rng(0)
-        n_frag = rng.integers(1500, 20000, 500).astype(float)
+        n_frag = rng.integers(1000, 20000, 500).astype(float)
         f_lo, f_hi, mad_lo, _derived = qct.atac_n_fragment_bounds(
-            n_frag, k_mad=5.0, n_frag_floor=1500.0,
+            n_frag, k_mad=5.0, n_frag_floor=1000.0,
         )
-        self.assertGreaterEqual(f_lo, 1500.0)
+        self.assertGreaterEqual(f_lo, 1000.0)
         self.assertLessEqual(mad_lo, f_lo)
 
 

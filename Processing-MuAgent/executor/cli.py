@@ -30,7 +30,7 @@ STAGES = ["p1_context", "plan_review", "s0_ingest",
           "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
           "post_qc_review",
           "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
-          "s_handoff"]
+          "qc_handoff"]
 
 HUMAN_CHECKPOINT_STAGES = ("plan_review", "post_qc_review")
 STAGE_ALIASES = {
@@ -234,6 +234,8 @@ def _qc_downstream_targets(run_dir: Path, stage: str) -> list[Path]:
         rp.awaiting_sentinel("post_qc_review"),
         rp.qc_review_summary_md,
         rp.qc_summary_html,
+        rp.post_qc_h5mu,
+        rp.post_qc_manifest_json,
     ]
     return targets
 

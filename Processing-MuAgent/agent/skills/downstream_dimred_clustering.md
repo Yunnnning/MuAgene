@@ -2,9 +2,9 @@
 name: downstream_dimred_clustering
 domain: downstream
 purpose: Document the unattended finish batch — normalization, dimensionality reduction, neighbor graph, clustering, UMAP — that runs after post_qc_review approval up to manifest.
-activation: post_qc_review approved; the finish batch (s_handoff + S4–S8 + manifest) is running
+activation: post_qc_review approved; the finish batch (S4–S8 + manifest) is running
 inputs: [post_qc_review.approved, internal/parameters.yaml, internal/stage_meta/*.yaml]
-outputs: [deliverables/results/<processed h5mu|h5ad>, deliverables/figures/<umap>, deliverables/results/post_qc_<run>.h5mu]
+outputs: [deliverables/results/<processed h5mu|h5ad>, deliverables/figures/<umap>]
 calls_tools: [submit, run, status]
 reads_contracts: [stage_meta, latest_snapshot]
 writes_state: []
@@ -13,17 +13,19 @@ handoff: { next: completion_handoff, when: manifest complete, on_error: troubles
 
 # Downstream — dimensionality reduction & clustering (S4–S8, unattended)
 
-Entered after `post_qc_review` is approved. [`run_execution.md`](run_execution.md) submits
-the **finish batch** (`executor submit --config $CFG --executor slurm`, target `all`, no
-further gate; or `executor run` locally). From here to `manifest` there is **no user
-checkpoint** — this skill documents what runs so you can report progress and recognise a
-healthy finish.
+Entered after `post_qc_review` is approved **and** `qc_handoff` has already run (see
+[`qc_review_and_revise.md`](qc_review_and_revise.md) — `qc_handoff` runs at the approval
+step, not here). This skill is entered when the finish batch is submitted:
+`executor submit --config $CFG --executor slurm` (target `all`; Snakemake skips
+`qc_handoff` since its outputs already exist) or `executor run` locally. From here to
+`manifest` there is **no user checkpoint** — this skill documents what runs so you can
+report progress and recognise a healthy finish.
 
 ## What runs (per modality, branch-aware)
 
 | Stage | What it does |
 |---|---|
-| `s_handoff` | Per-sample post-QC handoff bundle for Integration-MuAgent (localrule) — writes `post_qc_manifest.json` + `post_qc_<run>.h5mu`. |
+| `qc_handoff` | **Already ran at QC approval** — `deliverables/qc/post_qc_manifest.json` + `deliverables/qc/post_qc_<run>.h5mu` exist. Snakemake skips it here. |
 | S4 `s4_rna_norm` | RNA normalization (log-normalize, `target_sum=1e4`) + HVG (`seurat_v3` on counts). |
 | S5 `s5_atac_spectral` | ATAC spectral embedding via SnapATAC2 (+ flexible peak/feature export). |
 | S6 `s6_neighbors` | PCA (RNA) + neighbor graph — RNA PCA+neighbors; ATAC KNN on the S5 spectral embedding. |

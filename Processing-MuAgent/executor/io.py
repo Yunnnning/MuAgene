@@ -1044,8 +1044,13 @@ def has_input_ref(artifacts_dir: Path | str, name: str) -> bool:
 
 
 def write_mudata_safe(mdata: Any, path: Path | str) -> None:
-    """Write MuData h5mu via /tmp to avoid HDF5/NFS file-locking deadlocks."""
-    _write_via_tmp(lambda p: mdata.write(str(p)), path, ".h5mu")
+    """Write MuData h5mu via /tmp to avoid HDF5/NFS file-locking deadlocks.
+
+    gzip compression keeps the bundle portable (no Blosc/HDF5 filter-plugin
+    dependency to read it back) and compact — the post-QC ATAC fragments stored by
+    qc_handoff compress well.
+    """
+    _write_via_tmp(lambda p: mdata.write(str(p), compression="gzip"), path, ".h5mu")
 
 
 def nucleosome_signal_per_cell(

@@ -27,7 +27,7 @@ _SCIENCE_DESCRIPTIONS: dict[str, str] = {
     "s6_neighbors":     "Build RNA PCA and shared nearest-neighbor graph",
     "s7_clustering":    "Run Leiden clustering at fixed per-modality resolutions (RNA=0.7, ATAC=0.5)",
     "s8_umap":          "Project RNA and ATAC embeddings to 2D UMAP for visualization",
-    "s_handoff":        "Assemble the per-sample post-QC .h5mu + handoff manifest for Integration-MuAgent",
+    "qc_handoff":        "Assemble the per-sample post-QC .h5mu + handoff manifest for Integration-MuAgent",
 }
 
 # Run-dir-relative input/output artifact paths per stage.
@@ -118,13 +118,14 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "sentinel": "{run_dir}/internal/artifacts/s8_umap/s8_done.txt",
         },
     },
-    "s_handoff": {
+    "qc_handoff": {
         "inputs": {
             "rna_post":  "{run_dir}/internal/artifacts/s3_doublets/rna_post_doublet.h5ad",
             "atac_post": "{run_dir}/internal/artifacts/s3_doublets/atac_post_doublet.h5ad",
         },
         "outputs": {
-            "post_qc_manifest": "{run_dir}/deliverables/results/post_qc_manifest.json",
+            "post_qc_h5mu": "{run_dir}/deliverables/qc/post_qc_{run}.h5mu",
+            "post_qc_manifest": "{run_dir}/deliverables/qc/post_qc_manifest.json",
         },
     },
 }
@@ -132,19 +133,19 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
 _BRANCH_STAGES: dict[str, list[str]] = {
     "paired": [
         "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "s_handoff",
+        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "qc_handoff",
     ],
     "separate": [
         "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "s_handoff",
+        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "qc_handoff",
     ],
     "rna_only": [
         "s0_ingest", "s1a_ambient", "s1_rna_qc", "s3_doublets",
-        "s4_rna_norm", "s6_neighbors", "s7_clustering", "s8_umap", "s_handoff",
+        "s4_rna_norm", "s6_neighbors", "s7_clustering", "s8_umap", "qc_handoff",
     ],
     "atac_only": [
         "s0_ingest", "s2_atac_qc", "s3_doublets",
-        "s5_atac_spectral", "s8_umap", "s_handoff",
+        "s5_atac_spectral", "s8_umap", "qc_handoff",
     ],
 }
 
@@ -168,7 +169,8 @@ def _load_resources_smk() -> Any:
 
 
 def _resolve_io(io: dict[str, str], run_dir: str) -> dict[str, str]:
-    return {k: v.format(run_dir=run_dir) for k, v in io.items()}
+    run_name = Path(run_dir).name
+    return {k: v.format(run_dir=run_dir, run=run_name) for k, v in io.items()}
 
 
 def build_stage_spec(

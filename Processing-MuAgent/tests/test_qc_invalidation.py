@@ -46,7 +46,8 @@ class QcInvalidationTests(unittest.TestCase):
                    rp.artifact("s3_doublets", "joint_barcodes.txt"),
                    rp.artifact("s3_doublets", "overlap_summary.json")],
             "gate": [rp.proposal("post_qc_review"), rp.awaiting_sentinel("post_qc_review"),
-                     rp.qc_review_summary_md, rp.qc_summary_html],
+                     rp.qc_review_summary_md, rp.qc_summary_html,
+                     rp.post_qc_h5mu, rp.post_qc_manifest_json],
         }
         for group in files.values():
             for p in group:

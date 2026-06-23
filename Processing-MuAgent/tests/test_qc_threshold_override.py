@@ -78,19 +78,19 @@ class RnaOverrideMathTests(unittest.TestCase):
 class AtacOverrideMathTests(unittest.TestCase):
     def test_override_sets_applied_and_keeps_derived(self):
         rng = np.random.default_rng(0)
-        n_frag = rng.integers(1500, 20000, 500).astype(float)
+        n_frag = rng.integers(1000, 20000, 500).astype(float)
         f_lo, f_hi, mad_lo, (lo_d, hi_d) = qct.atac_n_fragment_bounds(
-            n_frag, k_mad=5.0, n_frag_floor=1500.0, n_fragments_min_override=5000,
+            n_frag, k_mad=5.0, n_frag_floor=1000.0, n_fragments_min_override=5000,
         )
         self.assertEqual(f_lo, 5000.0)
         self.assertNotEqual(lo_d, 5000.0)
-        self.assertGreaterEqual(lo_d, 1500.0)
+        self.assertGreaterEqual(lo_d, 1000.0)
 
     def test_no_override_applied_equals_derived(self):
         rng = np.random.default_rng(1)
-        n_frag = rng.integers(1500, 20000, 500).astype(float)
+        n_frag = rng.integers(1000, 20000, 500).astype(float)
         f_lo, f_hi, mad_lo, (lo_d, hi_d) = qct.atac_n_fragment_bounds(
-            n_frag, k_mad=5.0, n_frag_floor=1500.0,
+            n_frag, k_mad=5.0, n_frag_floor=1000.0,
         )
         self.assertEqual(f_lo, lo_d)
         self.assertEqual(f_hi, hi_d)

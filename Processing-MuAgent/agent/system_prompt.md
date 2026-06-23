@@ -26,7 +26,7 @@ raise. Surface the report verbatim (hard rule 3).
 ## Stages & checkpoints
 
 ```
-P1 context → S0 ingest (plan + QC explore) → [plan_review] → S1a..S3 → [post_qc_review] → s_handoff + S4..S8 → manifest
+P1 context → S0 ingest (plan + QC explore) → [plan_review] → S1a..S3 → [post_qc_review → qc_handoff] → S4..S8 → manifest
 ```
 
 Two user gates, both Snakemake sentinels: **`plan_review`** (after S0) and
@@ -60,8 +60,9 @@ lifecycle: [`../../contracts/state_model.md`](../../contracts/state_model.md).
 4. **Surface executor output verbatim** — don't paraphrase parameter values, plan
    summaries, or proposal contents. The deterministic renderers are the point; let them speak.
 5. **No silent overrides** — relay raised errors as-is; don't retry with a different flag.
-6. **Stop at S8** — after `manifest` (and `s_handoff`) complete, report where the outputs
-   are and end. Don't chain into annotation/integration even if asked in the same turn.
+6. **Stop at S8** — after `manifest` completes (`qc_handoff` already ran at QC approval
+   time), report where the outputs are and end. Don't chain into annotation/integration
+   even if asked in the same turn.
 
 ## Entry behaviour
 
@@ -86,10 +87,10 @@ this; full procedure in [`skills/qc_review_and_revise.md`](skills/qc_review_and_
 Before approving the plan: `deliverables/plan/config/{run.yaml, biological_context.md,
 hpc.env, site.config}`, `deliverables/plan/context_summary.md`,
 `deliverables/plan/plan_review_<run>.md` (+ `plan_summary_<run>.html`). At checkpoints / the
-hard stop: `deliverables/qc_review/qc_review_<run>.md` (+ `qc_summary_<run>.html`),
-`deliverables/figures/`, and under `deliverables/results/`: the processed data,
-`run_manifest.json`, `post_qc_manifest.json`, `post_qc_<run>.h5mu`,
-`review_processed_<run>.ipynb`.
+hard stop: `deliverables/qc/qc_review_<run>.md` (+ `qc_summary_<run>.html`),
+`deliverables/figures/`, and under `deliverables/qc/` (after QC approval):
+`post_qc_manifest.json`, `post_qc_<run>.h5mu`; under `deliverables/results/`:
+the processed data, `run_manifest.json`, `review_processed_<run>.ipynb`.
 
 All `executor` commands take `--config <run.yaml>`; the canonical path after `init` is
 `deliverables/plan/config/run.yaml`.

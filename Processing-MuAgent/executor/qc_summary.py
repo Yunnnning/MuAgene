@@ -1331,7 +1331,7 @@ def build_qc_review(run_dir: Path | str) -> str:
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
     branch = _workflow_branch(run_dir)
-    render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=True)
+    render = _FigRender(md_parent=rp.deliv_qc, embed_figures=True)
 
     sections = [
         _qc_review_intro(run_dir.name, run_dir),
@@ -1349,7 +1349,7 @@ def build_qc_review_report(run_dir: Path | str) -> str:
     params_path = rp.parameters_yaml
     params = yaml.safe_load(params_path.read_text()) if params_path.exists() else {}
     counts = _stage_counts(run_dir)
-    render = _FigRender(md_parent=rp.deliv_qc_review, embed_figures=True)
+    render = _FigRender(md_parent=rp.deliv_qc, embed_figures=True)
     branch = _workflow_branch(run_dir)
     title = f"# QC review — {run_dir.name}\n"
     context = _plan_dataset_assay_line(run_dir)
@@ -1646,10 +1646,10 @@ def write_qc_review(run_dir: Path | str) -> Path:
     from .run_paths import RunPaths
     run_dir = Path(run_dir)
     rp = RunPaths(run_dir)
-    rp.deliv_qc_review.mkdir(parents=True, exist_ok=True)
+    rp.deliv_qc.mkdir(parents=True, exist_ok=True)
     rp.deliv_figures.mkdir(parents=True, exist_ok=True)
     rp.migrate_legacy_figures_to_central()
-    for legacy in (rp.deliv_qc_review / "qc_review.md", rp.deliv_qc_review / "qc_summary.html"):
+    for legacy in (rp.deliv_qc / "qc_review.md", rp.deliv_qc / "qc_summary.html"):
         if legacy.exists():
             legacy.unlink()
     rp.qc_review_summary_md.write_text(build_qc_review(run_dir), encoding="utf-8")
@@ -1659,5 +1659,5 @@ def write_qc_review(run_dir: Path | str) -> Path:
 
 # NOTE: the end-to-end QC summary for results/ (former ``build`` / ``write``) was
 # removed — it duplicated the QC-review checkpoint deliverable
-# (deliverables/qc_review/qc_review_<run>.md, written by
+# (deliverables/qc/qc_review_<run>.md, written by
 # ``build_qc_review`` above). The QC review is the single user-facing QC summary.

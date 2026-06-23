@@ -8,7 +8,7 @@ contracts — not prose.
 
 | Agent | Owns | Manifest |
 |-------|------|----------|
-| **[Processing-MuAgent](Processing-MuAgent/AGENT.md)** | Scientific intent — branch selection, biological context, the QC/preprocessing plan, parameter provenance, the two human-in-the-loop gates, deterministic deliverables. Pipeline `P1 → S0 → [plan_review] → S1a..S3 → [post_qc_review] → s_handoff + S4..S8 → manifest`. | `Processing-MuAgent/AGENT.md` |
+| **[Processing-MuAgent](Processing-MuAgent/AGENT.md)** | Scientific intent — branch selection, biological context, the QC/preprocessing plan, parameter provenance, the two human-in-the-loop gates, deterministic deliverables. Pipeline `P1 → S0 → [plan_review] → S1a..S3 → [post_qc_review → qc_handoff] → S4..S8 → manifest` (`qc_handoff` runs at QC approval, before the finish batch). | `Processing-MuAgent/AGENT.md` |
 | **[Execution-MuAgent](Execution-MuAgent/AGENT.md)** | Platform mechanics + machine infra — validate spec → render → submit (SLURM) → monitor → report; plus environment provisioning (CPU conda-lock, pull-only GPU container). Science-free; never contacts the user during a run. | `Execution-MuAgent/AGENT.md` |
 
 The boundary is declared in [`muagene.agents.yaml`](muagene.agents.yaml): Processing writes

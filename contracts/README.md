@@ -9,7 +9,7 @@ skills) link here and must not restate the shapes or codes.
 |------|--------------|---------------------|
 | [`findings.yaml`](findings.yaml) | The finding-code registry (`{severity, code, message}`) the monitor emits and Processing acts on, plus env-provisioning codes | Execution → Processing / operator |
 | [`state_model.md`](state_model.md) | Every run-state / machine-state file: who writes it, who reads it, its lifecycle | both agents |
-| [`post_qc_manifest.schema.json`](post_qc_manifest.schema.json) | The post-QC handoff manifest (`muagene.post_qc_handoff/1`), emitter `executor/stages/s_handoff.py` | Preprocessing → downstream |
+| [`post_qc_manifest.schema.json`](post_qc_manifest.schema.json) | The post-QC handoff manifest (`muagene.post_qc_handoff/1`), emitter `executor/stages/qc_handoff.py` | Preprocessing → downstream |
 
 ## Conventions
 - JSON Schema is **draft 2020-12**. `$id` carries the versioned contract name

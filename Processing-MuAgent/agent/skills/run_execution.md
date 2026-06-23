@@ -44,11 +44,12 @@ daemon writes `internal/hpc_monitor/monitor_<ts>.log` (symlinked `monitor.log`) 
 | Gate #1 | plan_review | login node | [`plan_confirm.md`](plan_confirm.md) |
 | QC | S1a → S3 | head-job | this skill |
 | Gate #2 | post_qc_review | — | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
-| Finish | s_handoff + S4 → S5 → S6 → S7 → S8 → manifest | head-job (`s_handoff` localrule) | [`downstream_dimred_clustering.md`](downstream_dimred_clustering.md) |
+| Integration handoff | qc_handoff | SLURM cluster job at QC approval (`submit --target qc_handoff`) | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
+| Finish | S4 → S5 → S6 → S7 → S8 → manifest | head-job | [`downstream_dimred_clustering.md`](downstream_dimred_clustering.md) |
 
 After plan-review approval, `source deliverables/plan/config/hpc.env`, then:
 - **QC batch:** `executor submit --config $CFG --executor slurm --auto-approve --auto-approve-except post_qc_review`
-- **After QC approval:** `executor submit --config $CFG --executor slurm` — runs s_handoff + S4→S8→manifest to completion (target `all`, no further gate).
+- **After QC approval:** `qc_handoff` runs immediately at the approval step (see [`qc_review_and_revise.md`](qc_review_and_revise.md)). Then, when the user is ready for the finish batch: `executor submit --config $CFG --executor slurm` — runs S4→S8→manifest to completion (target `all`, no further gate; Snakemake skips `qc_handoff` since its outputs already exist).
 
 Each gated phase's head-job target is the **gate-arming `*_propose` localrule** (e.g.
 `post_qc_review_propose`), not the phase's last execute stage. Snakemake pulls every execute
@@ -60,7 +61,7 @@ phase has no gate → target `all`. You never run `propose` by hand to surface a
 
 1. `executor status --config $CFG` — find the stage that is `awaiting_approval`.
 2. Read `internal/proposals/<stage>.yaml` (and any linked summary, e.g.
-   `deliverables/qc_review/qc_review_<run>.md`).
+   `deliverables/qc/qc_review_<run>.md`).
 3. Route by stage via [`index.md`](index.md): `post_qc_review` →
    [`qc_review_and_revise.md`](qc_review_and_revise.md); other gated stages → approve, or
    `executor revise <stage> <key>=<value> --config $CFG` then re-surface.
