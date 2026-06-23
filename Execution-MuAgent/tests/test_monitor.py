@@ -213,17 +213,6 @@ class RenderSubmissionScriptTests(unittest.TestCase):
             script = self._render(run_dir, repo_root, site_config=sc)
             self.assertIn("export PMA_CONDA_ENV=myenv", script)
 
-    def test_pbs_queue_and_project_exported(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "run"
-            repo_root = Path(tmp) / "repo"
-            sc = SiteConfig(
-                scheduler="pbs", queue="workq", project="vaquerizas", conda_env="grn"
-            )
-            script = self._render(run_dir, repo_root, site_config=sc)
-            self.assertIn("export PMA_PBS_QUEUE=workq", script)
-            self.assertIn("export PMA_PBS_PROJECT=vaquerizas", script)
-            self.assertIn("profiles/pbs", script)
 
     def test_run_dir_distinct_from_repo_root(self):
         """Canonical contract: run_dir and repo_root are independent paths."""
@@ -243,13 +232,6 @@ class RenderSubmissionScriptTests(unittest.TestCase):
             script = self._render(run_dir, repo_root)
             self.assertIn("#SBATCH --job-name=pma_head_job_whelanC57A", script)
 
-    def test_pbs_job_name_includes_run_name(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp) / "runs" / "whelanC57A"
-            repo_root = Path(tmp) / "repo"
-            sc = SiteConfig(scheduler="pbs", queue="workq", project="vaquerizas", conda_env="grn")
-            script = self._render(run_dir, repo_root, site_config=sc)
-            self.assertIn("#PBS -N pma_head_job_whelanC57A", script)
 
     def test_run_name_exported_to_child_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:

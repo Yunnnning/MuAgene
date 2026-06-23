@@ -44,7 +44,7 @@ lifecycle: [`../../contracts/state_model.md`](../../contracts/state_model.md).
 2. **Confirm execution mode (local vs HPC) once before the first compute launch — never
    auto-default.** It is a one-time gate (applies to fresh and resumed runs); once
    `execution.user_confirmed=true`, proceed without re-asking. Record the user's explicit
-   choice with `executor configure-execution --mode <local|pbs|slurm> --confirmed-by-user`
+   choice with `executor configure-execution --mode <local|slurm> --confirmed-by-user`
    (never pass the flag without having asked). **Execution boundary:** `run` is local-only,
    `submit` is cluster-only; Processing never submits or monitors cluster jobs itself — it
    writes the spec + `site.config` and delegates all cluster execution **and** environment

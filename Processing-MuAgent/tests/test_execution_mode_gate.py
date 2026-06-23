@@ -137,14 +137,14 @@ class RunGateCliTests(unittest.TestCase):
     @mock.patch("executor.cli._snakemake")
     def test_run_refuses_cluster_mode_local_only(self, m_snake):
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = _init_run(Path(tmp), mode="pbs", confirmed=True)
+            cfg = _init_run(Path(tmp), mode="slurm", confirmed=True)
             res = CliRunner().invoke(cli.main, [
                 "run", "--config", str(cfg), "--target", "s0_ingest_execute",
                 "--no-context"])
             self.assertNotEqual(res.exit_code, 0)
             self.assertIn("local-only", res.output)
             self.assertIn("submit", res.output)
-            self.assertIn("--executor pbs", res.output)
+            self.assertIn("--executor slurm", res.output)
             m_snake.assert_not_called()
 
 

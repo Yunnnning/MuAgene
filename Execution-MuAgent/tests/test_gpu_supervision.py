@@ -37,7 +37,7 @@ class ProbeGpuParseTests(unittest.TestCase):
         self.assertEqual(res["gpu_mem_mb"], 2048.0)
 
     def test_non_slurm_returns_none(self):
-        self.assertEqual(monitor._probe_gpu("pbs", ["1"], 5), {"gpu_util": None, "gpu_mem_mb": None})
+        self.assertEqual(monitor._probe_gpu("local", ["1"], 5), {"gpu_util": None, "gpu_mem_mb": None})
 
     def test_no_jobids_returns_none(self):
         self.assertEqual(monitor._probe_gpu("slurm", [], 5), {"gpu_util": None, "gpu_mem_mb": None})

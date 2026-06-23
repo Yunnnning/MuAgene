@@ -39,7 +39,7 @@ exception is the QC-revision artifact cleanup (see the `qc_review_and_revise` sk
 | `latest_report.md` | monitor | daemon-internal debug/audit only | Never parsed by Processing; never shown to the user. |
 | `monitor.pid` | `execute-spec --watch` / `resume-monitor` | Processing (gate signal) | Present while the daemon runs; **removed on exit** — its absence signals the gate to Processing. |
 | `submissions.jsonl`, `execution_manifest.jsonl` | execute-spec / resume-monitor | audit; resume-monitor reconstructs context | Append-only submission/registration logs. |
-| `scripts/<stage>_<ts>.sh` | submit (rendered) | scheduler (sbatch/qsub) | Rendered submission script per submit. |
+| `scripts/<stage>_<ts>.sh` | submit (rendered) | scheduler (sbatch) | Rendered submission script per submit. |
 
 ## Machine-level state — written by Execution-MuAgent (under `~/.muagene/`)
 

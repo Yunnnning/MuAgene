@@ -19,10 +19,10 @@ from .run_paths import RunPaths
 PACKAGE_DIR = Path(__file__).resolve().parent.parent  # Processing-MuAgent/
 SNAKEFILE = PACKAGE_DIR / "workflow" / "Snakefile"
 
-EXECUTOR_CHOICE = click.Choice(["local", "pbs", "slurm"])
-# Cluster-only executors for `submit` — `run` is local-only, so `local` is not a
+EXECUTOR_CHOICE = click.Choice(["local", "slurm"])
+# Cluster-only executor for `submit` — `run` is local-only, so `local` is not a
 # valid submit target (all cluster execution is owned by Execution-MuAgent).
-CLUSTER_EXECUTOR_CHOICE = click.Choice(["pbs", "slurm"])
+CLUSTER_EXECUTOR_CHOICE = click.Choice(["slurm"])
 
 # s0_ingest is the merged planning compute (load + validate + assemble plan +
 # QC exploration); the former standalone p2_plan stage no longer exists.
@@ -431,15 +431,13 @@ def hpc_info() -> None:
 @main.command(name="configure-execution")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--mode", "mode", required=True, type=EXECUTOR_CHOICE,
-              help="Execution backend: local, pbs, or slurm.")
+              help="Execution backend: local or slurm.")
 @click.option("--confirmed-by-user/--not-confirmed", "confirmed_by_user",
               default=False,
               help="Record that the USER explicitly confirmed this execution mode "
                    "(local vs HPC). `run`/`submit` refuse to launch any compute job "
                    "until this is set. Never pass it on the user's behalf without "
                    "having actually confirmed.")
-@click.option("--pbs-queue", default=None, help="PBS queue name (PMA_PBS_QUEUE).")
-@click.option("--pbs-project", default=None, help="PBS project code (PMA_PBS_PROJECT).")
 @click.option("--slurm-partition", default=None, help="SLURM partition (PMA_SLURM_PARTITION).")
 @click.option("--slurm-account", default=None, help="SLURM account (PMA_SLURM_ACCOUNT).")
 @click.option("--resources-scale", default=None, type=float,
@@ -447,17 +445,12 @@ def hpc_info() -> None:
 @click.option("--conda-env", default=None, help="Conda env name for cluster jobs (PMA_CONDA_ENV).")
 @click.option("--device", type=click.Choice(["cpu", "gpu"]), default="cpu", show_default=True,
               help="Compute device for GPU-capable stages (compute.device). 'gpu' is cluster-only "
-                   "(--mode pbs|slurm + submit): routes those stages to the GPU partition/gres and "
+                   "(--mode slurm + submit): routes those stages to the GPU partition/gres and "
                    "container; local mode (--mode local) is always CPU.")
 @click.option("--gpu-partition", default=None,
               help="SLURM GPU partition for GPU-capable stages (PMA_SLURM_GPU_PARTITION).")
 @click.option("--gpu-gres", default=None,
               help="SLURM GPU gres request, e.g. gpu:A5000:1 (PMA_SLURM_GPU_GRES). Run hpc-info to discover.")
-@click.option("--pbs-gpu-select-extra", default=None,
-              help="PBS select-chunk GPU suffix for GPU-capable stages, e.g. 'ngpus=1' or "
-                   "'ngpus=1:gpu_type=a100' (PMA_PBS_GPU_SELECT_EXTRA).")
-@click.option("--gpu-queue", default=None,
-              help="Optional separate PBS GPU queue for GPU-capable stages (PMA_PBS_GPU_QUEUE).")
 @click.option("--gpu-conda-env", default=None,
               help="Conda env activated for GPU child jobs (PMA_CONDA_ENV_GPU), e.g. muagene-gpu.")
 @click.option("--gpu-image", default=None,
@@ -479,8 +472,6 @@ def configure_execution(
     config_path: str,
     mode: str,
     confirmed_by_user: bool,
-    pbs_queue: str | None,
-    pbs_project: str | None,
     slurm_partition: str | None,
     slurm_account: str | None,
     resources_scale: float | None,
@@ -488,8 +479,6 @@ def configure_execution(
     device: str,
     gpu_partition: str | None,
     gpu_gres: str | None,
-    pbs_gpu_select_extra: str | None,
-    gpu_queue: str | None,
     gpu_conda_env: str | None,
     gpu_image: str | None,
     gpu_image_uri: str | None,
@@ -515,7 +504,7 @@ def configure_execution(
 
     if mode == "local" and device == "gpu":
         raise click.ClickException(
-            "GPU is cluster-only: --device gpu requires --mode pbs or slurm (use submit). "
+            "GPU is cluster-only: --device gpu requires --mode slurm (use submit). "
             "Local runs use --mode local with the default --device cpu.")
 
     # On HPC, gpu routes GPU-capable stages to the GPU partition/gres and container
@@ -573,8 +562,6 @@ def configure_execution(
     # image/env names per run. Precedence: explicit flag > machine.config > env var.
     mc = hpc.load_machine_config()
     settings: dict[str, str | None] = {
-        "pbs_queue": pbs_queue or os.environ.get("PMA_PBS_QUEUE"),
-        "pbs_project": pbs_project or os.environ.get("PMA_PBS_PROJECT"),
         "slurm_partition": slurm_partition or os.environ.get("PMA_SLURM_PARTITION"),
         "slurm_account": slurm_account or os.environ.get("PMA_SLURM_ACCOUNT"),
         "resources_scale": (
@@ -586,8 +573,6 @@ def configure_execution(
         "device": device,
         "slurm_gpu_partition": gpu_partition or os.environ.get("PMA_SLURM_GPU_PARTITION"),
         "slurm_gpu_gres": gpu_gres or os.environ.get("PMA_SLURM_GPU_GRES"),
-        "pbs_gpu_select_extra": pbs_gpu_select_extra or os.environ.get("PMA_PBS_GPU_SELECT_EXTRA"),
-        "pbs_gpu_queue": gpu_queue or os.environ.get("PMA_PBS_GPU_QUEUE"),
         "gpu_conda_env": gpu_conda_env or mc.get("gpu_conda_env") or os.environ.get("PMA_CONDA_ENV_GPU"),
         "gpu_image": gpu_image or mc.get("gpu_image") or os.environ.get("PMA_GPU_IMAGE"),
         "gpu_image_uri": gpu_image_uri or mc.get("gpu_image_uri") or os.environ.get("PMA_GPU_IMAGE_URI"),
@@ -605,9 +590,6 @@ def configure_execution(
         click.echo(f"Execution mode: local (device={device}; no hpc.env written).")
         return
 
-    if mode == "pbs" and not settings["pbs_queue"]:
-        raise click.ClickException(
-            "PBS mode requires --pbs-queue or PMA_PBS_QUEUE in the environment.")
     if mode == "slurm" and not settings["slurm_partition"]:
         raise click.ClickException(
             "SLURM mode requires --slurm-partition or PMA_SLURM_PARTITION in the environment.")
@@ -624,8 +606,7 @@ def configure_execution(
         # SLURM GPU is container-only: the job runs inside the PULLED image, so fail
         # loud now if the pinned image reference is missing rather than writing
         # image_uri: null and only discovering it at provision/submit
-        # (gpu_image_unavailable). PBS GPU is deferred — it keeps a conda-env fallback
-        # for now; apply the same check when PBS goes container-only.
+        # (gpu_image_unavailable).
         if mode == "slurm" and not settings["gpu_image_uri"]:
             raise click.ClickException(
                 "SLURM --device gpu requires --gpu-image-uri — a pinned registry reference the GPU "
@@ -636,10 +617,6 @@ def configure_execution(
             raise click.ClickException(
                 "SLURM --device gpu requires --gpu-gres (e.g. gpu:A5000:1). Run `hpc-info` to discover "
                 "the GPU partition/gres on this cluster.")
-        if mode == "pbs" and not settings["pbs_gpu_select_extra"]:
-            settings["pbs_gpu_select_extra"] = "ngpus=1"
-            click.echo("NOTE: --device gpu on PBS without --pbs-gpu-select-extra; defaulting to 'ngpus=1'.",
-                       err=True)
 
     site_cfg = hpc.write_site_config(paths.site_config, mode=mode, settings=settings)
     out = hpc.write_hpc_env(paths.hpc_env_sh, paths.site_config)
@@ -1210,12 +1187,12 @@ def _enforce_execution_mode_gate(run_dir: Path, paths: RunPaths) -> None:
             "confirm local vs HPC with the user before any compute job runs "
             "(this applies to resume sessions too, not only the first S0 ingest).\n"
             "  1. Ask the user: run locally on this machine, or submit to an HPC "
-            "cluster (PBS Pro or SLURM)?\n"
+            "cluster (SLURM)?\n"
             "  2. For HPC, probe the login node first: Processing-MuAgent hpc-info\n"
             "  3. Record the user's explicit choice:\n"
             f"     Processing-MuAgent configure-execution --config {paths.run_yaml} "
             "--mode local --confirmed-by-user\n"
-            "     (or --mode pbs|slurm with queue/partition + account, "
+            "     (or --mode slurm with partition + account, "
             "plus --confirmed-by-user)"
         )
     if not confirmed:
@@ -1248,7 +1225,7 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
     `run` is local-only: it executes on this machine (local mode) or runs the
     login-node localrules (propose / planning / manifest). All cluster job
     submission and monitoring is owned by Execution-MuAgent via `submit` — there
-    is no `run --executor pbs|slurm` path.
+    is no `run --executor slurm` path.
 
     Use --auto-approve-except <stage> to keep specific gates honoured (e.g.
     qc_review in headless HPC mode).
@@ -1258,7 +1235,7 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
 
     _enforce_execution_mode_gate(run_dir, paths)
     mode = provenance.get_value(str(paths.parameters_yaml), "execution.mode", None)
-    if mode in {"pbs", "slurm"}:
+    if mode == "slurm":
         raise click.ClickException(
             f"execution.mode is {mode!r}, but `run` is local-only. Heavy stages "
             "(starting with S0 ingest) must run on a compute node, never the login "
@@ -1382,7 +1359,7 @@ def _prepare_submit_approvals(
 @main.command()
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--executor", type=CLUSTER_EXECUTOR_CHOICE, required=True,
-              help="Scheduler to submit the head-job to (pbs or slurm). "
+              help="Scheduler to submit the head-job to (slurm). "
                    "For local foreground runs use `run` (which is local-only).")
 @click.option("--target", default=None,
               help="Override the Snakemake target. Omit to auto-infer the first "
@@ -1417,7 +1394,7 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
            marker_genes_ack: str | None,
            output_log: str | None, unlock_stale_locks: bool,
            watch: bool) -> None:
-    """Submit the snakemake runner as a scheduler head-job (PBS or SLURM).
+    """Submit the snakemake runner as a SLURM head-job.
 
     This is the ONLY cluster-execution path: Processing-MuAgent prepares the
     head-job spec + site.config and Execution-MuAgent owns submission and
@@ -1517,7 +1494,7 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
     if not paths.site_config.exists():
         raise click.ClickException(
             f"site.config not found at {paths.site_config}. "
-            "Run `Processing-MuAgent configure-execution --mode slurm|pbs ...` first."
+            "Run `Processing-MuAgent configure-execution --mode slurm ...` first."
         )
 
     # Write the head-job spec so Execution-MuAgent can render + submit it.

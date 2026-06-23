@@ -9,7 +9,7 @@ contracts — not prose.
 | Agent | Owns | Manifest |
 |-------|------|----------|
 | **[Processing-MuAgent](Processing-MuAgent/AGENT.md)** | Scientific intent — branch selection, biological context, the QC/preprocessing plan, parameter provenance, the two human-in-the-loop gates, deterministic deliverables. Pipeline `P1 → S0 → [plan_review] → S1a..S3 → [post_qc_review] → s_handoff + S4..S8 → manifest`. | `Processing-MuAgent/AGENT.md` |
-| **[Execution-MuAgent](Execution-MuAgent/AGENT.md)** | Platform mechanics + machine infra — validate spec → render → submit (SLURM/PBS) → monitor → report; plus environment provisioning (CPU conda-lock, pull-only GPU container). Science-free; never contacts the user during a run. | `Execution-MuAgent/AGENT.md` |
+| **[Execution-MuAgent](Execution-MuAgent/AGENT.md)** | Platform mechanics + machine infra — validate spec → render → submit (SLURM) → monitor → report; plus environment provisioning (CPU conda-lock, pull-only GPU container). Science-free; never contacts the user during a run. | `Execution-MuAgent/AGENT.md` |
 
 The boundary is declared in [`muagene.agents.yaml`](muagene.agents.yaml): Processing writes
 `site.config` + the per-stage specs; Execution writes `latest_snapshot.json` (findings +
@@ -59,7 +59,7 @@ Execution-MuAgent init-machine --processing-repo /path/to/Processing-MuAgent --d
 ```bash
 executor init --config run.yaml                 # scaffold the run dir
 executor declare-branch paired --config $CFG    # paired | separate | rna_only | atac_only
-executor configure-execution --config $CFG --mode local --confirmed-by-user   # or --mode slurm|pbs
+executor configure-execution --config $CFG --mode local --confirmed-by-user   # or --mode slurm
 executor plan-review --config $CFG              # gate #1 — review deliverables/plan/plan_review_<run>.md
 executor approve plan_review --config $CFG
 executor run --config $CFG                      # local; or: executor submit (cluster, via Execution-MuAgent)

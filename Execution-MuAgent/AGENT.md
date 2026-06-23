@@ -2,7 +2,7 @@
 name: Execution-MuAgent
 role: Platform executor/supervisor + machine environment provisioning
 scope:
-  does: [validate spec, render submission script, submit (SLURM/PBS), monitor (state machine), report findings, provision/validate envs]
+  does: [validate spec, render submission script, submit (SLURM), monitor (state machine), report findings, provision/validate envs]
   out_of_scope: [scientific decisions, modifying specs or site.config, contacting the user during a run]
 owned_tool: Execution-MuAgent       # Click CLI; per-command contracts in agent/tools.md
 consumes_contracts: [site_config, machine_config, head_job, stage_meta, env_manifest]

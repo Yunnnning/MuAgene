@@ -17,7 +17,7 @@ confirm the inferred branch with the user first. Mutates: `parameters.yaml`.
 
 ### executor configure-execution
 Record the execution mode + write `site.config` (+ `hpc.env` for HPC). Requires
-`--mode <local|pbs|slurm> --confirmed-by-user` (never pass the flag unless the user actually
+`--mode <local|slurm> --confirmed-by-user` (never pass the flag unless the user actually
 chose). `--device gpu` only with a cluster mode. Mutates: `parameters.yaml`, `site.config`,
 `hpc.env`. Failure: missing `gpu_image_uri` for SLURM GPU → fail loud.
 

@@ -45,7 +45,7 @@ Do not edit `parameters.yaml`, `state.yaml`, biological-context files, or checkp
 
 ## Procedure for HPC runs
 
-Use this when `execution.mode` is `pbs` or `slurm`.
+Use this when `execution.mode` is `slurm`.
 
 1. **Update parameters (this also invalidates stale artifacts + gate automatically).** For each changed value, run:
 
@@ -90,7 +90,7 @@ Use this when `execution.mode` is `pbs` or `slurm`.
 
    ```bash
    source deliverables/plan/config/hpc.env
-   executor submit --config $CFG --executor pbs|slurm
+   executor submit --config $CFG --executor slurm
    executor hpc-status --config $CFG     # one-shot: report, then re-poll on a scheduled wakeup
    ```
 
@@ -156,7 +156,7 @@ If the user wants to proceed:
    This **plots the figure and refreshes QC reports in one command** (no separate `propose post_qc_review` step). Use `--plot-only` when iterating on layout without updating the markdown/HTML reports.
    **Login node vs cluster:** check whether `internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` exists and the cell set is unchanged.
    - **Cache present:** run on the **login node** — t-SNE is skipped and the pipeline opens `rna_decontaminated.h5ad` in backed (disk) mode, loading only the requested marker columns plus cached per-cell totals (`cell_totals.parquet`). This avoids loading the full counts matrix into RAM.
-   - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM/PBS job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
+   - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
    Do **not** submit a cluster job when the cache already exists unless the login node still OOMs (rare after backed mode; try a modest ~16G cluster job before 48G).
 3. Relay `deliverables/qc_review/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
 

@@ -235,7 +235,7 @@ def write_stage_specs(run_dir: Path | str, branch: str) -> list[Path]:
 def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
     """Write internal/stage_meta/head_job.yaml — the submission vehicle for the Snakemake head-job.
 
-    Resources match the runner.slurm/runner.pbs defaults (1 CPU, 4 GB, 24 h).
+    Resources match the runner.slurm defaults (1 CPU, 4 GB, 24 h).
     The target field records the Snakemake target so execute-spec can pass it
     through to launch_runner.sh via PMA_TARGET.
     """
@@ -278,7 +278,7 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
         "resources": {
             "cpus": 1,
             "mem_mb": 4000,
-            "walltime_min": 1440,  # 24 h; matches runner.slurm/runner.pbs defaults
+            "walltime_min": 1440,  # 24 h; matches runner.slurm defaults
         },
         "inputs": {
             "config": str(run_dir_path / "deliverables" / "plan" / "config" / "run.yaml"),

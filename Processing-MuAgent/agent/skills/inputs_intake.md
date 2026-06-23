@@ -15,7 +15,7 @@ Tailor the required paths to the declared `workflow_branch`:
 > Optional:
 > - **Biological context** — organism, tissue, assay, any DOIs. Free text is fine, or paste a filled Biological Context Report, or give me a path to one.
 > - **Seed** — default 42.
-> - **Execution** — Should I run locally on this machine, or submit jobs to a cluster (HPC: PBS Pro or SLURM)? - If you choose HPC and have not yet set the required `PMA_*` environment variables, I'll run `hpc-info` on the login node, list available queues/partitions, suggest a project code or account where I can detect one, and ask you to confirm before I write `hpc.env`.
+> - **Execution** — Should I run locally on this machine, or submit jobs to a cluster (HPC: SLURM)? - If you choose HPC and have not yet set the required `PMA_*` environment variables, I'll run `hpc-info` on the login node, list available queues/partitions, suggest a project code or account where I can detect one, and ask you to confirm before I write `hpc.env`.
 
 ### For `atac_only`
 
@@ -119,7 +119,7 @@ to launch any compute until the user's choice is recorded with `--confirmed-by-u
 once confirmed, the rest of the pipeline runs automatically.
 
 **This gate carries two choices — explore the resources, then ask the user:**
-- **Where to run** — `--mode local | pbs | slurm` (always ask; never auto-default).
+- **Where to run** — `--mode local | slurm` (always ask; never auto-default).
 - **What device (HPC only, integration subagent)** — `--device cpu | gpu` (default `cpu`).
   Preprocessing stages are **CPU-only** (`_GPU_CAPABLE` is empty). `--device gpu` on HPC
   prepares cluster GPU infrastructure (container pull, partition/gres routing) for the
@@ -132,14 +132,11 @@ executor configure-execution --config $CFG --mode local --confirmed-by-user
 ```
 Do not pass `--device gpu` with local mode — `configure-execution` rejects it.
 
-**HPC (PBS or SLURM):**
+**HPC (SLURM):**
 
 1. Run `executor hpc-info`. Parse the JSON silently — do not dump the raw JSON to the user.
    Also read the **GPU** fields: `slurm.gpu_partitions`, `slurm.suggested_gpu_partition`,
    `slurm.suggested_gpu_gres` (SLURM). A non-empty `gpu_partitions` / a `suggested_gpu_gres`
-   means GPU is available on this cluster — surface it as a device choice in step 4. (PBS GPU
-   syntax is site-variable, so `hpc-info` does not auto-suggest a PBS GPU select; ask the user
-   for the `ngpus=…` form if they want GPU on PBS.)
 
 2. Measure input file sizes. For every path the user already provided this turn, run:
    ```bash
@@ -171,7 +168,6 @@ Do not pass `--device gpu` with local mode — `configure-execution` rejects it.
 
    **Fallback rules:**
    - File unreachable → note it in the recommendation, ask the user to confirm or supply scale manually.
-   - `hpc-info` returns empty `pbs.queues` / `slurm.partitions` → note "no partitions detected", ask the user to supply the value directly.
    - `hpc-info` returns no `suggested_account` / `suggested_project` → omit from recommendation; ask if the site requires one.
 
 4. Present ONE concrete recommendation to the user. Include a **Device** line whenever
@@ -193,8 +189,6 @@ Do not pass `--device gpu` with local mode — `configure-execution` rejects it.
 
 5. Write settings once the user confirms (or overrides):
    ```
-   executor configure-execution --config $CFG --mode pbs \
-       --pbs-queue <queue> --pbs-project <project> --confirmed-by-user
    ```
    (or `--mode slurm --slurm-partition ... --slurm-account ... --confirmed-by-user`).
    `--confirmed-by-user` records the user's approval; without it `run`/`submit` refuse to launch.
@@ -206,11 +200,9 @@ Do not pass `--device gpu` with local mode — `configure-execution` rejects it.
        --device gpu --gpu-partition <suggested_gpu_partition> --gpu-gres <suggested_gpu_gres> \
        --gpu-image-uri docker://<registry>/muagene-gpu:<tag> --confirmed-by-user
    ```
-   (PBS GPU is deferred — still uses a GPU conda env: `--device gpu --pbs-gpu-select-extra 'ngpus=1' [--gpu-queue <q>] --gpu-conda-env muagene-gpu`.)
    `configure-execution` fails loud on missing prerequisites — pre-empt them: SLURM `--device gpu`
    **requires** `--gpu-gres` and `--gpu-image-uri` (the SLURM GPU env is a container PULLED from that
    pinned reference — or set `gpu_image_uri` once in `~/.muagene/machine.config` via init-machine);
-   PBS defaults to `ngpus=1` if you omit the select-extra.
    Add `--singularity-module <module>` when the site needs `module load` for singularity.
 
 Do **not** invent partition/account names — use `hpc-info` results only. If `hpc-info` returns empty lists, ask the user for the values directly.
@@ -242,11 +234,11 @@ S0 execution location is determined by the configured mode. **`run` is local-onl
 Both refuse to start until execution mode is user-confirmed (Section 4) — so do not
 reach this step before the user has chosen local vs HPC.
 
-**HPC mode (`execution.mode` is `pbs` or `slurm`) — submit the planning head-job:**
+**HPC mode (`execution.mode` is `slurm`) — submit the planning head-job:**
 
 ```
 source deliverables/plan/config/hpc.env
-executor submit --config $CFG --executor pbs|slurm
+executor submit --config $CFG --executor slurm
 executor hpc-status --config $CFG             # one-shot: report, then re-poll on a scheduled wakeup
 ```
 
@@ -269,7 +261,7 @@ Runs P1 → S0 (+ plan assembly + gate-arming). Small inputs: ~30s.
 
 **If S0 OOMs:** in HPC mode, raise `PMA_RESOURCES_SCALE` (`configure-execution
 --resources-scale N`) and `submit` again (no `--target`). In local mode, the machine
-is too small — switch to HPC (`configure-execution --mode slurm|pbs`) and submit.
+is too small — switch to HPC (`configure-execution --mode slurm`) and submit.
 There is no automatic local→cluster retry.
 
 Do **not** cluster-retry logic errors (pairing ambiguous, path missing, branch mismatch). Relay and let the user fix inputs or `declare-branch`.

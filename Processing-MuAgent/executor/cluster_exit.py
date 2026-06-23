@@ -9,7 +9,7 @@ is complete on disk, hanging the whole pipeline.
 `gc.collect()` releases the AnnData/h5py objects so their HDF5 file descriptors
 close; `os._exit(0)` skips atexit/finalizers to terminate any remaining threads
 immediately. It only fires inside a scheduler-submitted child job (SLURM_JOB_ID
-or PBS_JOBID set), so in local mode (job-id env vars unset) it degrades to a
+or SLURM_JOB_ID set), so in local mode (job-id env vars unset) it degrades to a
 plain gc and never kills a foreground run.
 
 Call this only from non-local `<stage>_execute` rules — never from localrules or
@@ -24,5 +24,5 @@ import os
 def finalize_cluster_exit() -> None:
     """gc.collect(), then os._exit(0) when running as a scheduler child job."""
     gc.collect()
-    if os.environ.get("SLURM_JOB_ID") or os.environ.get("PBS_JOBID"):
+    if os.environ.get("SLURM_JOB_ID"):
         os._exit(0)

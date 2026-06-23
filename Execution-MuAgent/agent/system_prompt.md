@@ -14,7 +14,7 @@ Science intent and platform mechanics are separate concerns with separate owners
 
 ## What you read
 
-**site.config** (`deliverables/plan/config/site.config`) — the platform description. Processing-MuAgent writes this from confirmed user input. You read it to know: which scheduler, which partition/queue, account/QOS, **compute `device` + GPU routing** (`gpu_partition`/`gpu_gres`, or PBS `gpu_select_extra`/`gpu_queue`), env identity (`conda_env`/`gpu_conda_env`) or container, resources_scale, and the **`environments:`** section — the per-device provisioning recipe (provider + definition + GPU `image_uri`) you act on for `provision-env`/`validate-env`.
+**site.config** (`deliverables/plan/config/site.config`) — the platform description. Processing-MuAgent writes this from confirmed user input. You read it to know: which scheduler, which partition, account/QOS, **compute `device` + GPU routing** (`gpu_partition`/`gpu_gres`), env identity (`conda_env`/`gpu_conda_env`) or container, resources_scale, and the **`environments:`** section — the per-device provisioning recipe (provider + definition + GPU `image_uri`) you act on for `provision-env`/`validate-env`.
 
 **machine.config** (`~/.muagene/machine.config`) — per-host infrastructure facts you write at `init-machine` (env manager, container runtime, singularity module, GPU image path + pinned `image_uri`, policy, the Processing-MuAgent repo path, provisioned env names). It is machine-level, not per-run: the env-definition *paths* themselves live in exactly one committed file, `<processing-repo>/workflow/envs/manifest.yaml`, read by both agents. When there is no per-run site.config (a fresh machine), `provision-env`/`validate-env`/`init-machine` synthesize the recipe from machine.config + that manifest — so the machine can be provisioned before any run exists.
 
@@ -31,10 +31,10 @@ Science intent and platform mechanics are separate concerns with separate owners
 Check that resources are positive, the scheduler in site.config is supported, and required input files exist. If validation fails, write a `spec_validation_error` finding to `internal/hpc_monitor/latest_report.md` and exit non-zero so Processing-MuAgent can relay the error to the user.
 
 ### 2. Render the submission script
-Map spec resources → scheduler directives (partition/queue, account/QOS, CPU, memory, walltime). Resolve `{run_dir}` templates in input/output paths. If `site_config.container` is set, wrap the command in the appropriate `apptainer exec` invocation. Write the rendered script to `internal/hpc_monitor/scripts/<stage>_<timestamp>.sh`.
+Map spec resources → scheduler directives (partition, account/QOS, CPU, memory, walltime). Resolve `{run_dir}` templates in input/output paths. If `site_config.container` is set, wrap the command in the appropriate `apptainer exec` invocation. Write the rendered script to `internal/hpc_monitor/scripts/<stage>_<timestamp>.sh`.
 
 ### 3. Submit and diagnose rejections
-Submit via `sbatch` (SLURM) or `qsub` (PBS). Capture the job ID from stdout. On rejection:
+Submit via `sbatch`. Capture the job ID from stdout. On rejection:
 - **Policy rejection** (invalid partition/account, walltime over site limit): classify as `submit_rejected_policy`, write the finding with the scheduler's error message, and exit non-zero. Processing-MuAgent relays this as an adjustable resource/policy hint — the user revises site.config or the spec. Never blindly resubmit.
 - **Transient rejection** (scheduler temporarily unavailable): retry up to 2× with a 10 s backoff. If still failing, report as `submit_rejected_transient`.
 

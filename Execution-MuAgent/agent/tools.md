@@ -8,7 +8,7 @@ test asserts every command here matches the live CLI.
 
 ### Execution-MuAgent execute-spec
 The run-time lifecycle entry point (Processing invokes it): validate spec → render submission
-script → submit (`sbatch`/`qsub`) → record → monitor until exit. **No user-facing output** —
+script → submit (``sbatch`) → record → monitor until exit. **No user-facing output** —
 all state goes to `internal/hpc_monitor/` (`latest_snapshot.json`, `execution_manifest.jsonl`,
 `submissions.jsonl`, `scripts/`, `monitor.pid`). Flags: `--watch`, `--interval`, `--kill-on-hang`.
 Failure: policy rejection → finding + non-zero exit; transient → retry ≤2×. Never resubmits.

@@ -147,14 +147,13 @@ Processing-MuAgent/
 │   ├── rules/           # per-stage propose/execute rule pairs + manifest
 │   ├── envs/            # CPU env (processing.yaml -> muagene) + GPU container (muagene-gpu.def)
 │   └── profiles/
-│       ├── pbs/         # PBS Pro snakemake profile
 │       └── slurm/       # SLURM snakemake profile
 └── scripts/             # launch_runner.sh + head-job templates
 ```
 
-## Running on HPC (PBS Pro or SLURM)
+## Running on HPC (SLURM)
 
-On a cluster, heavy compute stages run as scheduler jobs (PBS Pro or SLURM). The agent drives the workflow through the same checkpoints as local mode. Platform settings are gathered once per run via `configure-execution` and stored in `site.config` (the single source of truth); `hpc.env` is generated from it automatically. Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
+On a cluster, heavy compute stages run as scheduler jobs (SLURM). The agent drives the workflow through the same checkpoints as local mode. Platform settings are gathered once per run via `configure-execution` and stored in `site.config` (the single source of truth); `hpc.env` is generated from it automatically. Everything else — init, submit, approve, revise — is handled via the CLI or the chat agent.
 
 **Execution-MuAgent is a hard dependency for cluster submission.** `Processing-MuAgent submit` delegates rendering, submission, and monitoring to the sibling `Execution-MuAgent` package. If it is absent the command fails loudly. The **Install** bootstrap above (`init-machine`) installs it into the `muagene` env for you; on a machine set up some other way, `pip install -e Execution-MuAgent/` into the same env.
 
@@ -169,10 +168,6 @@ Processing-MuAgent hpc-info
 # refuse to launch any compute until it is set (applies to local mode too).
 # Local:
 Processing-MuAgent configure-execution --config $CFG --mode local --confirmed-by-user
-
-# PBS Pro:
-Processing-MuAgent configure-execution --config $CFG --mode pbs \
-  --pbs-queue <queue> --pbs-project <project> --confirmed-by-user
 
 # SLURM:
 Processing-MuAgent configure-execution --config $CFG --mode slurm \
@@ -204,7 +199,7 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 ### Requirements
 
 - **SLURM:** Uses Snakemake's generic cluster executor plus `sbatch`/`sacct`/`squeue`; every heavy rule is submitted as a separate `sbatch` job, even when the Snakemake head-job itself runs under SLURM. Child jobscripts are sanitized before submission so Snakemake does not re-enable `storage-local-copies` on shared NFS (a common cause of jobs finishing Python quickly then hanging at `Storing output in storage.`).
-- **Clean stage exit:** after writing its outputs, every cluster `<stage>_execute` rule calls `executor.cluster_exit.finalize_cluster_exit()` (`gc.collect()` + `os._exit(0)` when `SLURM_JOB_ID`/`PBS_JOBID` is set). This terminates lingering h5py/HDF5 background threads that would otherwise keep the child process alive after the output is complete — the previous cause of jobs stuck RUNNING with `slurmstepd: error: Pid still in cpuset cgroup`. It is a no-op in local mode (job-id env vars unset).
+- **Clean stage exit:** after writing its outputs, every cluster `<stage>_execute` rule calls `executor.cluster_exit.finalize_cluster_exit()` (`gc.collect()` + `os._exit(0)` when `SLURM_JOB_ID` is set). This terminates lingering h5py/HDF5 background threads that would otherwise keep the child process alive after the output is complete — the previous cause of jobs stuck RUNNING with `slurmstepd: error: Pid still in cpuset cgroup`. It is a no-op in local mode (job-id env vars unset).
 
 ### How the HPC run proceeds
 
@@ -219,9 +214,9 @@ For larger datasets increase `--resources-scale` (e.g. `2` for ~30k cells, `4` f
 | Finish                              | s_handoff + S4 → S5 → S6 → S7 → S8 → manifest | Cluster (`s_handoff` is a localrule on the head-job host) | —                       |
 
 
-**Execution mode must be user-confirmed before any compute runs.** Both `run` and `submit` hard-refuse to launch until `execution.user_confirmed=true` is recorded (via `configure-execution ... --confirmed-by-user`). This is a one-time gate enforced on fresh runs and resume sessions alike — the agent must confirm local vs HPC with the user and never auto-default. `run` additionally refuses when the mode is `pbs`/`slurm` (use `submit`). Once confirmed, the pipeline proceeds automatically.
+**Execution mode must be user-confirmed before any compute runs.** Both `run` and `submit` hard-refuse to launch until `execution.user_confirmed=true` is recorded (via `configure-execution ... --confirmed-by-user`). This is a one-time gate enforced on fresh runs and resume sessions alike — the agent must confirm local vs HPC with the user and never auto-default. `run` additionally refuses when the mode is `slurm` (use `submit`). Once confirmed, the pipeline proceeds automatically.
 
-**S0 execution mode:** in HPC mode (`execution.mode = pbs | slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `plan_review_propose` as the planning target, which pulls P1 → S0 as dependencies and arms the plan-review gate in one head-job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, run `run --target plan_review_propose` on this machine.
+**S0 execution mode:** in HPC mode (`execution.mode = slurm`), S0 is **always** submitted through Execution-MuAgent as a supervised cluster job (never run on the login node — its QC exploration needs 100+ GB). `submit` with no `--target` infers `plan_review_propose` as the planning target, which pulls P1 → S0 as dependencies and arms the plan-review gate in one head-job, before checkpoint #1; the supervision daemon monitors it, and you report its status with one-shot `hpc-status`. In local mode, run `run --target plan_review_propose` on this machine.
 
 Each heavy stage runs as its own scheduler job, and only the two checkpoints above need `approve`. After `submit`, a background monitor is the sole watcher of your job; Processing-MuAgent follows **report-and-repoll** — it reports one-shot `hpc-status`, then re-polls on a non-blocking scheduled wakeup (~295s, the cadence printed on the `Next check:` line) and re-reports only when the state changes, until the job finishes or a review gate arms. You never have to ask for status by hand.
 
@@ -377,8 +372,8 @@ Processing-MuAgent declare-branch paired --config $CFG   # paired | separate | r
 | `init`                | Create run directory scaffold                                                                                                                                                                  |
 | `declare-branch`      | Record workflow branch in `parameters.yaml`                                                                                                                                                    |
 | `configure-execution` | Set `execution.mode` + `execution.user_confirmed` (`--confirmed-by-user`); write `site.config` (platform source of truth) and derived `hpc.env`. `run`/`submit` refuse compute until confirmed |
-| `hpc-info`            | Probe PBS/SLURM queues, partitions, accounts on the login node                                                                                                                                 |
-| `run`                 | Foreground Snakemake, **local-only** (local-mode execution + login-node localrules). No cluster path — use `submit` for PBS/SLURM                                                              |
+| `hpc-info`            | Probe SLURM queues, partitions, accounts on the login node                                                                                                                                 |
+| `run`                 | Foreground Snakemake, **local-only** (local-mode execution + login-node localrules). No cluster path — use `submit` for SLURM                                                              |
 | `submit`              | **The only cluster-execution path.** Submit head-job via Execution-MuAgent (hard dependency); starts background supervision daemon; infers phase target                                        |
 | `supervisor-restart`  | Restart the supervision daemon without resubmitting — use when the daemon died mid-run (SSH drop, site reboot, OOM) but the cluster job is still active                                        |
 | `status`              | Per-step pipeline state (S1a–S8 + review gates); `--watch` polls until actionable                                                                                                              |

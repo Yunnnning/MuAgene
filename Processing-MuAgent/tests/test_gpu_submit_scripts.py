@@ -1,7 +1,7 @@
-"""Dry-run render tests for the SLURM/PBS profile submit scripts.
+"""Dry-run render tests for the SLURM profile submit script.
 
 Preprocessing is CPU-only (_GPU_CAPABLE is empty in resources.smk). The submit
-scripts no longer accept a gpu argument or perform GPU routing — that belongs in the
+script no longer accepts a gpu argument or performs GPU routing — that belongs in the
 integration pipeline's submit profile. These tests verify:
 
   - CPU jobs are submitted to the expected partition with correct resources.
@@ -16,7 +16,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SLURM = REPO / "workflow" / "profiles" / "slurm" / "slurm-submit.sh"
-PBS = REPO / "workflow" / "profiles" / "pbs" / "pbs-submit.sh"
 
 
 def _run(script, env):
@@ -60,20 +59,6 @@ class SlurmSubmitTests(unittest.TestCase):
             "PMA_SLURM_PARTITION": "cpu", "PMA_SLURM_ACCOUNT": "vaquerizas",
             "PMA_DEVICE": "gpu",
         })
-        self.assertIn("PMA_DEVICE=cpu", out)
-        self.assertNotIn("PMA_DEVICE=gpu", out)
-
-
-class PbsSubmitTests(unittest.TestCase):
-    def test_cpu_job_routed_correctly(self):
-        out = _submit(PBS, {"PMA_PBS_QUEUE": "workq", "PMA_PBS_PROJECT": "vaquerizas"})
-        self.assertIn("select=1:ncpus=4:mem=128000mb", out)
-        self.assertNotIn("ngpus", out)
-        self.assertIn("-q workq", out)
-        self.assertIn("-P vaquerizas", out)
-
-    def test_pma_device_cpu_always_exported(self):
-        out = _submit(PBS, {"PMA_PBS_QUEUE": "workq", "PMA_DEVICE": "gpu"})
         self.assertIn("PMA_DEVICE=cpu", out)
         self.assertNotIn("PMA_DEVICE=gpu", out)
 

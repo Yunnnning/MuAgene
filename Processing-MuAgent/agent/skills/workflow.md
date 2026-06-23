@@ -67,7 +67,7 @@ Biological context is optional but strongly recommended — it shapes QC thresho
 2. **A filled Biological Context Report** — paste the content, or give me a path to an existing markdown file.
 3. **A DOI list only** — I'll fetch abstracts and extract what I can.
 
-**Execution environment** — if you haven't said already: should this run **locally** on this machine, or on an **HPC cluster** (PBS Pro or SLURM)? For cluster runs I'll probe available queues/partitions on the login node, suggest a project code or account name where I can detect one, and write `deliverables/plan/config/hpc.env` with the `PMA_*` settings you confirm.
+**Execution environment** — if you haven't said already: should this run **locally** on this machine, or on an **HPC cluster** (SLURM)? For cluster runs I'll probe available queues/partitions on the login node, suggest a project code or account name where I can detect one, and write `deliverables/plan/config/hpc.env` with the `PMA_*` settings you confirm.
 
 Which paths, biological context (if any), and local vs HPC?"
 
@@ -104,7 +104,7 @@ Once the user answers, in order:
    This is a mandatory one-time gate: `executor run`/`submit` hard-refuse to launch
    any compute until the user's choice is recorded with `--confirmed-by-user`. Ask
    even when local seems obvious — do not assume local just because you're on this
-   machine. The gate carries **where to run** (`--mode local|pbs|slurm`) and, for
+   machine. The gate carries **where to run** (`--mode local|slurm`) and, for
    **HPC only**, *what device* to configure for the cluster (`--device cpu|gpu`,
    default cpu). **GPU is cluster-only** — never offer `--device gpu` with
    `--mode local`. Preprocessing is CPU-only; `--device gpu` prepares GPU routing for
@@ -112,11 +112,10 @@ Once the user answers, in order:
    procedure in `inputs_intake.md` Section 4. Only offer `--device gpu` on HPC when a
    cluster GPU partition is detected via `hpc-info`.
    - If the user explicitly chose **local**: `executor configure-execution --config $CFG --mode local --confirmed-by-user`. **Do not run this until the user has actually said local** — there is no "no preference → local" shortcut.
-   - If the user said **HPC** (or you're on a login node with `qsub`/`sbatch` and the dataset is large):
+   - If the user said **HPC** (or you're on a login node with ``sbatch` and the dataset is large):
      a. Run `executor hpc-info` (parse silently) and measure file sizes with `ls -la` on the input paths the user already provided. Read its GPU fields (`slurm.gpu_partitions` / `suggested_gpu_partition` / `suggested_gpu_gres`) to learn whether GPU is available.
      b. Apply the file-size → scale heuristic from `inputs_intake.md` Section 4 to derive a recommended `PMA_RESOURCES_SCALE`. Select `suggested_partition` / `suggested_account` from `hpc-info` as the candidate values.
      c. Present ONE concrete recommendation (partition + account + scale, **plus a device cpu/gpu choice when a GPU was detected**) with a brief rationale and invite confirmation or override. Do not enumerate the full partition list.
-     d. Write settings once confirmed: `executor configure-execution --config $CFG --mode pbs|slurm --pbs-queue ... --pbs-project ... --confirmed-by-user` (or `--slurm-partition` / `--slurm-account`); **add `--device gpu --gpu-gres <suggested_gpu_gres> --gpu-image-uri docker://<registry>/muagene-gpu:<tag>` (SLURM; image_uri may instead come from machine.config) or `--device gpu --pbs-gpu-select-extra 'ngpus=1' --gpu-conda-env muagene-gpu` (PBS — deferred, still conda-env) if the user chose GPU** — see Section 4 for the loud-fail prerequisites. `--confirmed-by-user` records that the user approved the mode; without it, `run`/`submit` will refuse to launch. This records `execution.mode` + `compute.device` + `execution.user_confirmed` in `parameters.yaml` and writes `deliverables/plan/config/hpc.env`.
    - Do not invent partition/account names — use `hpc-info` results. If `hpc-info` returns empty lists or a file is unreachable, see fallback rules in `inputs_intake.md` Section 4.
 
 5. Invoke `executor declare-branch <paired|separate|rna_only|atac_only> --config $CFG`.
@@ -130,10 +129,10 @@ Once the user answers, in order:
    directly would stop one rule early and leave the gate unarmed.
    S0 execution location follows the configured mode (the execution model and
    monitoring mechanics are defined once under *Running on HPC* — don't restate them).
-   - **HPC mode (`execution.mode` is `pbs` or `slurm`):** source `hpc.env`, submit the planning head-job, then report-and-repoll:
+   - **HPC mode (`execution.mode` is `slurm`):** source `hpc.env`, submit the planning head-job, then report-and-repoll:
      ```
      source deliverables/plan/config/hpc.env
-     executor submit --config $CFG --executor pbs|slurm
+     executor submit --config $CFG --executor slurm
      executor hpc-status --config $CFG             # one-shot: report the daemon's snapshot, then yield
      ```
      Target is auto-inferred (`plan_review_propose`). The Execution-MuAgent daemon
@@ -279,7 +278,7 @@ Approve, revise, or abort?"
 
 ### AGENT_ACTIONS
 
-1. Invoke `executor run --config $CFG` (no `--auto-approve`) for **local** mode, or follow the HPC table below when `execution.mode` is `pbs`/`slurm` (read from `parameters.yaml` or ask if missing).
+1. Invoke `executor run --config $CFG` (no `--auto-approve`) for **local** mode, or follow the HPC table below when `execution.mode` is `slurm` (read from `parameters.yaml` or ask if missing).
    - Snakemake runs every stage whose approval sentinel exists, stopping at the first stage whose `.approved` is missing.
    - Loop:
      a. Run `executor status --config $CFG` to see which stage is currently `awaiting_approval`.
@@ -304,7 +303,7 @@ Approve, revise, or abort?"
 
 ---
 
-## Running on HPC (PBS Pro or SLURM)
+## Running on HPC (SLURM)
 
 The four-step flow above is unchanged on a cluster; only the execution model differs.
 
@@ -314,7 +313,7 @@ The four-step flow above is unchanged on a cluster; only the execution model dif
 headless mode). **Execution boundary:** `executor run` is local-only and `executor
 submit` is cluster-only — Processing-MuAgent never submits or monitors cluster jobs
 itself; it prepares the head-job spec + `site.config` and delegates all cluster
-execution to Execution-MuAgent via `submit`. There is no `run --executor pbs|slurm`.
+execution to Execution-MuAgent via `submit`. There is no `run --executor slurm`.
 
 **`submit` mechanics.** `submit` writes `internal/stage_meta/head_job.yaml`, then
 starts `Execution-MuAgent execute-spec` as a **background supervision daemon** that
@@ -357,8 +356,8 @@ and fallback rules (empty partition lists, unreachable files) are in
 
 After plan review approval, `source deliverables/plan/config/hpc.env`, then:
 
-- **QC batch:** `executor submit --config $CFG --executor pbs|slurm --auto-approve --auto-approve-except post_qc_review`
-- **After QC approval:** `executor submit --config $CFG --executor pbs|slurm` — runs s_handoff + S4→S8→manifest to completion (target `all`, no further gate)
+- **QC batch:** `executor submit --config $CFG --executor slurm --auto-approve --auto-approve-except post_qc_review`
+- **After QC approval:** `executor submit --config $CFG --executor slurm` — runs s_handoff + S4→S8→manifest to completion (target `all`, no further gate)
 
 Each gated phase's head-job target is the **gate-arming `*_propose` localrule** (`post_qc_review_propose` for QC), not the phase's last execute stage. Snakemake pulls every execute stage in the phase in as a dependency and runs the propose localrule last, so a single submission runs the whole phase **and** arms the gate. The gate `<stage>` becomes `awaiting_approval` when the propose localrule runs. The final phase (s_handoff + S4→S8→manifest) has no gate, so it targets `all` and runs straight through to the final results in one submission. You never need to run `propose` by hand to surface a gate.
 
@@ -381,15 +380,12 @@ A scheduled wakeup is **NON-BLOCKING**: it yields the turn and the runtime re-in
 Behaviour matches local mode until plan review is approved. Beyond the report-and-repoll
 rule above, the HPC-specific surfacing is:
 
-- **When the user runs `submit`**, surface the printed PBS/SLURM job ID, the supervision daemon PID, and the log path, then follow the report-and-repoll rule.
+- **When the user runs `submit`**, surface the printed SLURM job ID, the supervision daemon PID, and the log path, then follow the report-and-repoll rule.
 - **On approve/revise**, run the appropriate CLI, then `submit` again.
 
 ### Site variables (user confirms after `hpc-info`)
 
 ```bash
-# PBS Pro example:
-export PMA_PBS_QUEUE=<your_queue_name>
-export PMA_PBS_PROJECT=<your_project_code>
 
 # SLURM example:
 export PMA_SLURM_PARTITION=<your_partition_name>
@@ -409,11 +405,11 @@ These are written to `deliverables/plan/config/hpc.env` by `configure-execution`
 - **S0 raises "declared=... conflicts with detected=..."** — the user's `executor declare-branch` doesn't match what S0 detected, AND the declaration is single-modality (`rna_only`/`atac_only`). Single-modality conflicts still raise hard because they signal a data-hygiene problem. Relay the raised message. Ask the user to either correct the declaration or correct the config (drop the unwanted modality).
 - **S0 raises "pairing is ambiguous"** — RNA+ATAC Jaccard overlap is between 30% and 80% after normalization/subset checks, and the user did not declare a branch (or declared one that doesn't resolve the ambiguity). Ask the user: are these paired or separate? Based on answer, run `executor declare-branch <paired|separate>` and re-run; for `paired`, supply `barcode_translation_path` if barcode whitelists differ. Don't auto-pick.
 - **S3 raises "paired-branch joint barcode intersection is empty"** — S0 committed `paired` but no cell survived both modalities' QC + doublet removal. This usually means QC thresholds were too aggressive. Surface the message; ask the user to revise S1/S2 thresholds via `executor revise s1_rna_qc ...` or `executor revise s2_atac_qc ...`. If the pairing decision used `pairing.translation_table`, also check that the translation table actually covers the QC-surviving cell set.
-- **Phase 1 gate raises "biological_context.md is empty"** — the user didn't give context and didn't opt out. Ask for context OR offer the explicit opt-out: `--no-context` on whichever entry point starts the run (`executor run --config $CFG --target plan_review_propose --no-context` in local mode, or `executor submit --config $CFG --executor pbs|slurm --no-context` on HPC).
-- **`run`/`submit` raises "Execution mode is not set" or "was not confirmed by the user"** — you tried to launch compute before confirming local vs HPC (this gate fires on fresh runs and resume sessions alike). Stop and confirm the mode with the user: ask local vs HPC, probe `executor hpc-info` for clusters, then record their explicit choice with `executor configure-execution --config $CFG --mode <local|pbs|slurm> --confirmed-by-user`. Never pass `--confirmed-by-user` without having actually asked. Once recorded, re-run the same command and the pipeline proceeds automatically.
-- **`run` raises "execution.mode is 'pbs'/'slurm' but `run` is local-only"** — the run is configured for a cluster; `run` only executes locally. Source `hpc.env` and use `executor submit --config $CFG --executor pbs|slurm` instead.
-- **S0 OOMs / is Killed / hits walltime in HPC mode** — S0 already runs as a supervised cluster job, so this is a resource-sizing issue, not a location one. Raise `PMA_RESOURCES_SCALE` via `executor configure-execution --config $CFG --mode pbs|slurm --resources-scale N ...`, then `executor submit --config $CFG --executor pbs|slurm` again (omit `--target`). (Re-config of the *same* mode preserves the existing user confirmation — no `--confirmed-by-user` needed for a resource-only change.) **In local mode**, an S0 OOM means the machine is too small — switch to HPC (`configure-execution --mode slurm|pbs`) and submit. There is no automatic local→cluster retry.
-- **A stage execute fails at runtime** — relay the failure (HPC: read it from one-shot `executor hpc-status --config $CFG`, which renders the daemon's structured findings; local: snakemake stderr). Do not retry silently; root-cause first. If the user insists on retry, re-`executor submit --executor pbs|slurm --target <stage>_execute` (HPC) or `executor run --config $CFG --target <stage>_execute` (local only).
+- **Phase 1 gate raises "biological_context.md is empty"** — the user didn't give context and didn't opt out. Ask for context OR offer the explicit opt-out: `--no-context` on whichever entry point starts the run (`executor run --config $CFG --target plan_review_propose --no-context` in local mode, or `executor submit --config $CFG --executor slurm --no-context` on HPC).
+- **`run`/`submit` raises "Execution mode is not set" or "was not confirmed by the user"** — you tried to launch compute before confirming local vs HPC (this gate fires on fresh runs and resume sessions alike). Stop and confirm the mode with the user: ask local vs HPC, probe `executor hpc-info` for clusters, then record their explicit choice with `executor configure-execution --config $CFG --mode <local|slurm> --confirmed-by-user`. Never pass `--confirmed-by-user` without having actually asked. Once recorded, re-run the same command and the pipeline proceeds automatically.
+- **`run` raises "execution.mode is 'slurm' but `run` is local-only"** — the run is configured for a cluster; `run` only executes locally. Source `hpc.env` and use `executor submit --config $CFG --executor slurm` instead.
+- **S0 OOMs / is Killed / hits walltime in HPC mode** — S0 already runs as a supervised cluster job, so this is a resource-sizing issue, not a location one. Raise `PMA_RESOURCES_SCALE` via `executor configure-execution --config $CFG --mode slurm --resources-scale N ...`, then `executor submit --config $CFG --executor slurm` again (omit `--target`). (Re-config of the *same* mode preserves the existing user confirmation — no `--confirmed-by-user` needed for a resource-only change.) **In local mode**, an S0 OOM means the machine is too small — switch to HPC (`configure-execution --mode slurm`) and submit. There is no automatic local→cluster retry.
+- **A stage execute fails at runtime** — relay the failure (HPC: read it from one-shot `executor hpc-status --config $CFG`, which renders the daemon's structured findings; local: snakemake stderr). Do not retry silently; root-cause first. If the user insists on retry, re-`executor submit --executor slurm --target <stage>_execute` (HPC) or `executor run --config $CFG --target <stage>_execute` (local only).
 - **Execution-MuAgent reports `submit_rejected_policy`** — the scheduler rejected the job as a policy error (invalid partition, account, or walltime over the site limit). One-shot `executor hpc-status --config $CFG` renders the scheduler's exact message from the daemon's structured findings. Tell the user which field to correct: partition/account via `executor configure-execution --mode <scheduler> ...` (rewrites `site.config`), or walltime by reducing `PMA_RESOURCES_SCALE`. Then `executor submit` again.
 - **Execution-MuAgent reports an environment-preflight error at submit** — provisioning is owned by Execution-MuAgent; `submit` auto-provisions a missing/stale env (policy=auto) but fails loud rather than degrade. Relay the finding verbatim and the fix: `gpu_image_unavailable` → the GPU registry `image_uri` is missing/unreachable (set/fix it; the image is pulled, never built locally); `lock_stale_vs_yaml` → `workflow/envs/processing.yaml` is newer than the lock — run `Processing-MuAgent regenerate-locks` (needs `pip install '.[dev]'`) and commit; `platform_unsupported` → the CPU env is linux-only and this host isn't linux (use a linux host/container); `provision_failed`/`import_failed` → the create/pull or an import failed (relay the stderr tail). On a brand-new machine that was never bootstrapped, run `Execution-MuAgent init-machine --processing-repo <repo>` first.
 - **Per-stage specs not written** — specs are written automatically by `executor plan-review`. If `internal/stage_meta/` is missing or empty, re-run `executor plan-review --config $CFG`. Specs are internal state; do not surface them to the user unless asked.
@@ -421,4 +417,3 @@ These are written to `deliverables/plan/config/hpc.env` by `configure-execution`
 - **Supervision daemon crashes on a site with KillUserProcesses=yes** — when the user's SSH session ends, systemd kills all their processes including the daemon. The cluster job keeps running, but protection is gone. For the current run, tell them to use `supervisor-restart` as soon as they reconnect. Going forward, suggest running `submit` inside a `tmux` or `screen` session on that cluster.
 - **One-shot `hpc-status` shows "review gate awaiting approval" before the pipeline has made any progress** — a stale `awaiting_approval` sentinel from a prior run (or an old head job still writing to it) is blocking progress. It now shows up directly in one-shot status before any real progress. Fix: (1) `squeue -u $USER | grep "pma_head_job_$(basename <run_dir>)"` → `scancel <JOBID>` for each result; (2) `rm internal/proposals/<stage>.awaiting_approval`; (3) re-run `executor submit` and report the next one-shot `hpc-status`.
 - **Tempted to monitor a long-running job yourself** — don't. Rely on the daemon (the sole monitor) and read one-shot `executor hpc-status --config $CFG`; never run a blocking loop or `tail -f | grep`. (Re-polling via a non-blocking scheduled wakeup per the report-and-repoll rule is not a blocking loop and is the sanctioned way to re-check.)
-- **Blank ATAC QC figures ("(no data)") / `qc_explore` log shows `chrom_bound_filter_failed: bgzip not found on PATH`** — an *execution-environment* error, not a scientific one. The cluster child job did not have the project conda env's tools (`bgzip`/`tabix`, which live in `$PMA_CONDA_ENV/bin`) on PATH, so the ATAC fragment chr-renaming + chromosome-bound filter was skipped, the SnapATAC2 import matched zero fragments (Ensembl-named fragments vs UCSC-named reference), and `atac_qc_metrics.parquet` came back empty. **This is fixed structurally:** each generated Snakemake child jobscript is sanitized to self-activate `$PMA_CONDA_ENV` (`executor.hpc.sanitize_snakemake_jobscript` → `inject_conda_activation_text`, invoked by `slurm-submit.sh` / `pbs-submit.sh`), and `htslib` is pinned in `workflow/envs/processing.yaml` for `--use-conda` runs. **Note the default cluster profiles set `use-conda: false`**, so per-rule conda envs are *not* built — protection then depends entirely on the `--conda-env` you configured actually containing `bgzip`/`tabix`. Reading gzipped fragments uses Python's `gzip` (no `bgzip` needed for reads); the BED4→fragments conversion (`executor/io.py`) *requires* `bgzip`/`tabix` and **raises a clear, actionable error** if they are absent — and an empty ATAC import now raises rather than silently emitting a blank figure (it does **not** silently fall back). If you hit it: confirm `configure-execution --conda-env <name>` was set (recorded in `hpc.env` / `site.config`) and that `bgzip`/`tabix` exist in that env (`conda run -n <env> bgzip --version`).
