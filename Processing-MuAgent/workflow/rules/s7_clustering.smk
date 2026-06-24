@@ -20,9 +20,13 @@ rule s7_clustering_execute:
     input:
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
-        rna_neighbors    = str(INTERNAL / "artifacts" / "s6_neighbors" / "rna_neighbors.h5ad"),
+        # Durable S6 marker, not the deletable rna_neighbors.h5ad (read by path in-stage).
+        rna_neighbors    = str(INTERNAL / "artifacts" / "s6_neighbors" / "neighbors_summary.json"),
     output:
-        rna_clustered = str(INTERNAL / "artifacts" / "s7_clustering" / "rna_clustered.h5ad"),
+        # clustering_summary.json is the SOLE declared output + durable stage-done
+        # marker (S7 -> S8 edge). rna_clustered.h5ad and atac_leiden_labels.parquet are
+        # UNTRACKED working files read by S8 by path and removed by `finish-cleanup`.
+        summary = str(INTERNAL / "artifacts" / "s7_clustering" / "clustering_summary.json"),
     params:
         run_dir = str(RUN_DIR),
     threads: RESOURCES["s7_clustering"]["cpus"]

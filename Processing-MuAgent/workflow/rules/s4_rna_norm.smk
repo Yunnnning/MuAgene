@@ -22,7 +22,12 @@ rule s4_rna_norm_execute:
         qc_review_done     = str(INTERNAL / "checkpoints" / "post_qc_review.approved"),
         post_qc_h5mu       = str(QC / f"post_qc_{RUN_DIR.name}.h5mu"),
     output:
-        h5ad = str(INTERNAL / "artifacts" / "s4_rna_norm" / "rna_norm.h5ad"),
+        # norm_summary.json is the SOLE declared output and the durable stage-done
+        # marker (status + the S4 -> S6 dependency edge key off it). rna_norm.h5ad is
+        # written as an UNTRACKED working file: read by S6 by path, removed by
+        # `finish-cleanup` once the processed deliverable exists. Keeping it out of
+        # the declared DAG means deleting it never triggers a "Missing output" re-run.
+        summary = str(INTERNAL / "artifacts" / "s4_rna_norm" / "norm_summary.json"),
     params:
         run_dir = str(RUN_DIR),
     threads: RESOURCES["s4_rna_norm"]["cpus"]

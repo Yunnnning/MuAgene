@@ -1,9 +1,10 @@
 def _s1a_inputs(wildcards):
-    """S1a only runs in branches that have RNA. For atac_only it produces an
-    empty pass-through; the dependency on s0's rna_ingest.h5ad is the only
-    signal we need."""
+    # S1a only runs in branches that have RNA. For atac_only it produces an empty
+    # pass-through. The dependency edge is s0's durable validation_report.json marker
+    # (NOT the deletable raw RNA ingest h5ad, which S1a reads by path and which
+    # _cleanup_qc_intermediates removes at the post_qc gate).
     return {
-        "rna":   str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
+        "rna":   str(INTERNAL / "artifacts" / "s0_ingest" / "validation_report.json"),
         "plan":  str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         "plan_review_done": str(INTERNAL / "checkpoints" / "plan_review.approved"),
         "plan_review_md":   str(PLAN / f"plan_review_{RUN_DIR.name}.md"),
@@ -48,9 +49,13 @@ rule s1a_ambient_propose:
 rule s1a_ambient_execute:
     input:
         plan     = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
-        rna      = str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
+        # Durable S0 marker, not the deletable rna_ingest.h5ad (read by path in-stage).
+        rna      = str(INTERNAL / "artifacts" / "s0_ingest" / "validation_report.json"),
     output:
-        h5ad = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
+        # summary.json is the SOLE declared output + durable stage-done marker (status
+        # + the S1a->S1 edge key off it). rna_decontaminated.h5ad is an UNTRACKED
+        # working file read by S1 by path and removed by _cleanup_qc_intermediates.
+        summary = str(INTERNAL / "artifacts" / "s1a_ambient" / "summary.json"),
     params:
         run_dir = str(RUN_DIR),
     threads: RESOURCES["s1a_ambient"]["cpus"]

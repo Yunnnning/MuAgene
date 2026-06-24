@@ -164,11 +164,10 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
             for p in kept:
                 self.assertTrue(p.exists(), f"Expected {p} to be preserved")
 
-    def test_preserves_s1a_and_s3_outputs(self):
+    def test_preserves_s3_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _init_run(tmp)
             kept = [
-                _touch(paths.artifact("s1a_ambient", "rna_decontaminated.h5ad")),
                 _touch(paths.artifact("s3_doublets", "rna_post_doublet.h5ad")),
                 _touch(paths.artifact("s3_doublets", "atac_post_doublet.h5ad")),
                 _touch(paths.artifact("s3_doublets", "calls.parquet"), b"PAR1\x00PAR1"),
@@ -178,6 +177,43 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
 
             for p in kept:
                 self.assertTrue(p.exists(), f"Expected {p} to be preserved")
+
+    def test_deletes_s0_s1a_heavy_rna_caches(self):
+        """rna_ingest.h5ad (~200 MB), metadata_minimal.tsv, and rna_decontaminated.h5ad
+        (~400 MB) are content-dead once QC is approved (S4+ read the post-QC h5mu)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp)
+            doomed = [
+                _touch(paths.artifact("s0_ingest", "rna_ingest.h5ad")),
+                _touch(paths.artifact("s0_ingest", "metadata_minimal.tsv")),
+                _touch(paths.artifact("s1a_ambient", "rna_decontaminated.h5ad")),
+            ]
+
+            deleted = _cleanup_qc_intermediates(Path(tmp))
+
+            for p in doomed:
+                self.assertFalse(p.exists(), f"Expected {p} to be deleted")
+            for p in doomed:
+                self.assertIn(str(p), deleted)
+
+    def test_preserves_s0_s1a_markers_after_cleanup(self):
+        """The durable markers (s0 validation_report.json, s1a summary.json) must
+        survive — they carry status + the DAG edges. validation_report.json is also
+        read post-gate by S5."""
+        from executor.stage_progress import execute_done
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp)
+            _touch(paths.artifact("s0_ingest", "rna_ingest.h5ad"))
+            _touch(paths.artifact("s1a_ambient", "rna_decontaminated.h5ad"))
+            report = _touch(paths.artifact("s0_ingest", "validation_report.json"), b"{}")
+            summary = _touch(paths.artifact("s1a_ambient", "summary.json"), b"{}")
+
+            _cleanup_qc_intermediates(Path(tmp))
+
+            self.assertTrue(report.exists())
+            self.assertTrue(summary.exists())
+            # s1a stays done off summary.json (its EXECUTE_MARKER) after cleanup.
+            self.assertTrue(execute_done(paths, "s1a_ambient"))
 
     def test_preserves_qc_explore_metric_parquets(self):
         """The per-cell QC metric parquets (under qc_explore/) must survive cleanup
@@ -202,6 +238,49 @@ class CleanupQCIntermediatesTests(unittest.TestCase):
             _init_run(tmp)
             deleted = _cleanup_qc_intermediates(Path(tmp))
             self.assertEqual(deleted, [])
+
+
+class QcCleanupCommandTests(unittest.TestCase):
+    """The standalone `executor qc-cleanup` command: gated on post_qc_review approval,
+    deletes the same set as the approve-time cleanup."""
+
+    def _cfg(self, tmp: str) -> str:
+        paths = _init_run(tmp)
+        cfg = paths.deliv_config / "run.yaml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(yaml.safe_dump({"run_dir": tmp}))
+        return str(cfg)
+
+    def test_refuses_when_not_approved(self):
+        from click.testing import CliRunner
+        from executor.cli import main
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            target = _touch(RunPaths(tmp).artifact("s1a_ambient", "rna_decontaminated.h5ad"))
+            res = CliRunner().invoke(main, ["qc-cleanup", "--config", cfg])
+            self.assertNotEqual(res.exit_code, 0)
+            self.assertIn("not approved", res.output)
+            self.assertTrue(target.exists(), "must not delete while QC unapproved")
+
+    def test_cleans_when_approved(self):
+        from click.testing import CliRunner
+        from executor.cli import main
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            paths = RunPaths(tmp)
+            paths.approved_sentinel("post_qc_review").write_text("")
+            doomed = [
+                _touch(paths.artifact("s0_ingest", "rna_ingest.h5ad")),
+                _touch(paths.artifact("s1a_ambient", "rna_decontaminated.h5ad")),
+            ]
+            kept = _touch(paths.artifact("s1a_ambient", "summary.json"), b"{}")
+
+            res = CliRunner().invoke(main, ["qc-cleanup", "--config", cfg])
+
+            self.assertEqual(res.exit_code, 0, res.output)
+            for p in doomed:
+                self.assertFalse(p.exists())
+            self.assertTrue(kept.exists())
 
 
 class QCMatrixUntrackedTests(unittest.TestCase):
@@ -266,11 +345,31 @@ class QCMatrixUntrackedTests(unittest.TestCase):
             "atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz",
             "atac_snap_explore.h5ad", "atac_snap.h5ad",
             "tsne_coords_cache.parquet", "cell_totals.parquet",
+            # S0/S1a heavy RNA caches now deleted at the gate — must be untracked.
+            "rna_ingest.h5ad", "metadata_minimal.tsv", "rna_decontaminated.h5ad",
         ]
         joined = "\n".join(self._code(p.read_text()) for p in self._RULES.glob("*.smk"))
         for name in names:
             self.assertNotIn(name, joined,
                              f"{name} must not be a declared Snakemake output")
+
+    def test_s0_s1a_edges_use_durable_markers(self):
+        """S1a must depend on s0's validation_report.json (not rna_ingest.h5ad), and
+        S1 on s1a's summary.json (not rna_decontaminated.h5ad) — so deleting those
+        heavy caches at the gate never makes a declared output 'missing'."""
+        s1a = self._code((self._RULES / "s1a_ambient.smk").read_text())
+        self.assertIn("validation_report.json", s1a)
+        self.assertIn("summary.json", s1a)        # s1a's own declared output marker
+        self.assertNotIn("rna_ingest.h5ad", s1a)
+        self.assertNotIn("rna_decontaminated.h5ad", s1a)
+
+        s1 = self._code((self._RULES / "s1_rna_qc.smk").read_text())
+        self.assertIn("s1a_ambient\" / \"summary.json", s1)
+        self.assertNotIn("rna_decontaminated.h5ad", s1)
+
+        s0 = self._code((self._RULES / "s0_ingest.smk").read_text())
+        self.assertNotIn("rna_ingest.h5ad", s0,
+                         "s0 must not declare rna_ingest.h5ad as an output")
 
 
 class S2TempSweepTests(unittest.TestCase):

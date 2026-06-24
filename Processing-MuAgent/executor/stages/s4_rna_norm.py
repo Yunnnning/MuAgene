@@ -35,6 +35,21 @@ def _load_rna_postqc(run_dir: Path):
     )
 
 
+def _write_marker(art: Path, payload: dict[str, Any]) -> None:
+    """Write the durable stage-done marker (norm_summary.json).
+
+    norm_summary.json is the SOLE Snakemake-declared output and the durable
+    stage-done marker (status + the S4 -> S6 dependency edge key off it). The large
+    rna_norm.h5ad is written as an UNTRACKED working file: it is read by path by S6
+    and removed by `finish-cleanup` once the run's processed deliverable exists, so
+    keeping it out of the declared DAG means deleting it never triggers a re-run.
+    Must be the LAST write so marker-exists <=> stage-done.
+    """
+    import json
+    _io.write_text_safe(art / "norm_summary.json",
+                        json.dumps({"stage": "s4_rna_norm", **payload}, indent=2))
+
+
 def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     run_dir = Path(run_dir)
     art = run_dir / "internal" / "artifacts" / "s4_rna_norm"
@@ -47,6 +62,7 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         _io.write_h5ad_safe(ad.AnnData(X=sp.csr_matrix((0, 0))), art / "rna_norm.h5ad")
         log_event(run_dir, {"stage": "s4_rna_norm", "event": "skipped_no_rna",
                             "branch": branch})
+        _write_marker(art, {"branch": branch, "skipped": True, "n_cells": 0})
         return {"n_cells": 0, "branch": branch}
 
     a = _load_rna_postqc(run_dir)
@@ -81,6 +97,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     method={"name": "hvg_cap", "code_ref": "executor/stages/s4_rna_norm.py"})
 
     _io.write_h5ad_safe(a, art / "rna_norm.h5ad")
+    n_hvg = int(a.var["highly_variable"].sum()) if "highly_variable" in a.var else None
     log_event(run_dir, {"stage": "s4_rna_norm", "event": "done",
-                         "n_cells": int(a.n_obs), "n_hvg": int(a.var.get("highly_variable", 0).sum()) if "highly_variable" in a.var else None})
+                         "n_cells": int(a.n_obs), "n_hvg": n_hvg})
+    _write_marker(art, {"branch": branch, "n_cells": int(a.n_obs), "n_hvg": n_hvg})
     return {"n_cells": int(a.n_obs)}

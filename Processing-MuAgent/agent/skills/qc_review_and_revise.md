@@ -187,6 +187,15 @@ When the user approves QC (marker gene check complete or explicitly waived, thre
    executor approve post_qc_review --config $CFG
    ```
 
+   Approving also runs `_cleanup_qc_intermediates`, which deletes the large QC/ingest
+   working caches — including the S0 `rna_ingest.h5ad` and the S1a
+   `rna_decontaminated.h5ad` (see the README QC-cleanup note). These are untracked
+   working files (the durable markers `validation_report.json` / `summary.json` /
+   `qc_summary.json` survive), so no stage re-runs — but the **before/after-ambient
+   marker-gene check must be complete before you approve**, since it reads
+   `rna_decontaminated.h5ad`. (To reclaim this disk later on a run that was approved
+   earlier, run `executor qc-cleanup --config $CFG` — same cleanup, gated on approval.)
+
 2. **Submit `qc_handoff` immediately — do not wait for the user to ask:**
 
    ```bash

@@ -140,7 +140,13 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                         rationale="User-disabled ambient correction; S1a is a pass-through.")
         log_event(run_dir, {"stage": "s1a_ambient", "event": "passthrough",
                             "reason": "method=none"})
-        return {"method": "none", "n_cells": _n_cells(dst)}
+        n = _n_cells(dst)
+        # summary.json is the durable stage-done marker (declared S1a output); it
+        # must be written on every exit path, including pass-through, or status +
+        # the S1a->S1 DAG edge break. rna_decontaminated.h5ad stays untracked.
+        _io.write_text_safe(art / "summary.json", json.dumps(
+            {"method": "none", "n_cells": n, "passthrough": True}, indent=2))
+        return {"method": "none", "n_cells": n}
 
     a = ad.read_h5ad(src)
     if a.n_obs == 0 or a.n_vars == 0:
@@ -150,6 +156,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                         rationale="S0 RNA AnnData is empty (atac_only branch); pass-through.",
                         method={"name": "s1a.passthrough_empty",
                                 "code_ref": "executor/stages/s1a_ambient.py"})
+        _io.write_text_safe(art / "summary.json", json.dumps(
+            {"method": "skipped_empty", "n_cells": 0, "passthrough": True}, indent=2))
         return {"method": "skipped_empty", "n_cells": 0}
 
     # Scratch dir for the SoupX/DecontX backend. It holds only transient working

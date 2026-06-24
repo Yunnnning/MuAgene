@@ -65,14 +65,14 @@ MONITOR_TASKS: dict[str, str] = {
 }
 
 EXECUTE_MARKERS: dict[str, str] = {
-    "s1a_ambient": "rna_decontaminated.h5ad",
+    "s1a_ambient": "summary.json",     # persists after post_qc_review cleanup
     "s1_rna_qc": "qc_summary.json",   # persists after post_qc_review cleanup
     "s2_atac_qc": "qc_summary.json",  # persists after post_qc_review cleanup
     "s3_doublets": "calls.parquet",
-    "s4_rna_norm": "rna_norm.h5ad",
-    "s5_atac_spectral": "spectral_summary.json",
-    "s6_neighbors": "rna_neighbors.h5ad",
-    "s7_clustering": "rna_clustered.h5ad",
+    "s4_rna_norm": "norm_summary.json",          # persists after finish-cleanup
+    "s5_atac_spectral": "spectral_summary.json",  # persists after finish-cleanup
+    "s6_neighbors": "neighbors_summary.json",     # persists after finish-cleanup
+    "s7_clustering": "clustering_summary.json",   # persists after finish-cleanup
     "s8_umap": "s8_done.txt",
 }
 
@@ -148,6 +148,10 @@ def execute_artifact(paths: RunPaths, stage: str) -> Path:
 
 
 def execute_done(paths: RunPaths, stage: str) -> bool:
+    # Keys strictly off the durable marker. A run finished under the pre-marker code
+    # reads S4/S6/S7 as pending until `finish-cleanup` runs — which is the intended
+    # post-S8 action and backfills the markers (then deletes the working files), so the
+    # status self-corrects. No legacy working-file fallback is needed.
     return execute_artifact(paths, stage).exists()
 
 

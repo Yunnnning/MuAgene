@@ -98,6 +98,16 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                 "error": str(e)})
             raise
 
+    # Durable stage-done marker (clustering_summary.json): the SOLE Snakemake-declared
+    # output and the S7 -> S8 dependency edge. rna_clustered.h5ad and
+    # atac_leiden_labels.parquet are UNTRACKED working files read by S8 by path and
+    # removed by `finish-cleanup`. Written LAST so marker-exists <=> stage-done.
+    import json
+    _io.write_text_safe(art / "clustering_summary.json", json.dumps({
+        "stage": "s7_clustering", "branch": branch,
+        "rna_resolution": rna_res if has_rna else None,
+        "atac_resolution": atac_res if has_atac else None,
+    }, indent=2))
     log_event(run_dir, {"stage": "s7_clustering", "event": "done",
                         "rna_resolution": rna_res if has_rna else None,
                         "atac_resolution": atac_res if has_atac else None})

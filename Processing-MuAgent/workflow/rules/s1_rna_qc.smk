@@ -1,7 +1,8 @@
 rule s1_rna_qc_propose:
     input:
         plan              = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
-        rna               = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
+        # Durable S1a marker, not the deletable rna_decontaminated.h5ad (read by path in-stage).
+        rna               = str(INTERNAL / "artifacts" / "s1a_ambient" / "summary.json"),
         plan_review_done  = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         plan_review_md    = str(PLAN / f"plan_review_{RUN_DIR.name}.md"),
     output:
@@ -21,7 +22,8 @@ rule s1_rna_qc_execute:
     input:
         plan              = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done  = str(INTERNAL / "checkpoints" / "plan_review.approved"),
-        rna_decontaminated = str(INTERNAL / "artifacts" / "s1a_ambient" / "rna_decontaminated.h5ad"),
+        # Durable S1a marker, not the deletable rna_decontaminated.h5ad (read by path in-stage).
+        rna_decontaminated = str(INTERNAL / "artifacts" / "s1a_ambient" / "summary.json"),
     output:
         # qc_summary.json is the SOLE declared output and the durable stage-done
         # marker (status, reports, and the s3 dependency edge all key off it).

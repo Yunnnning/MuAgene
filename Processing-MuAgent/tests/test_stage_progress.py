@@ -74,10 +74,10 @@ class StageProgressTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
-            paths.artifact("s1a_ambient", "rna_decontaminated.h5ad").parent.mkdir(
+            paths.artifact("s1a_ambient", "summary.json").parent.mkdir(
                 parents=True, exist_ok=True
             )
-            paths.artifact("s1a_ambient", "rna_decontaminated.h5ad").write_text("")
+            paths.artifact("s1a_ambient", "summary.json").write_text("")
             paths.awaiting_sentinel("post_qc_review").write_text("")
 
             states = _states_by_label(paths)
@@ -93,7 +93,7 @@ class StageProgressTests(unittest.TestCase):
             paths.approved_sentinel("plan_review").write_text("")
             paths.approved_sentinel("post_qc_review").write_text("")
             for stage, marker in (
-                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1a_ambient", "summary.json"),
                 ("s1_rna_qc", "qc_summary.json"),
                 ("s2_atac_qc", "qc_summary.json"),
                 ("s3_doublets", "calls.parquet"),
@@ -123,7 +123,9 @@ class StageProgressTests(unittest.TestCase):
             self.assertEqual(_states_by_label(paths)["handoff"], "done")
 
     def test_s7_clustering_runs_automatically(self):
-        """S7 has no resolution checkpoint: it is done once rna_clustered.h5ad exists."""
+        """S7 has no resolution checkpoint: it is done once its durable marker
+        (clustering_summary.json) exists. The marker survives finish-cleanup, unlike
+        the now-untracked rna_clustered.h5ad working file."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
@@ -132,9 +134,9 @@ class StageProgressTests(unittest.TestCase):
             states = _states_by_label(paths)
             self.assertEqual(states["S7"], "pending")
 
-            clustered = paths.artifact("s7_clustering", "rna_clustered.h5ad")
-            clustered.parent.mkdir(parents=True, exist_ok=True)
-            clustered.write_text("")
+            marker = paths.artifact("s7_clustering", "clustering_summary.json")
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("{}")
             states = _states_by_label(paths)
             self.assertEqual(states["S7"], "done")
             # No resolution_review row exists anymore.
@@ -145,7 +147,7 @@ class StageProgressTests(unittest.TestCase):
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
-                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1a_ambient", "summary.json"),
                 ("s1_rna_qc", "qc_summary.json"),
                 ("s2_atac_qc", "qc_summary.json"),
             ):
@@ -176,7 +178,7 @@ class StageProgressTests(unittest.TestCase):
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
-                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1a_ambient", "summary.json"),
                 ("s1_rna_qc", "qc_summary.json"),
                 ("s2_atac_qc", "qc_summary.json"),
             ):
@@ -197,7 +199,7 @@ class StageProgressTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
-            p = paths.artifact("s1a_ambient", "rna_decontaminated.h5ad")
+            p = paths.artifact("s1a_ambient", "summary.json")
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("")
             _write_cluster_rule_log(
@@ -217,7 +219,7 @@ class StageProgressTests(unittest.TestCase):
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
-                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1a_ambient", "summary.json"),
                 ("s1_rna_qc", "qc_summary.json"),
             ):
                 p = paths.artifact(stage, marker)
@@ -236,7 +238,7 @@ class StageProgressTests(unittest.TestCase):
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
-                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1a_ambient", "summary.json"),
                 ("s1_rna_qc", "qc_summary.json"),
                 ("s2_atac_qc", "qc_summary.json"),
                 ("s3_doublets", "calls.parquet"),
@@ -253,11 +255,11 @@ class StageProgressTests(unittest.TestCase):
             paths.approved_sentinel("plan_review").write_text("")
             paths.approved_sentinel("post_qc_review").write_text("")
             for stage, marker in (
-                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1a_ambient", "summary.json"),
                 ("s1_rna_qc", "qc_summary.json"),
                 ("s2_atac_qc", "qc_summary.json"),
                 ("s3_doublets", "calls.parquet"),
-                ("s4_rna_norm", "rna_norm.h5ad"),
+                ("s4_rna_norm", "norm_summary.json"),
             ):
                 p = paths.artifact(stage, marker)
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -333,7 +335,7 @@ class StageProgressTests(unittest.TestCase):
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
             for stage, marker in (
-                ("s1a_ambient", "rna_decontaminated.h5ad"),
+                ("s1a_ambient", "summary.json"),
                 ("s1_rna_qc", "qc_summary.json"),
                 ("s2_atac_qc", "qc_summary.json"),
             ):
@@ -358,7 +360,7 @@ class StageProgressTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
-            p = paths.artifact("s1a_ambient", "rna_decontaminated.h5ad")
+            p = paths.artifact("s1a_ambient", "summary.json")
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("")
             _write_cluster_rule_log(paths, "s1a_ambient_execute", "slurmstepd: CANCELLED\n")

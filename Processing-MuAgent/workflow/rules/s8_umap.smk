@@ -1,6 +1,7 @@
 rule s8_umap_propose:
     input:
-        rna_clustered = str(INTERNAL / "artifacts" / "s7_clustering" / "rna_clustered.h5ad"),
+        # Durable S7 marker, not the deletable rna_clustered.h5ad.
+        rna_clustered = str(INTERNAL / "artifacts" / "s7_clustering" / "clustering_summary.json"),
     output:
         proposal = str(INTERNAL / "proposals" / "s8_umap.yaml"),
     params:
@@ -29,7 +30,8 @@ rule s8_umap_execute:
     input:
         plan             = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
-        rna_clustered    = str(INTERNAL / "artifacts" / "s7_clustering" / "rna_clustered.h5ad"),
+        # Durable S7 marker, not the deletable rna_clustered.h5ad (read by path in-stage).
+        rna_clustered    = str(INTERNAL / "artifacts" / "s7_clustering" / "clustering_summary.json"),
     output:
         # We always produce a sentinel file; branch-specific outputs are also written.
         sentinel = str(INTERNAL / "artifacts" / "s8_umap" / "s8_done.txt"),

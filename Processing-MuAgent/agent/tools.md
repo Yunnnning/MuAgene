@@ -36,6 +36,26 @@ Write `internal/checkpoints/<gate>.approved`, unblocking downstream Snakemake ru
 `plan_review`, `post_qc_review`. Marker-gene flags: `--defer-marker-genes` / `--skip-marker-genes`.
 Failure: refuses `plan_review` while the marker-gene decision is unresolved.
 
+### executor finish-cleanup
+Delete the large S4–S8 intermediate working files (`rna_norm.h5ad`, `atac_spectral.h5ad` +
+feature/peak sidecars, `rna_neighbors.h5ad`, `rna_clustered.h5ad`, `atac_leiden_labels.parquet`) —
+content-duplicates of the processed deliverable (~0.7 GB/run). **Validates the S8 output first**:
+refuses (and keeps every intermediate) if the branch's processed h5mu/h5ad is missing or empty, so
+a failed run can still resume from an intermediate stage. On success it backfills any missing durable
+markers, so `status` keeps reporting S4–S8 done and `submit --target all` does not re-run them. Run it
+from [`skills/completion_handoff.md`](skills/completion_handoff.md) after confirming outputs. Read-only-safe
+to skip; deletions are not declared Snakemake outputs.
+
+### executor qc-cleanup
+Delete the large QC/ingest working caches of an **already-approved** run (`rna_qc.h5ad`,
+`atac_qc.h5ad`, `atac_snap.h5ad`, S0 `rna_ingest.h5ad` + `metadata_minimal.tsv`, S1a
+`rna_decontaminated.h5ad`, S1a recompute caches; fragment caches only when
+`retain_for_integration: false`). Same cleanup `approve post_qc_review` runs
+automatically — exposed standalone to reclaim disk on a run approved earlier (e.g. to
+apply an expanded cleanup set retroactively). **Refuses unless `post_qc_review` is
+approved.** Durable markers (`validation_report.json`, `summary.json`, `qc_summary.json`)
+survive, so nothing re-runs; deliverables untouched.
+
 ### executor revise
 Change a planned/QC parameter: `revise <stage> <key>=<value> [--rationale STR]`. Mutates:
 `parameters.yaml` (adds `revision_of`) and **deletes** the revised stage's downstream

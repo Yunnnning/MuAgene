@@ -39,8 +39,12 @@ rule s0_ingest_execute:
     input:
         context = str(INTERNAL / "artifacts" / "p1_context" / "context_extraction.json"),
     output:
+        # validation_report.json is the durable S0 done-marker (also read post-gate by
+        # S5). rna_ingest.h5ad and metadata_minimal.tsv are written as UNTRACKED working
+        # files: read by S1a by path during the planning phase, then removed by
+        # _cleanup_qc_intermediates at post_qc_review approval. Keeping them out of the
+        # declared DAG means deleting them never triggers an S0 re-run.
         report  = str(INTERNAL / "artifacts" / "s0_ingest" / "validation_report.json"),
-        rna_h5  = str(INTERNAL / "artifacts" / "s0_ingest" / "rna_ingest.h5ad"),
         plan    = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
         explore = str(INTERNAL / "artifacts" / "qc_explore" / "qc_explore.json"),
     params:

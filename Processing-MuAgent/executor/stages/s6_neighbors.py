@@ -155,6 +155,15 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             except Exception:
                 pass
 
+    # Durable stage-done marker (neighbors_summary.json): the SOLE Snakemake-declared
+    # output and the S6 -> S7 dependency edge. rna_neighbors.h5ad is an UNTRACKED
+    # working file read by S7 by path and removed by `finish-cleanup`. Written LAST so
+    # marker-exists <=> stage-done.
+    import json
+    _io.write_text_safe(art / "neighbors_summary.json", json.dumps({
+        "stage": "s6_neighbors", "branch": branch,
+        "n_pcs": n_pcs, "n_neighbors": n_neighbors,
+    }, indent=2))
     log_event(run_dir, {"stage": "s6_neighbors", "event": "done",
                         "n_pcs": n_pcs, "n_neighbors": n_neighbors, "branch": branch})
     return {"n_pcs": n_pcs, "n_neighbors": n_neighbors, "branch": branch}

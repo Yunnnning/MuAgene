@@ -5,7 +5,7 @@ purpose: After manifest, validate outputs, surface results + the Integration han
 activation: manifest stage complete (finish batch done)
 inputs: [deliverables/results/run_manifest.json, deliverables/qc/post_qc_manifest.json]
 outputs: []
-calls_tools: [status]
+calls_tools: [status, finish-cleanup]
 reads_contracts: [run_manifest, post_qc_manifest]
 writes_state: []
 handoff: { next: STOP, when: outputs surfaced, on_error: troubleshooting }
@@ -20,7 +20,17 @@ and stop.
 
 1. Read `deliverables/results/run_manifest.json`; extract `workflow_branch` and `outputs`.
    Confirm each listed output path exists.
-2. Point the user at:
+2. **Reclaim disk — `executor finish-cleanup --config <run.yaml>`.** Only after step 1
+   confirms the processed deliverable exists and is valid. This deletes the large S4–S8
+   intermediate working files (`rna_norm.h5ad`, `atac_spectral.h5ad` + feature/peak
+   sidecars, `rna_neighbors.h5ad`, `rna_clustered.h5ad`, `atac_leiden_labels.parquet`,
+   ~0.7 GB/run) — content-duplicates of the processed deliverable. The command
+   re-validates the S8 output and **refuses if it is missing/empty**, leaving every
+   intermediate in place so the run can resume from an intermediate stage. Durable
+   per-stage markers (`*_summary.json`, `s8_done.txt`) and all deliverables are kept,
+   so `executor status` still shows S4–S8 done and `submit --target all` won't re-run
+   them. Do NOT run this if any output failed validation — keep the intermediates.
+3. Point the user at:
    - the processed data + `run_manifest.json` under `deliverables/results/`,
    - the review notebook `review_processed_<run>.ipynb` (load + inspect + re-cluster at a
      custom resolution),
@@ -28,7 +38,7 @@ and stop.
    - the QC summary `deliverables/qc/qc_review_<run>.md`,
    - the **Integration handoff bundle** under `deliverables/qc/`:
      `post_qc_manifest.json` (`muagene.post_qc_handoff/1`) + `post_qc_<run>.h5mu`.
-3. One-line sign-off, then **stop**:
+4. One-line sign-off, then **stop**:
    > Run complete. Outputs at `deliverables/results/`. I stop here — integration, annotation,
    > marker discovery, and GRN are out of scope (different subagents).
 
