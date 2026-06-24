@@ -34,7 +34,10 @@ re-renders. Mutates: plan artifacts, `deliverables/plan/plan_review_<run>.md` + 
 ### executor approve
 Write `internal/checkpoints/<gate>.approved`, unblocking downstream Snakemake rules. Gates:
 `plan_review`, `post_qc_review`. Marker-gene flags: `--defer-marker-genes` / `--skip-marker-genes`.
-Failure: refuses `plan_review` while the marker-gene decision is unresolved.
+On `post_qc_review`, also runs `_cleanup_qc_intermediates` (large QC caches). Does **not** run
+`qc_handoff` itself — submit/run `--target qc_handoff` immediately after approval (see
+[`skills/qc_review_and_revise.md`](skills/qc_review_and_revise.md)). Failure: refuses
+`plan_review` while the marker-gene decision is unresolved.
 
 ### executor finish-cleanup
 Delete the large S4–S8 intermediate working files (`rna_norm.h5ad`, `atac_spectral.h5ad` +
@@ -61,16 +64,25 @@ Change a planned/QC parameter: `revise <stage> <key>=<value> [--rationale STR]`.
 `parameters.yaml` (adds `revision_of`) and **deletes** the revised stage's downstream
 artifacts so they re-run. At `post_qc_review` this is destructive — diagnose the binding
 constraint and confirm first ([`skills/qc_review_and_revise.md`](skills/qc_review_and_revise.md)).
+Also clears `post_qc_review.approved` (so a previously-approved gate re-arms) and, on
+RNA-carrying branches when the QC h5ads are absent (post-cleanup reprocess), additionally
+deletes the S1/S1a durable markers so those stages re-run rather than being skipped.
 Idempotent: re-revising to the same value is a no-op.
 
 ### executor run
 Local-only Snakemake. Refuses to launch until `execution.user_confirmed=true`; refuses cluster
-modes (that's `submit`). Mutates: stage artifacts + checkpoints as the DAG advances.
+modes (that's `submit`). Mutates: stage artifacts + checkpoints as the DAG advances. After
+`post_qc_review` approval, run `--target qc_handoff` before the finish batch — it writes
+`deliverables/qc/post_qc_<run>.h5mu`, `deliverables/qc/peaks_<run>.bed` (ATAC branches), and
+`deliverables/qc/post_qc_manifest.json`.
 
 ### executor submit
 Cluster-only. Hands the head-job spec to **Execution-MuAgent** (which submits + supervises);
-source `hpc.env` first. Refuses until `execution.user_confirmed=true`. Mutates: `stage_meta/head_job.yaml`,
-starts the supervision daemon. After it returns, follow [`skills/hpc_monitoring.md`](skills/hpc_monitoring.md).
+source `hpc.env` first. Refuses until `execution.user_confirmed=true`. Mutates: refreshes every
+per-stage `stage_meta/<stage>.yaml` from the current code + `PMA_RESOURCES_SCALE` (and prunes
+orphan specs from renamed/branch-dropped stages) so the monitor always verifies the stages that
+will actually run, writes `stage_meta/head_job.yaml`, and starts the supervision daemon. After it
+returns, follow [`skills/hpc_monitoring.md`](skills/hpc_monitoring.md).
 
 ### executor status
 Per-stage state report (awaiting / running / approved / complete). **Read-only.**

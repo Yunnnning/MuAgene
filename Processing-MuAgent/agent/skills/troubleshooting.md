@@ -35,6 +35,13 @@ meanings + recovery actions are in [`../../../contracts/findings.yaml`](../../..
   but no cell survived both modalities' QC + doublet removal (usually QC too aggressive).
   Ask the user to revise S1/S2 thresholds (`executor revise s1_rna_qc …` / `s2_atac_qc …`).
   If pairing used `pairing.translation_table`, check it covers the QC-surviving cells.
+- **Re-processing a previously-approved run (rna_ingest.h5ad was cleaned)** — not an error.
+  `rna_ingest.h5ad` is a deletable S0 *cache* the post-QC cleanup removes; S1a reconstructs it
+  deterministically from the original input via `io.load_rna_ingest` (logged
+  `rna_ingest_reconstructed`), so re-processing needs **no S0 re-run**. Just reset the downstream
+  artifacts you want regenerated, `revise` the threshold (which auto-refreshes the previews +
+  plan files), and resubmit. (Only the truly missing case — `rna_ingest.h5ad` absent **and**
+  run.yaml has no `rna_path` — raises, asking you to re-run S0.)
 
 ## Context / execution-mode gates
 
@@ -63,6 +70,11 @@ meanings + recovery actions are in [`../../../contracts/findings.yaml`](../../..
   stderr). Root-cause first; don't retry silently. On user insistence, re-`executor submit
   --executor slurm --target <stage>_execute` (HPC) or `executor run --target <stage>_execute`
   (local).
+- **S2 fails with `H5Fcreate(): unable to lock file, errno = 11`** — stale `atac_snap.h5ad`
+  from a previously-killed run holds an HDF5 POSIX lock; SnapATAC2 cannot recreate it.
+  Fix: `rm internal/artifacts/s2_atac_qc/atac_snap.h5ad` (untracked; safe to delete),
+  then `executor submit`. The code now auto-deletes this file at stage start (so this
+  only arises on an older code version). Also clear any `snapatac2_tmp/` temp subdirs.
 - **`submit_rejected_policy`** — scheduler rejected the job (invalid partition/account, or
   walltime over site limit). One-shot `hpc-status` shows the scheduler's exact message. Fix
   the field: partition/account via `executor configure-execution --mode <scheduler> …`

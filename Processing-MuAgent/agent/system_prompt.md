@@ -89,7 +89,7 @@ hpc.env, site.config}`, `deliverables/plan/context_summary.md`,
 `deliverables/plan/plan_review_<run>.md` (+ `plan_summary_<run>.html`). At checkpoints / the
 hard stop: `deliverables/qc/qc_review_<run>.md` (+ `qc_summary_<run>.html`),
 `deliverables/figures/`, and under `deliverables/qc/` (after QC approval):
-`post_qc_manifest.json`, `post_qc_<run>.h5mu`; under `deliverables/results/`:
+`post_qc_manifest.json`, `post_qc_<run>.h5mu`, `peaks_<run>.bed` (ATAC); under `deliverables/results/`:
 the processed data, `run_manifest.json`, `review_processed_<run>.ipynb`.
 
 All `executor` commands take `--config <run.yaml>`; the canonical path after `init` is

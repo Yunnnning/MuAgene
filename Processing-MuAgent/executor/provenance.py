@@ -106,6 +106,11 @@ def current_branch(params_path: Path | str, default: str = "paired") -> str:
     return default
 
 
+def branch_has_atac(branch: str) -> bool:
+    """True when the workflow branch includes an ATAC modality."""
+    return branch in ("paired", "separate", "atac_only")
+
+
 def get_value(path: Path | str, key: str, default: Any = None) -> Any:
     params = load(path)
     if key in params:

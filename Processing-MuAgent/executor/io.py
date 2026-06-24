@@ -330,6 +330,39 @@ def call_cells_from_raw(adata: ad.AnnData, *, min_counts_floor: int = 100) -> tu
     return adata[keep].copy(), diag
 
 
+def load_rna_ingest(
+    rna_path: Path | str,
+    *,
+    fmt: str | None = None,
+    filtered_status: str | None = None,
+) -> tuple["ad.AnnData", "ad.AnnData | None", dict[str, Any] | None]:
+    """Single source of truth for the RNA matrix S0 caches as ``rna_ingest.h5ad``.
+
+    Pure load — no QC filtering beyond the (deterministic) barcode-rank knee cell
+    calling that a *raw* input requires. Returns ``(rna, raw_full, diag)``:
+      - ``rna``       — the (cell-called, if the input was raw) matrix, with a ``counts``
+                        layer = a copy of ``X``. This is exactly what ``rna_ingest.h5ad`` holds.
+      - ``raw_full``  — the pre-cell-call matrix when the input was raw (used by SoupX),
+                        else ``None``.
+      - ``diag``      — cell-calling diagnostics when the input was raw, else ``None``.
+
+    Because cell calling is deterministic, this reproduces ``rna_ingest.h5ad`` byte-for-cell
+    from the original input — so S1a can reconstruct it after the post-QC cleanup deletes the
+    cached h5ad, and S0 + S1a never diverge on what "ingested RNA" means.
+    """
+    fmt = fmt or detect_rna_format(rna_path)
+    if filtered_status is None:
+        filtered_status = detect_filtered_status(rna_path, fmt=fmt)
+    loaded = load_rna(rna_path, fmt=fmt)
+    if filtered_status == "raw":
+        rna, diag = call_cells_from_raw(loaded)
+        raw_full: "ad.AnnData | None" = loaded
+    else:
+        rna, raw_full, diag = loaded, None, None
+    rna.layers["counts"] = rna.X.copy()
+    return rna, raw_full, diag
+
+
 # ---------------------------------------------------------------------------
 # ATAC format detection and BED4 → fragments.tsv.gz conversion
 # ---------------------------------------------------------------------------

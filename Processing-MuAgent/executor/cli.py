@@ -138,9 +138,11 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
       - atac_snap.h5ad — the pre-filter SnapATAC2 import.
       - atac_snap_explore.h5ad — the qc_explore ATAC import (reused by S2 during
         QC, no longer needed once QC is approved).
-      - rna_ingest.h5ad / metadata_minimal.tsv — the S0 raw RNA ingest (~200 MB) and
-        the unused reconstructed metadata TSV. rna_ingest.h5ad is consumed only by S1a
-        (read by path); metadata_minimal.tsv has no reader. Dead once QC is approved.
+      - rna_ingest.h5ad / metadata_minimal.tsv — the S0 RNA ingest (~200 MB) and the
+        unused reconstructed metadata TSV. rna_ingest.h5ad is consumed only by S1a (read
+        by path) and is a deterministic function of the original input, so it is a pure
+        cache: if a re-process needs it again, S1a reconstructs it via io.load_rna_ingest
+        (no S0 re-run). metadata_minimal.tsv has no reader. Safe to delete.
       - rna_decontaminated.h5ad — the S1a ambient-corrected RNA (~400 MB), consumed
         only by S1 (read by path). Dead once QC is approved (S4 reads the post-QC h5mu).
       - atac_fragments_cbf[_chrnorm].tsv.gz (+ .tbi) — the chr-normalised fragment
@@ -157,10 +159,12 @@ def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
     QC-metrics record, consumed by the QC-review summary), and all S3+ artifacts so
     downstream stages are unaffected. Deleting an already-absent file is a no-op.
 
-    Trade-off: deleting rna_ingest.h5ad / rna_decontaminated.h5ad means a *post-approval*
-    QC `revise` of S1a/S1 can no longer re-run from these caches (they are gone and not
-    a tracked input, so Snakemake will not regenerate them). Revising QC thresholds is a
-    pre-approval activity; once the gate is approved, QC is committed.
+    Re-processing note: a *post-approval* re-process (re-revise QC thresholds and re-run)
+    works without an S0 re-run — S1a reconstructs rna_ingest.h5ad from the original input
+    via io.load_rna_ingest, and rna_decontaminated.h5ad regenerates when S1a re-runs. With
+    `retain_for_integration` (default true) the fragment caches also survive, so S2 re-runs
+    too. Only the previews (figures/plan/qc_explore.json) regenerate from the retained
+    *_qc_metrics.parquet (a `revise` does this automatically).
     """
     rp = RunPaths(run_dir)
     # Untracked QC working matrices + the S0/S1a heavy RNA caches (DAG edges are the
@@ -367,6 +371,10 @@ _QC_INVALIDATION: dict[str, list[tuple[str, str]]] = {
 }
 
 
+_S3_TRIGGERING_STAGES = frozenset({"s1_rna_qc", "s2_atac_qc", "s3_doublets"})
+_RNA_BRANCHES = frozenset({"paired", "separate", "rna_only"})
+
+
 def _qc_downstream_targets(run_dir: Path, stage: str) -> list[Path]:
     """The artifacts a revise of `stage` invalidates (whether or not they exist).
 
@@ -375,6 +383,14 @@ def _qc_downstream_targets(run_dir: Path, stage: str) -> list[Path]:
     awaiting_approval sentinel, qc_review_<run>.md, qc_summary_<run>.html). The
     gate outputs are always included: while they exist Snakemake reports "Nothing
     to be done" and silently skips the re-run even though upstream was invalidated.
+
+    Also clears `post_qc_review.approved` when it exists — in the reprocess case
+    (gate was previously approved) the sentinel must be deleted or Snakemake skips
+    the QC review pause entirely and runs straight to S4-S8.
+
+    When the revised stage triggers S3 and a post-cleanup reprocess is detected
+    (rna_qc.h5ad absent on an RNA-carrying branch), the S1/S1a durable markers are
+    added so Snakemake re-runs those stages rather than assuming they are done.
 
     Pure — computes paths only, deletes nothing (so `revise --dry-run` can preview
     exactly what `revise` would remove).
@@ -386,11 +402,20 @@ def _qc_downstream_targets(run_dir: Path, stage: str) -> list[Path]:
     targets += [
         rp.proposal("post_qc_review"),
         rp.awaiting_sentinel("post_qc_review"),
+        rp.approved_sentinel("post_qc_review"),
         rp.qc_review_summary_md,
         rp.qc_summary_html,
         rp.post_qc_h5mu,
         rp.post_qc_manifest_json,
+        rp.post_qc_peaks_bed,
     ]
+    if stage in _S3_TRIGGERING_STAGES:
+        branch = provenance.current_branch(rp.parameters_yaml)
+        if branch in _RNA_BRANCHES:
+            if not rp.artifact("s1_rna_qc", "rna_qc.h5ad").exists():
+                targets.append(rp.artifact("s1_rna_qc", "qc_summary.json"))
+            if not rp.artifact("s1a_ambient", "rna_decontaminated.h5ad").exists():
+                targets.append(rp.artifact("s1a_ambient", "summary.json"))
     return targets
 
 
@@ -415,13 +440,24 @@ def _echo_binding_constraint(paths: RunPaths, stage: str) -> None:
     if stage not in ("s1_rna_qc", "s2_atac_qc"):
         return
     import json as _json
-    qexp = paths.artifact("qc_explore", "qc_explore.json")
-    if not qexp.exists():
-        return
+    # Prefer LIVE effective thresholds (current parameters.yaml overlay) over the
+    # frozen qc_explore.json snapshot — the snapshot is only refreshed at S0 /
+    # plan-review, so it lags a post-QC revise (e.g. would show the old pct_mt
+    # ceiling). Fall back to the snapshot only when the metrics parquet is absent.
+    th = None
     try:
-        th = (_json.loads(qexp.read_text()).get(stage) or {}).get("thresholds")
+        from executor import qc_explore as _qe
+        th = _qe.effective_thresholds(paths.run_dir, stage)
     except Exception:
-        return
+        th = None
+    if not th:
+        qexp = paths.artifact("qc_explore", "qc_explore.json")
+        if not qexp.exists():
+            return
+        try:
+            th = (_json.loads(qexp.read_text()).get(stage) or {}).get("thresholds")
+        except Exception:
+            return
     if th:
         click.echo(f"  binding-constraint check ({stage}) — current thresholds "
                    "(compare MAD-derived vs floor/ceiling to see which is active):")
@@ -979,6 +1015,24 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str, dry_run:
             f"Approve {_display_stage(stage)} (and s3_doublets if S1/S2 changed), then submit."
         )
 
+    # Refresh the param-derived preview layer (S0 *_data_explore figures + qc_explore.json)
+    # AND re-render the plan deliverables so both track the revise at the QC-review gate too
+    # — the same regeneration the plan_review gate runs. _regenerate_plan_deliverables
+    # overlays parameters.yaml on the (still-frozen) preprocessing_plan.json, so the plan
+    # files never go stale vs the live overrides; the regenerated qc_review_<run>.md remains
+    # the authoritative applied-thresholds record. Cheap: reads the persisted
+    # *_qc_metrics.parquet (which survive the post-QC cleanup), no heavy reload. This does
+    # NOT re-arm the plan_review gate (it calls the renderers, not the plan-review command).
+    regenerated = _regenerate_plan_deliverables(run_dir)
+    if regenerated:
+        log_event(run_dir, {"stage": stage, "event": "deliverables_regenerated_post_qc",
+                            "regenerated": regenerated})
+        click.echo(
+            "Refreshed the S0 QC-exploration preview + plan deliverables to reflect this "
+            f"revise (overlay): {', '.join(regenerated)}. The regenerated qc_review_<run>.md "
+            "remains the authoritative applied-thresholds record."
+        )
+
 
 def _stage_states(paths: RunPaths) -> list[tuple[str, str]]:
     return _sp.stage_states(paths)
@@ -1365,7 +1419,11 @@ def unlock_cmd(config_path: str) -> None:
             "Refusing to unlock while a local Snakemake process references this workdir:\n"
             f"{detail}"
         )
-    _unlock_snakemake(run_dir, Path(config_path))
+    # Pass the resolved canonical config (absolute) — snakemake --unlock runs with
+    # --directory internal/snakemake, so a relative --config would not resolve there
+    # (submit uses paths.run_yaml for the same reason). Keeps `unlock --config <rel>`
+    # consistent with every other subcommand.
+    _unlock_snakemake(run_dir, paths.run_yaml)
     click.echo(f"Unlocked {paths.snakemake_workdir}")
 
 
@@ -1730,6 +1788,16 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
             f"site.config not found at {paths.site_config}. "
             "Run `Processing-MuAgent configure-execution --mode slurm ...` first."
         )
+
+    # Regenerate per-stage specs from the CURRENT code + resources before submitting,
+    # so Execution-MuAgent's monitor always verifies the stages that will actually run.
+    # Per-stage specs are otherwise only written at plan-review time; a resubmit after
+    # a code change (e.g. a renamed stage, or a different PMA_RESOURCES_SCALE) would
+    # otherwise run against stale specs. Best-effort — never block submission on this.
+    try:
+        _specs.write_stage_specs(run_dir, provenance.current_branch(str(paths.parameters_yaml)))
+    except Exception:
+        pass
 
     # Write the head-job spec so Execution-MuAgent can render + submit it.
     head_spec_path = _specs.write_head_job_spec(run_dir, resolved_target)

@@ -37,7 +37,9 @@ and stop.
    - the UMAP figures in `deliverables/figures/`,
    - the QC summary `deliverables/qc/qc_review_<run>.md`,
    - the **Integration handoff bundle** under `deliverables/qc/`:
-     `post_qc_manifest.json` (`muagene.post_qc_handoff/1`) + `post_qc_<run>.h5mu`.
+     `deliverables/qc/post_qc_manifest.json` (`muagene.post_qc_handoff/1`) +
+     `deliverables/qc/post_qc_<run>.h5mu` +
+     `deliverables/qc/peaks_<run>.bed` (ATAC branches with a peak set).
 4. One-line sign-off, then **stop**:
    > Run complete. Outputs at `deliverables/results/`. I stop here — integration, annotation,
    > marker discovery, and GRN are out of scope (different subagents).

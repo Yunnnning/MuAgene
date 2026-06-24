@@ -117,6 +117,33 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     s0_art = run_dir / "internal" / "artifacts" / "s0_ingest"
     dst = art / "rna_decontaminated.h5ad"
 
+    # rna_ingest.h5ad is a deletable S0 *cache* — the post-QC cleanup removes it (S0's
+    # DAG edge is its durable marker validation_report.json, which survives). It is a
+    # deterministic function of the original input, so if it is absent (e.g. re-processing
+    # a previously-approved run whose cache was cleaned) reconstruct it via the SSOT
+    # io.load_rna_ingest and write it back — no full S0 re-run needed.
+    if not src.exists():
+        from ..run_paths import RunPaths
+        import yaml as _yaml
+        cfg = _yaml.safe_load(RunPaths(run_dir).run_yaml.read_text()) or {}
+        rna_path = cfg.get("rna_path")
+        if not rna_path:
+            raise FileNotFoundError(
+                f"s1a_ambient: S0 RNA ingest is missing at {src} and run.yaml has no "
+                "`rna_path` to reconstruct it from. Re-run S0 ingest."
+            )
+        fmt = _prov.get_value(str(params_path), "ingest.rna_format", None)
+        filtered_status = _prov.get_value(str(params_path), "ingest.rna_filtered_status", None)
+        rebuilt, _raw, _diag = _io.load_rna_ingest(
+            rna_path, fmt=fmt, filtered_status=filtered_status)
+        src.parent.mkdir(parents=True, exist_ok=True)
+        _io.write_h5ad_safe(rebuilt, src)
+        log_event(run_dir, {"stage": "s1a_ambient", "event": "rna_ingest_reconstructed",
+                            "rna_path": str(rna_path),
+                            "note": ("rna_ingest.h5ad was absent (post-QC cleanup); rebuilt "
+                                     "deterministically from the original input via "
+                                     "io.load_rna_ingest — no S0 re-run")})
+
     p = plan["stages"].get("s1a_ambient", {}).get("parameters", {})
     method_choice = p.get("method", {}).get("value", "auto")
     max_contam = float(p.get("max_contamination", {}).get("value", 1.0))

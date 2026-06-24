@@ -15,6 +15,7 @@ from pathlib import Path
 
 from executor.cli import _invalidate_qc_downstream
 from executor.run_paths import RunPaths
+from executor import provenance
 
 
 class QcInvalidationTests(unittest.TestCase):
@@ -47,7 +48,7 @@ class QcInvalidationTests(unittest.TestCase):
                    rp.artifact("s3_doublets", "overlap_summary.json")],
             "gate": [rp.proposal("post_qc_review"), rp.awaiting_sentinel("post_qc_review"),
                      rp.qc_review_summary_md, rp.qc_summary_html,
-                     rp.post_qc_h5mu, rp.post_qc_manifest_json],
+                     rp.post_qc_h5mu, rp.post_qc_manifest_json, rp.post_qc_peaks_bed],
         }
         for group in files.values():
             for p in group:
@@ -84,6 +85,76 @@ class QcInvalidationTests(unittest.TestCase):
     def test_missing_files_noop_no_error(self):
         # Nothing created — must not raise, returns [].
         self.assertEqual(_invalidate_qc_downstream(self.run_dir, "s2_atac_qc"), [])
+
+    def test_approved_sentinel_deleted_on_revise(self):
+        # Gap 1: post_qc_review.approved must be cleared so the gate re-arms.
+        rp = self.paths
+        sentinel = rp.approved_sentinel("post_qc_review")
+        self._touch(sentinel)
+        self.assertTrue(sentinel.exists())
+        _invalidate_qc_downstream(self.run_dir, "s2_atac_qc")
+        self.assertFalse(sentinel.exists(), "post_qc_review.approved must be deleted on revise")
+
+    def _set_branch(self, branch: str) -> None:
+        """Write the workflow_branch into parameters.yaml so provenance.current_branch returns it."""
+        params = self.paths.parameters_yaml
+        provenance.set_param(
+            str(params), "plan.workflow_branch", branch,
+            source="user", confidence="high", rationale="test fixture",
+        )
+
+    def test_post_cleanup_reprocess_paired_adds_s1_s1a_markers(self):
+        # Gap 2: when rna_qc.h5ad is absent (qc-cleanup ran) on a paired branch,
+        # revising s2_atac_qc must also delete S1/S1a durable markers so they re-run.
+        rp = self.paths
+        self._set_branch("paired")
+        # Create S1/S1a durable markers (qc_summary.json / summary.json) but NOT the h5ads.
+        s1_marker = rp.artifact("s1_rna_qc", "qc_summary.json")
+        s1a_marker = rp.artifact("s1a_ambient", "summary.json")
+        self._touch(s1_marker)
+        self._touch(s1a_marker)
+        # rna_qc.h5ad and rna_decontaminated.h5ad are absent (simulating post-cleanup).
+        self.assertFalse(rp.artifact("s1_rna_qc", "rna_qc.h5ad").exists())
+        self.assertFalse(rp.artifact("s1a_ambient", "rna_decontaminated.h5ad").exists())
+        _invalidate_qc_downstream(self.run_dir, "s2_atac_qc")
+        self.assertFalse(s1_marker.exists(),
+                         "S1 qc_summary.json must be deleted when rna_qc.h5ad is absent")
+        self.assertFalse(s1a_marker.exists(),
+                         "S1a summary.json must be deleted when rna_decontaminated.h5ad is absent")
+
+    def test_post_cleanup_reprocess_h5ad_present_keeps_s1_markers(self):
+        # Gap 2: when rna_qc.h5ad IS present (normal mid-run case), S1 markers are untouched.
+        rp = self.paths
+        self._set_branch("paired")
+        self._touch(rp.artifact("s1_rna_qc", "rna_qc.h5ad"))
+        self._touch(rp.artifact("s1a_ambient", "rna_decontaminated.h5ad"))
+        s1_marker = rp.artifact("s1_rna_qc", "qc_summary.json")
+        s1a_marker = rp.artifact("s1a_ambient", "summary.json")
+        self._touch(s1_marker)
+        self._touch(s1a_marker)
+        _invalidate_qc_downstream(self.run_dir, "s2_atac_qc")
+        # S1 marker is already in the s2_atac_qc invalidation set? No — S2 revision
+        # only deletes S2+S3+gate, not S1. So the marker must still exist.
+        self.assertTrue(s1_marker.exists(),
+                        "S1 qc_summary.json must NOT be deleted when rna_qc.h5ad is present")
+        self.assertTrue(s1a_marker.exists(),
+                        "S1a summary.json must NOT be deleted when rna_decontaminated.h5ad is present")
+
+    def test_post_cleanup_reprocess_atac_only_skips_s1_s1a(self):
+        # Gap 2 branch-awareness: atac_only has no RNA chain; S1/S1a markers must be untouched.
+        rp = self.paths
+        self._set_branch("atac_only")
+        # Create S1/S1a markers even though they would not normally exist on atac_only.
+        s1_marker = rp.artifact("s1_rna_qc", "qc_summary.json")
+        s1a_marker = rp.artifact("s1a_ambient", "summary.json")
+        self._touch(s1_marker)
+        self._touch(s1a_marker)
+        # h5ads absent (as in post-cleanup), but branch is atac_only so no RNA chain.
+        _invalidate_qc_downstream(self.run_dir, "s2_atac_qc")
+        self.assertTrue(s1_marker.exists(),
+                        "S1 marker must not be touched on atac_only branch")
+        self.assertTrue(s1a_marker.exists(),
+                        "S1a marker must not be touched on atac_only branch")
 
 
 if __name__ == "__main__":

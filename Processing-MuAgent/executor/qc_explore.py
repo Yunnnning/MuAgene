@@ -567,6 +567,71 @@ def rederive_from_metrics(run_dir: Path | str) -> Path:
     return out_path
 
 
+def effective_thresholds(run_dir: Path | str, stage: str) -> dict[str, Any] | None:
+    """Live QC thresholds for ``stage`` from the persisted per-cell metrics and the
+    EFFECTIVE (override-overlaid) params — computed with the same ``_qct`` SSOT
+    functions S1/S2 apply.
+
+    Read-only and cheap: loads only the metrics parquet, draws no figures, writes no
+    files. Used by the ``revise`` binding-constraint preview so it reflects the current
+    ``parameters.yaml`` overlay rather than the frozen ``qc_explore.json`` snapshot
+    (which is only refreshed at S0 / plan-review and therefore lags a post-QC revise).
+    Returns ``None`` when the stage's metrics parquet is absent.
+    """
+    import pandas as pd
+
+    run_dir = Path(run_dir)
+    paths = RunPaths(run_dir)
+    art = paths.stage_dir("qc_explore")
+    plan_path = paths.preprocessing_plan
+    plan = json.loads(plan_path.read_text()) if plan_path.exists() else {}
+
+    if stage == "s1_rna_qc":
+        pq = art / RNA_METRICS_PARQUET
+        if not pq.exists():
+            return None
+        obs = pd.read_parquet(pq)
+        params = _effective_stage_params(run_dir, plan, "s1_rna_qc")
+        th = _qct.rna_thresholds(
+            obs,
+            total_counts_k_mad=_pval(params, "total_counts_k_mad", DEFAULT_TOTAL_COUNTS_K_MAD),
+            n_genes_k_mad=_pval(params, "n_genes_k_mad", DEFAULT_N_GENES_K_MAD),
+            pct_mt_k=_pval(params, "pct_mt_k", DEFAULT_PCT_MT_K),
+            pct_mt_ceiling=_pval(params, "pct_mt_ceiling", DEFAULT_PCT_MT_CEILING),
+            pct_mt_floor=_pval(params, "pct_mt_floor", DEFAULT_PCT_MT_FLOOR),
+            min_counts_floor=_pval(params, "min_counts_floor", DEFAULT_MIN_COUNTS_FLOOR),
+            min_genes_floor=float(_pval(params, "min_genes_floor", DEFAULT_MIN_GENES_FLOOR)),
+            total_counts_min_override=_pval(params, "total_counts_min_override", None),
+            total_counts_max_override=_pval(params, "total_counts_max_override", None),
+            n_genes_min_override=_pval(params, "n_genes_min_override", None),
+            n_genes_max_override=_pval(params, "n_genes_max_override", None),
+            pct_counts_mt_max_override=_pval(params, "pct_counts_mt_max_override", None),
+        )
+        return {**th, "pct_counts_ribo_max": float(_pval(params, "pct_ribo_max", DEFAULT_PCT_RIBO_MAX))}
+
+    if stage == "s2_atac_qc":
+        pq = art / ATAC_METRICS_PARQUET
+        if not pq.exists():
+            return None
+        m = pd.read_parquet(pq)
+        params = _effective_stage_params(run_dir, plan, "s2_atac_qc")
+        lo, hi, lo_raw, (lo_d, hi_d) = _qct.atac_n_fragment_bounds(
+            m["n_fragment"].to_numpy(),
+            k_mad=_pval(params, "n_fragments_k_mad", DEFAULT_N_FRAG_K_MAD),
+            n_frag_floor=_pval(params, "n_fragments_floor", DEFAULT_N_FRAG_FLOOR),
+            n_fragments_min_override=_pval(params, "n_fragments_min_override", None),
+            n_fragments_max_override=_pval(params, "n_fragments_max_override", None),
+        )
+        return {
+            "n_fragments_min": lo, "n_fragments_max": hi, "n_fragments_mad_lo_raw": lo_raw,
+            "tss_enrichment_min": float(_pval(params, "tss_enrichment_min", DEFAULT_TSS_MIN)),
+            "tss_enrichment_max": float(_pval(params, "tss_enrichment_max", DEFAULT_TSS_MAX)),
+            "nucleosome_signal_max": float(_pval(params, "nucleosome_signal_max", DEFAULT_NUC_MAX)),
+            "frip_min": float(_pval(params, "frip_min", _D["s2_atac_qc"]["frip_min"])),
+        }
+    return None
+
+
 def run(run_dir: Path | str, *, rna_adata=None) -> Path:
     """Run QC exploration. The merged S0 job passes its already-loaded RNA matrix
     via ``rna_adata`` so no reload happens. When called standalone (e.g. the

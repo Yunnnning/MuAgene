@@ -16,6 +16,7 @@ Top-level layout (direct-write; external inputs referenced via symlinks):
           qc_review_<run>.md
           qc_summary_<run>.html
           post_qc_<run>.h5mu         (after QC approval; all branches)
+          peaks_<run>.bed            (after QC approval; ATAC branches with a peak set)
           post_qc_manifest.json
         results/                    final deliverables (data + manifest; no figures)
           review_processed_<run>.{ipynb,py}
@@ -239,6 +240,32 @@ class RunPaths:
             self.deliv_qc / "post_qc_manifest.json",
             self.deliv_results / "post_qc_manifest.json",
         )
+
+    @property
+    def post_qc_peaks_bed(self) -> Path:
+        """Per-sample peaks BED in the QC integration bundle (moved/copied by qc_handoff)."""
+        return self.deliv_qc / f"peaks_{self.run_dir.name}.bed"
+
+    def resolve_post_qc_peaks_bed(self) -> Path | None:
+        """Canonical post-QC peaks BED for S5 / Integration (legacy fallbacks included)."""
+        if self.post_qc_peaks_bed.is_file():
+            return self.post_qc_peaks_bed
+        man = self.post_qc_manifest_json
+        if man.is_file():
+            try:
+                import json
+                rel = (json.loads(man.read_text()).get("atac") or {}).get("peaks_bed")
+                if rel:
+                    p = self.run_dir / rel
+                    if p.is_file():
+                        return p
+            except Exception:
+                pass
+        for name in ("peaks_macs3.bed", "peaks_arc.bed"):
+            p = self.artifact("s2_atac_qc", name)
+            if p.is_file():
+                return p
+        return None
 
     @property
     def qc_summary_pre_dimred_md(self) -> Path:

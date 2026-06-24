@@ -11,6 +11,7 @@ Peak acquisition for FRiP uses the same priority order as S5 feature export:
   1. Cell Ranger ARC pre-called peaks (single_file_multiome) → peak intervals
      extracted from the ARC h5 and written as peaks_arc.bed
   2. MACS3 called on 3-metric-filtered cells → peaks_macs3.bed
+     (moved to deliverables/qc/peaks_<run>.bed by qc_handoff)
 
 When no peak source is available (all tiers fail), FRiP filtering is skipped
 and S2 proceeds with the 3-metric-filtered cell set. S5 reuses the BED files
@@ -287,6 +288,10 @@ def _import_atac_fresh(run_dir: Path, art: Path, params_path: Path):
     whitelist = atac_meta.get("cell_barcode_whitelist")
     h5_out = art / "atac_snap.h5ad"
     snap_tmp = art / "snapatac2_tmp"
+    # Remove any stale h5ad from a previously-killed run. SnapATAC2 opens in create mode
+    # (H5F_ACC_TRUNC) and cannot acquire the HDF5 POSIX lock on an existing file.
+    if h5_out.exists():
+        h5_out.unlink()
     snap_tmp.mkdir(exist_ok=True)
     adata = snap.pp.import_fragments(
         fragments_path,

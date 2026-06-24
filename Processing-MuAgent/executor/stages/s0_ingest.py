@@ -63,14 +63,18 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
                         method={"name": "io.detect_filtered_status",
                                 "code_ref": "executor/io.py::detect_filtered_status"})
 
-        loaded = _io.load_rna(rna_input_path, fmt=rna_fmt)
         if rna_fmt == "10x_h5":
             single_file_multiome = _io.detect_peaks_in_10x_h5(rna_input_path)
 
-        if rna_filtered_status == "raw":
-            # Cell-call from the raw matrix via barcode-rank knee.
-            rna_raw_full = loaded
-            rna, cell_calling_diag = _io.call_cells_from_raw(loaded)
+        # Ingest the RNA matrix via the shared SSOT: load -> (raw input) deterministic
+        # barcode-rank knee cell-calling -> add a `counts` layer. S1a reconstructs
+        # rna_ingest.h5ad with the identical call after the post-QC cleanup deletes it,
+        # so the two stages never diverge on what "ingested RNA" means.
+        rna, rna_raw_full, cell_calling_diag = _io.load_rna_ingest(
+            rna_input_path, fmt=rna_fmt, filtered_status=rna_filtered_status)
+
+        if cell_calling_diag is not None:
+            # Raw matrix → record the barcode-rank knee cell-calling provenance.
             _prov.set_param(params_path, "ingest.cell_calling_method",
                             cell_calling_diag.get("method", "unknown"),
                             source="derived", confidence="high",
@@ -91,18 +95,16 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
                             rationale="Cells retained after barcode-rank knee call.",
                             method={"name": "io.call_cells_from_raw",
                                     "code_ref": "executor/io.py::call_cells_from_raw"})
-        else:
-            rna = loaded
-            # Optional companion raw matrix (filtered + raw both supplied):
-            # used downstream by SoupX for soup-profile estimation.
-            if rna_raw_path is not None:
-                raw_fmt = _io.detect_rna_format(rna_raw_path)
-                rna_raw_full = _io.load_rna(rna_raw_path, fmt=raw_fmt)
-                _prov.set_param(params_path, "ingest.rna_raw_format", raw_fmt,
-                                source="derived", confidence="high",
-                                rationale=f"Autodetected from {rna_raw_path}",
-                                method={"name": "io.detect_rna_format",
-                                        "code_ref": "executor/io.py::detect_rna_format"})
+        elif rna_raw_path is not None:
+            # Filtered input + optional companion raw matrix (filtered + raw both
+            # supplied): used downstream by SoupX for soup-profile estimation.
+            raw_fmt = _io.detect_rna_format(rna_raw_path)
+            rna_raw_full = _io.load_rna(rna_raw_path, fmt=raw_fmt)
+            _prov.set_param(params_path, "ingest.rna_raw_format", raw_fmt,
+                            source="derived", confidence="high",
+                            rationale=f"Autodetected from {rna_raw_path}",
+                            method={"name": "io.detect_rna_format",
+                                    "code_ref": "executor/io.py::detect_rna_format"})
 
         # Integer-counts guard. seurat_v3 HVG (S4) and Scrublet (S3) require
         # raw integer counts. Refuse early if X is already normalized.
@@ -478,10 +480,10 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     if rna is not None:
         # No pre-intersection at S0 — modality-specific QC (S1/S2) runs on each
         # modality's full barcode set. For the paired branch, S3 enforces the
-        # joint barcode intersection after doublet removal.
-        rna_ingest = rna.copy()
-        rna_ingest.layers["counts"] = rna_ingest.X.copy()
-        _io.write_h5ad_safe(rna_ingest, rna_out)
+        # joint barcode intersection after doublet removal. The `counts` layer was
+        # already added by io.load_rna_ingest (the SSOT), so write `rna` directly —
+        # this is a deletable cache (S1a reconstructs it via io.load_rna_ingest).
+        _io.write_h5ad_safe(rna, rna_out)
     else:
         import scipy.sparse as sp
         import anndata as _ad

@@ -128,7 +128,10 @@ class QcHandoffTests(unittest.TestCase):
             self.assertEqual(man["n_cells"]["atac"], 6)
             self.assertIsNotNone(man["n_cells"]["atac"])
             self.assertEqual(man["atac"]["peaks_bed"],
-                             "internal/artifacts/s2_atac_qc/peaks_macs3.bed")
+                             f"deliverables/qc/peaks_{paths.run_dir.name}.bed")
+            self.assertEqual(man["atac"]["peaks_source"], "macs3")
+            self.assertFalse(peaks.exists(), "internal peaks must be moved to deliverables/qc/")
+            self.assertTrue(paths.post_qc_peaks_bed.exists())
             self.assertEqual(man["atac"]["fragments_prepared"],
                              "internal/artifacts/s2_atac_qc/atac_fragments_cbf_chrnorm.tsv.gz")
             self.assertTrue(man["atac"]["add_chr_prefix"])
@@ -228,6 +231,33 @@ class QcHandoffTests(unittest.TestCase):
         outs = " ".join(specs._STAGE_IO["s3_doublets"]["outputs"].values())
         self.assertIn("calls.parquet", outs)
         self.assertNotIn("post_doublet", outs)
+
+    def test_migrate_peaks_bundle_from_internal(self):
+        """Legacy runs: migrate moves internal peaks + patches manifest without h5mu rewrite."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _init_run(tmp, branch="paired")
+            peaks = paths.artifact("s2_atac_qc", "peaks_arc.bed")
+            peaks.parent.mkdir(parents=True, exist_ok=True)
+            peaks.write_text("chr1\t0\t100\n")
+            man = {
+                "schema": "muagene.post_qc_handoff/1",
+                "handoff_contract_version": "1.0.0",
+                "modality_branch": "paired",
+                "atac": {"peaks_bed": "internal/artifacts/s2_atac_qc/peaks_arc.bed",
+                         "fragments_prepared": None, "add_chr_prefix": False,
+                         "frag_chrom_convention": "ucsc"},
+            }
+            paths.deliv_qc.mkdir(parents=True, exist_ok=True)
+            paths.post_qc_manifest_json.write_text(json.dumps(man))
+            from executor.stages import qc_handoff
+            result = qc_handoff.migrate_peaks_bundle(paths.run_dir)
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(peaks.exists())
+            self.assertTrue(paths.post_qc_peaks_bed.exists())
+            updated = json.loads(paths.post_qc_manifest_json.read_text())
+            self.assertEqual(updated["atac"]["peaks_bed"],
+                             f"deliverables/qc/peaks_{paths.run_dir.name}.bed")
+            self.assertEqual(updated["atac"]["peaks_source"], "arc")
 
     def test_raises_when_branch_expects_atac_but_missing(self):
         """Loud failure: a paired run with RNA but an empty ATAC placeholder must

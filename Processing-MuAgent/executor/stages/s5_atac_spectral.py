@@ -17,7 +17,7 @@ S5 performs two independent operations:
         0. User-supplied peaks (atac_peaks_path in run.yaml)
         1. Cell Ranger ARC pre-called peaks (single_file_multiome shortcut)
         2. Peaks pre-called by S2 ATAC QC for FRiP computation
-           (s2_atac_qc/peaks_macs3.bed or peaks_arc.bed)
+           (deliverables/qc/peaks_<run>.bed after qc_handoff; legacy internal fallback)
       If all peak sources are absent or fail, S5 falls back to the verified
       tile matrix that fed the spectral step. Only if that also fails does S5
       emit no feature matrix and let S8 surface a latent-only ATAC AnnData.
@@ -291,19 +291,28 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
             log_event(run_dir, {"stage": "s5_atac_spectral",
                                  "event": "arc_peak_path_skipped", "reason": str(e)})
 
-    # ---- Priority 2: peaks pre-called by S2 ATAC QC --------------------
-    # S2 calls MACS3 (or uses user/ARC peaks) to compute FRiP and writes the
-    # peak BED to its artifacts directory. Reuse those coordinates here so
-    # S5 never needs to call MACS3 independently; the peak set is identical
-    # regardless of whether the cell set is pre- or post-doublet-removal.
+    # ---- Priority 2: post-QC peaks BED (deliverables/qc/ or legacy internal) ----
+    # S2 calls MACS3 (or uses user/ARC peaks) for FRiP; qc_handoff moves the BED into
+    # deliverables/qc/peaks_<run>.bed. Reuse those coordinates here so S5 never needs
+    # to call MACS3 independently; the peak set is identical regardless of whether the
+    # cell set is pre- or post-doublet-removal.
     if peak_X is None:
-        s2_art = run_dir / "internal" / "artifacts" / "s2_atac_qc"
-        for s2_candidate, src_label in [
-            (s2_art / "peaks_macs3.bed", "s2_peaks_macs3"),
-            (s2_art / "peaks_arc.bed",   "s2_peaks_arc"),
-        ]:
-            if not s2_candidate.exists():
-                continue
+        from ..run_paths import RunPaths as _RunPaths
+        s2_candidate = _RunPaths(run_dir).resolve_post_qc_peaks_bed()
+        if s2_candidate is not None:
+            ps = _prov.get_value(str(params_path), "s2_atac_qc.peak_source", "")
+            if "macs3" in s2_candidate.name:
+                src_label = "s2_peaks_macs3"
+            elif "arc" in s2_candidate.name:
+                src_label = "s2_peaks_arc"
+            elif ps == "user_peaks":
+                src_label = "user_peaks"
+            elif ps == "arc_h5":
+                src_label = "s2_peaks_arc"
+            elif ps == "macs3":
+                src_label = "s2_peaks_macs3"
+            else:
+                src_label = "s2_peaks_macs3"
             try:
                 peak_h5 = art / "peak_matrix_s2peaks.h5ad"
                 if peak_h5.exists():
@@ -358,7 +367,6 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                     peak_ad.close()
                 except Exception:
                     pass
-                break
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as e:  # incl. SnapATAC2 Rust PanicException

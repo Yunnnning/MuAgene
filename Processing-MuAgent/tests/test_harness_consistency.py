@@ -81,7 +81,8 @@ def _representative_manifest() -> dict:
         "genome_assembly": "GRCh38",
         "post_qc_h5mu": "deliverables/qc/post_qc_sampleA.h5mu",
         "atac": {
-            "peaks_bed": "internal/artifacts/s2_atac_qc/peaks_macs3.bed",
+            "peaks_bed": "deliverables/qc/peaks_sampleA.bed",
+            "peaks_source": "macs3",
             "fragments_prepared": "internal/artifacts/s2_atac_qc/atac_fragments_cbf.tsv.gz",
             "add_chr_prefix": True,
             "frag_chrom_convention": "ucsc",

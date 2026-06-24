@@ -46,7 +46,10 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
     },
     "s1a_ambient": {
         "inputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s0_ingest/rna_ingest.h5ad",
+            # The real DAG edge is S0's durable marker; rna_ingest.h5ad is a deletable
+            # cache S1a reconstructs via io.load_rna_ingest when absent, so it is not the
+            # dependency the monitor should key off.
+            "s0_marker": "{run_dir}/internal/artifacts/s0_ingest/validation_report.json",
         },
         "outputs": {
             "rna_h5ad": "{run_dir}/internal/artifacts/s1a_ambient/rna_decontaminated.h5ad",
@@ -128,6 +131,10 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "post_qc_h5mu": "{run_dir}/deliverables/qc/post_qc_{run}.h5mu",
             "post_qc_manifest": "{run_dir}/deliverables/qc/post_qc_manifest.json",
         },
+        # Merged into outputs on ATAC-bearing branches only (matches qc_handoff.smk).
+        "outputs_atac": {
+            "peaks_bed": "{run_dir}/deliverables/qc/peaks_{run}.bed",
+        },
     },
 }
 
@@ -181,10 +188,16 @@ def build_stage_spec(
     resources: dict[str, int],
     runtime_min: int,
     progress_timeout_hint: int,
+    branch: str,
 ) -> dict[str, Any]:
     """Build a spec dict for one stage."""
+    from . import provenance
+
     run_dir_s = str(Path(run_dir).resolve())
     io = _STAGE_IO.get(stage, {"inputs": {}, "outputs": {}})
+    outputs = dict(io.get("outputs", {}))
+    if provenance.branch_has_atac(branch):
+        outputs.update(io.get("outputs_atac", {}))
     return {
         "schema_version": "1",
         "stage": stage,
@@ -194,8 +207,8 @@ def build_stage_spec(
             "mem_mb": resources["mem_mb"],
             "walltime_min": runtime_min,
         },
-        "inputs":  _resolve_io(io["inputs"],  run_dir_s),
-        "outputs": _resolve_io(io["outputs"], run_dir_s),
+        "inputs":  _resolve_io(io.get("inputs", {}),  run_dir_s),
+        "outputs": _resolve_io(outputs, run_dir_s),
         "progress_timeout_hint": progress_timeout_hint,
     }
 
@@ -228,10 +241,21 @@ def write_stage_specs(run_dir: Path | str, branch: str) -> list[Path]:
             resources=resources[stage],
             runtime_min=runtime[stage],
             progress_timeout_hint=timeout_hint.get(stage, 20),
+            branch=branch,
         )
         out = paths.stage_meta(stage)
         out.write_text(yaml.safe_dump(spec, default_flow_style=False, sort_keys=False))
         written.append(out)
+    # Prune orphan per-stage specs: any <stage>.yaml not part of the current branch
+    # (left behind by a renamed stage — e.g. s_handoff -> qc_handoff — or a branch
+    # change) would otherwise be read by Execution-MuAgent's per-stage output
+    # verification, causing a stage to go unverified or be checked against stale
+    # paths. head_job.yaml is written separately by write_head_job_spec and is always
+    # preserved.
+    keep = {p.name for p in written} | {"head_job.yaml"}
+    for p in paths.stage_meta_dir.glob("*.yaml"):
+        if p.name not in keep:
+            p.unlink()
     return written
 
 
@@ -254,9 +278,18 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
     # `*_execute` targets resolve to a known output set; `*_propose` / `all`
     # (multi-stage phases) leave outputs empty — those phases already have per-stage
     # specs that cover verification, so the head-job stays a pure orchestrator there.
+    from . import provenance
+    branch = provenance.current_branch(str(paths.parameters_yaml))
+
     stage_stem = target.removesuffix("_execute")
-    io = _STAGE_IO.get(stage_stem) if stage_stem != target else None
-    outputs = _resolve_io(io["outputs"], str(run_dir_path)) if io else {}
+    if stage_stem != target:
+        io = _STAGE_IO.get(stage_stem, {"inputs": {}, "outputs": {}})
+        outputs_tpl = dict(io.get("outputs", {}))
+        if provenance.branch_has_atac(branch):
+            outputs_tpl.update(io.get("outputs_atac", {}))
+        outputs = _resolve_io(outputs_tpl, str(run_dir_path))
+    else:
+        outputs = {}
 
     # GPU preflight gating: tell Execution whether this run's stages actually include a
     # GPU-capable one (single source = _GPU_CAPABLE in resources.smk). execute-spec skips
@@ -269,8 +302,6 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
     if stage_stem != target:
         target_stages = {stage_stem}
     else:
-        from . import provenance
-        branch = provenance.current_branch(str(paths.parameters_yaml))
         target_stages = set(_BRANCH_STAGES.get(branch, _BRANCH_STAGES["paired"]))
     gpu_stages_present = bool(gpu_capable & target_stages)
 

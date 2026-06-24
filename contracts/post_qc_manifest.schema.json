@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "muagene.post_qc_handoff/1",
   "title": "post_qc_manifest.json",
-  "description": "Per-sample post-QC handoff bundle manifest. Emitter: Processing-MuAgent executor/stages/qc_handoff.py -> deliverables/qc/post_qc_manifest.json. Points at the un-normalized post-QC .h5mu plus the retained ATAC peaks BED + prepared fragments a downstream consumer needs for a consensus re-count.",
+  "description": "Per-sample post-QC handoff bundle manifest. Emitter: Processing-MuAgent executor/stages/qc_handoff.py -> deliverables/qc/post_qc_manifest.json. Points at the un-normalized post-QC .h5mu, deliverables/qc/peaks_<run>.bed, and prepared fragments a downstream consumer needs for a consensus re-count.",
   "type": "object",
   "required": [
     "schema",
@@ -35,7 +35,14 @@
       "required": ["peaks_bed", "fragments_prepared", "add_chr_prefix", "frag_chrom_convention"],
       "additionalProperties": true,
       "properties": {
-        "peaks_bed": { "type": ["string", "null"] },
+        "peaks_bed": {
+          "type": ["string", "null"],
+          "description": "Run-dir-relative path to deliverables/qc/peaks_<run>.bed (per-sample peaks moved from S2 or copied from atac_peaks_path at handoff)."
+        },
+        "peaks_source": {
+          "enum": ["macs3", "arc", "user_peaks", null],
+          "description": "How the per-sample peak set was obtained."
+        },
         "fragments_prepared": { "type": ["string", "null"] },
         "add_chr_prefix": { "type": ["boolean", "null"] },
         "frag_chrom_convention": { "enum": ["ucsc", null] }

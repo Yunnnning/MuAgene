@@ -1,18 +1,17 @@
 """qc_handoff — per-sample post-QC handoff bundle for Integration-MuAgent.
 
 Emitted after post_qc_review approval (the split point between Preprocessing and
-Integration). Writes two deliverables under deliverables/qc/:
+Integration). Writes deliverables under deliverables/qc/:
 
   post_qc_<run>.h5mu      — MuData{rna?, atac?} of POST-QC, POST-doublet cells,
                             UN-normalized (raw counts in rna.layers['counts']).
-                            Integration does HVG/normalize with a batch_key, so the
-                            handoff must NOT be pre-normalized. On single-modality
-                            branches only the present mod is written.
+  peaks_<run>.bed         — per-sample peak coordinates (moved from S2 internal
+                            artifacts, or copied from atac_peaks_path when user-supplied).
   post_qc_manifest.json   — the cross-package handoff contract (schema
                             muagene.post_qc_handoff/1, versioned by
                             HANDOFF_CONTRACT_VERSION): modality branch, genome,
-                            per-mod cell counts, and pointers to the RETAINED peaks
-                            BED + prepared ATAC fragments.
+                            per-mod cell counts, and pointers to peaks BED +
+                            prepared ATAC fragments.
 
 ATAC encoding: S3 writes atac_post_doublet.h5ad with SnapATAC2's native, Blosc-
 compressed writer, which plain anndata cannot decode without the HDF5 Blosc filter
@@ -30,14 +29,15 @@ Independently buildable (`run --target qc_handoff`); depends only on the durable
 marker (calls.parquet) + the gate, never on S4–S8 — but it is now UPSTREAM of S4/S5,
 which read the h5mu it writes. As its last step it DELETES the redundant internal
 post-doublet h5ads (the h5mu is the canonical post-QC store); only the durable S3
-markers (calls.parquet, joint_barcodes, overlap_summary) + peaks + fragments remain.
-When S4–S8 move to Integration-MuAgent this becomes Preprocessing's terminus. NOT a
-localrule — on HPC it runs as a SLURM job (the ATAC materialisation is too heavy for
-the login/head node).
+markers (calls.parquet, joint_barcodes, overlap_summary) + prepared fragments remain;
+the peaks BED lives under deliverables/qc/. When S4–S8 move to Integration-MuAgent
+this becomes Preprocessing's terminus. NOT a localrule — on HPC it runs as a SLURM job
+(the ATAC materialisation is too heavy for the login/head node).
 """
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,102 @@ def _find_first(paths: RunPaths, stages: tuple[str, ...], names: tuple[str, ...]
             if p.exists():
                 return p
     return None
+
+
+def _peaks_source_label(name: str) -> str:
+    if "macs3" in name:
+        return "macs3"
+    if "arc" in name:
+        return "arc"
+    return "unknown"
+
+
+def _user_peaks_path(paths: RunPaths) -> Path | None:
+    """External user-supplied peaks BED from run.yaml (atac_peaks_path)."""
+    try:
+        import yaml
+        cfg = yaml.safe_load(paths.run_yaml.read_text()) or {}
+        raw = cfg.get("atac_peaks_path")
+        if raw:
+            p = Path(str(raw))
+            if p.is_file():
+                return p
+    except Exception:
+        pass
+    return None
+
+
+def _relocate_peaks_to_qc(paths: RunPaths, *, has_atac: bool) -> tuple[Path | None, str | None]:
+    """Move S2 peaks into deliverables/qc/, or copy user-supplied peaks there.
+
+    Returns (canonical_path, peaks_source) where peaks_source is macs3|arc|user_peaks.
+    Idempotent: an existing canonical file is kept when internal sources are gone.
+    """
+    if not has_atac:
+        return None, None
+
+    dst = paths.post_qc_peaks_bed
+    src = _find_first(paths, ("s2_atac_qc",), _PEAK_NAMES)
+    if src is not None and src.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            dst.unlink()
+        src.rename(dst)
+        return dst, _peaks_source_label(src.name)
+
+    if dst.is_file():
+        params_path = str(paths.parameters_yaml)
+        peak_source = _prov.get_value(params_path, "s2_atac_qc.peak_source", None)
+        if peak_source in ("macs3", "arc", "user_peaks"):
+            return dst, peak_source
+        return dst, None
+
+    user = _user_peaks_path(paths)
+    if user is not None:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(user, dst)
+        return dst, "user_peaks"
+
+    return None, None
+
+
+def migrate_peaks_bundle(run_dir: Path | str) -> dict[str, Any]:
+    """Relocate peaks into deliverables/qc/ and patch an existing post_qc_manifest.
+
+    For runs that completed qc_handoff before peaks lived under deliverables/qc/.
+    Does not rewrite the h5mu or touch post-doublet h5ads.
+    """
+    paths = RunPaths(Path(run_dir))
+    run_dir = paths.run_dir
+    man_path = paths.post_qc_manifest_json
+    if not man_path.is_file():
+        return {"status": "skipped", "reason": "no post_qc_manifest.json"}
+
+    manifest = json.loads(man_path.read_text())
+    branch = manifest.get("modality_branch") or _prov.get_value(
+        str(paths.parameters_yaml), "plan.workflow_branch", "paired")
+    has_atac = _prov.branch_has_atac(branch)
+    peaks_bed, peaks_source = _relocate_peaks_to_qc(paths, has_atac=has_atac)
+
+    def rel(p: Path | None) -> str | None:
+        if p is None:
+            return None
+        try:
+            return str(Path(p).relative_to(run_dir))
+        except ValueError:
+            return str(p)
+
+    atac = dict(manifest.get("atac") or {})
+    atac["peaks_bed"] = rel(peaks_bed)
+    if peaks_source:
+        atac["peaks_source"] = peaks_source
+    manifest["atac"] = atac
+    manifest["handoff_contract_version"] = HANDOFF_CONTRACT_VERSION
+    man_path.write_text(json.dumps(manifest, indent=2, default=str))
+
+    log_event(run_dir, {"stage": "qc_handoff", "event": "peaks_migrated",
+                        "peaks_bed": rel(peaks_bed), "peaks_source": peaks_source})
+    return {"status": "ok", "peaks_bed": rel(peaks_bed), "peaks_source": peaks_source}
 
 
 def _load_rna_mod(path: Path):
@@ -135,7 +231,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
 
     s3 = "s3_doublets"
     has_rna = workflow_branch in ("paired", "separate", "rna_only")
-    has_atac = workflow_branch in ("paired", "separate", "atac_only")
+    has_atac = _prov.branch_has_atac(workflow_branch)
 
     rna = _load_rna_mod(paths.artifact(s3, "rna_post_doublet.h5ad")) if has_rna else None
     atac = _load_atac_mod(paths.artifact(s3, "atac_post_doublet.h5ad")) if has_atac else None
@@ -178,7 +274,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
 
     # Retained ATAC artifacts the consensus re-count needs (kept past the gate via
     # retain_for_integration). May be None on RNA-only runs.
-    peaks_bed = _find_first(paths, ("s2_atac_qc",), _PEAK_NAMES)
+    peaks_bed, peaks_source = _relocate_peaks_to_qc(paths, has_atac=has_atac)
     fragments = _find_first(paths, ("qc_explore", "s2_atac_qc"), _FRAG_NAMES)
     add_chr_prefix = _prov.get_value(params_path, "s2_atac_qc.add_chr_prefix", None)
     genome_assembly = _prov.get_value(params_path, "ingest.genome_assembly", None)
@@ -211,6 +307,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             # prepare_fragments_for_snapatac always emits UCSC-named fragments
             # (SnapATAC2 requirement), regardless of the source convention.
             "frag_chrom_convention": "ucsc" if fragments is not None else None,
+            **({"peaks_source": peaks_source} if peaks_source else {}),
         },
         "n_cells": n_cells,
         "parameters_ref": rel(paths.parameters_yaml),
@@ -236,6 +333,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
 
     log_event(run_dir, {"stage": "qc_handoff", "event": "handoff_written",
                         "h5mu": rel(h5mu_path), "n_cells": n_cells,
+                        "peaks_bed": rel(peaks_bed), "peaks_source": peaks_source,
                         "deleted_post_doublet_h5ads": deleted})
     return {
         "post_qc_h5mu": rel(h5mu_path),
@@ -244,3 +342,14 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         "n_cells": n_cells,
         "deleted_post_doublet_h5ads": deleted,
     }
+
+
+def run_snakemake_job(run_dir: Path | str, plan_path: Path | str) -> dict[str, Any]:
+    """Snakemake `run:` entrypoint — load plan, run handoff, finalize cluster exit."""
+    from ..cluster_exit import finalize_cluster_exit
+
+    plan = json.loads(Path(plan_path).read_text())
+    branch = _prov.current_branch(str(RunPaths(run_dir).parameters_yaml))
+    result = run(run_dir, plan, workflow_branch=branch)
+    finalize_cluster_exit()
+    return result
