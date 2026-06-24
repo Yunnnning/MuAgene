@@ -26,6 +26,12 @@ The happy path is linear (top to bottom). `hpc_monitoring` and `troubleshooting`
 **cross-cutting** — enter them from any compute stage and return to the row matching the
 new state. **After every gate approval, re-run `executor status` and re-enter this router.**
 
+**QC threshold revision is gate-scoped, not its own row.** Before `plan_review` is approved,
+a "change the thresholds" request is handled inside [`plan_confirm.md`](plan_confirm.md)
+(non-destructive there — it just re-renders the plan). [`qc_review_and_revise.md`](qc_review_and_revise.md)
+is entered **only** when `post_qc_review` is `awaiting_approval`; it owns the post-run gate and
+is the canonical reference for the revise keys both gates link to.
+
 ## Skill frontmatter contract
 
 Every skill opens with this YAML block — its machine-readable contract. Read the
@@ -53,6 +59,7 @@ handoff: { next: <skill|STOP>, when: <advance condition>, on_error: troubleshoot
 | QC default values / fixed Leiden resolutions | `executor/defaults.py` |
 | Finding codes, state-file lifecycle, handoff schemas | [`../../../contracts/`](../../../contracts/) |
 | Marker-gene "never invent genes" rule | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
+| QC revise reference (keys, `*_override`, skip recipes, binding-constraint diagnosis) — used at both gates | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
 | Report-and-repoll monitoring rule | [`hpc_monitoring.md`](hpc_monitoring.md) |
 | Execution-mode intake heuristics (file-size → scale) | [`inputs_intake.md`](inputs_intake.md) |
 | Error → remedy scenarios | [`troubleshooting.md`](troubleshooting.md) |

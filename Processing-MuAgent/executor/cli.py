@@ -1284,7 +1284,7 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
     Also writes per-stage job spec YAMLs to internal/specs/ so Execution-MuAgent
     can read science intent, resource hints, and progress_timeout_hint per stage.
 
-    This command is a *renderer*: it requires the planning compute (P1 → S0 → P2)
+    This command is a *renderer*: it requires the planning compute (P1 → S0)
     to have finished and produced preprocessing_plan.json. Calling it before that
     would emit placeholder deliverables and a false awaiting_approval signal.
     """
@@ -1691,7 +1691,7 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
     This is the ONLY cluster-execution path: Processing-MuAgent prepares the
     head-job spec + site.config and Execution-MuAgent owns submission and
     monitoring (kill-on-hang, hpc-status). The planning phase targets
-    ``plan_review_propose`` (auto-inferred), which pulls P1 → S0 → P2 as
+    ``plan_review_propose`` (auto-inferred), which pulls P1 → S0 as
     Snakemake dependencies and arms the gate at the end of a single head-job.
 
     Execution-MuAgent is a hard dependency for cluster submission — it renders the

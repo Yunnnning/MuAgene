@@ -1,4 +1,4 @@
-"""User-facing plan review: concise summary built from P1 context + S0 ingest + P2 plan."""
+"""User-facing plan review: concise summary built from P1 context + S0 ingest (which assembles the plan)."""
 from __future__ import annotations
 
 import json

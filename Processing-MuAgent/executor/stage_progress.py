@@ -430,8 +430,9 @@ def infer_resume_target(run_dir: Path | str) -> str:
     paths = RunPaths(run_dir)
 
     # Planning phase terminus = plan_review_propose (pulls P1 → s0_ingest_execute
-    # → P2 as dependencies). When S0 has not run, Snakemake resolves the full
-    # chain. When S0 is done but the gate is unarmed, only the cheap localrule
+    # as a dependency; S0 assembles the plan in-process). When S0 has not run,
+    # Snakemake resolves the full chain. When S0 is done but the gate is unarmed,
+    # only the cheap localrule
     # runs. Matches the established QC pattern.
     if not paths.approved_sentinel("plan_review").exists():
         return "plan_review_propose"

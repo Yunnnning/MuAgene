@@ -272,7 +272,7 @@ class StageProgressTests(unittest.TestCase):
     def test_infer_resume_targets_planning_first(self):
         """A fresh run (no planning artifacts) targets plan_review_propose.
         Snakemake pulls s0_ingest_execute in as a dependency, so the whole
-        planning phase (P1 → S0 → P2 → gate) runs in a single head-job."""
+        planning phase (P1 → S0 → gate) runs in a single head-job."""
         with tempfile.TemporaryDirectory() as tmp:
             self._init_run(tmp, planning_done=False)
             self.assertEqual(infer_resume_target(tmp), "plan_review_propose")

@@ -1,4 +1,4 @@
-"""P2 preprocessing plan assembler.
+"""Preprocessing-plan assembler (runs in-process inside S0 ingest; formerly the standalone p2_plan stage).
 
 Pulls approved P1 context + S0 validation and produces preprocessing_plan.json
 with {value, source, rationale, confidence} per parameter.

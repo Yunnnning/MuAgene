@@ -2,7 +2,7 @@
 name: qc_review_and_revise
 domain: QC
 purpose: Drive the post_qc_review gate (#2) — relay QC reports verbatim (science) and apply threshold/doublet revisions (action) behind the dry-run guardrail. Canonical home of the never-invent-genes rule.
-activation: status shows post_qc_review awaiting_approval, or any QC-threshold change request
+activation: status shows post_qc_review awaiting_approval. Also the canonical reference for the QC revise keys / `*_override` / skip recipes used at both gates; plan-review-time revision is driven by plan_confirm.md (non-destructive there), not this skill.
 inputs: [deliverables/qc/qc_review_<run>.md, internal/proposals/post_qc_review.yaml, internal/parameters.yaml]
 outputs: [internal/parameters.yaml, post_qc_review.approved, deliverables/qc/post_qc_<run>.h5mu, deliverables/qc/peaks_<run>.bed, deliverables/qc/post_qc_manifest.json]
 calls_tools: [status, revise, "revise --dry-run", approve, marker-gene-check, propose, submit, run]
@@ -20,6 +20,8 @@ Canonical user-facing report after re-run: `deliverables/qc/qc_review_<run_name>
 ---
 
 ## Before you revise — diagnose, dry-run, confirm (guardrail)
+
+**Scope:** the destructive behaviour and dry-run guardrail below apply **at `post_qc_review`** (S1a–S3 have already run). At `plan_review` nothing has run, so `revise` is non-destructive — it only re-renders the plan deliverables, with no artifact deletion and no re-run; the binding-constraint diagnosis (step 1) still applies, the dry-run/confirm steps do not. Drive plan-review revision from [`plan_confirm.md`](plan_confirm.md); use the key / `*_override` / skip tables below at either gate.
 
 At `post_qc_review` a `revise` is **destructive**: it deletes the revised stage's outputs and everything downstream through S3 (plus the gate outputs). Before issuing a real `revise` here:
 

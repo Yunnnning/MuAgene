@@ -243,7 +243,7 @@ After biological-context write (cases a/b/c): confirm the file exists at `delive
 After `configure-execution`: confirm `execution.mode` **and `compute.device` (cpu/gpu)** and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume. When `device=gpu` on SLURM, also confirm the GPU partition/gres and the pinned `gpu_image_uri` (the container image is **pulled** from that registry reference — recorded in `site.config` / `~/.muagene/machine.config`, not a conda env).
 
 Once the run is scaffolded, the branch is declared, and execution mode is confirmed, hand off
-to [`plan_confirm.md`](plan_confirm.md) — it runs the planning phase (P1 → S0 → P2), surfaces
+to [`plan_confirm.md`](plan_confirm.md) — it runs the planning phase (P1 → S0, which assembles the plan in-process), surfaces
 `context_summary.md` / `validation_report.json`, and drives the plan_review gate. Any S0 or
 context-gate errors at that point → [`troubleshooting.md`](troubleshooting.md).
 

@@ -17,7 +17,7 @@ Entered after [`inputs_intake.md`](inputs_intake.md) has scaffolded the run, dec
 branch, and confirmed execution mode. This skill runs planning compute, presents the plan,
 and drives the first human gate. **Nothing heavy runs until the user approves.**
 
-## 1. Kick off planning (P1 → S0 → P2 → gate-arming)
+## 1. Kick off planning (P1 → S0 → gate-arming)
 
 The planning target is **`plan_review_propose`** (auto-inferred when `--target` is omitted).
 It depends on `s0_ingest_execute`, so one invocation runs P1 → S0 → plan assembly →
@@ -90,14 +90,24 @@ the decision is unresolved.
 
 ## 4. QC threshold confirmation — mandatory, after the marker-gene step
 
-The "QC strategy" item shows `[? needs confirmation]`. Ask:
+This is the **plan_review home for QC threshold revision** — the user can set, adjust, pin, or
+skip any QC threshold here, *before* any stage runs. The "QC strategy" item shows
+`[? needs confirmation]`. Ask:
 
 > The default MAD-based thresholds are in the plan appendix histograms. Keep the defaults,
 > adjust one or more, pin an exact value (e.g. RNA `n_genes` lower bound = 300), or skip a
 > metric entirely?
 
 - **Keep defaults** → go to step 5.
-- **Adjust / pin / skip** → `executor revise s1_rna_qc <param>=<value> --config $CFG --rationale "<reason>"` (or `s2_atac_qc`). `revise` auto-regenerates the plan deliverables and recomputes projected removals; re-surface and re-ask. Revise the input knobs (or pin a bound with its `*_override` key) — common keys, pinning, and skipping are in [`qc_review_and_revise.md`](qc_review_and_revise.md).
+- **Adjust / pin / skip** → `executor revise s1_rna_qc <param>=<value> --config $CFG --rationale "<reason>"` (or `s2_atac_qc`). Revise the input knobs, or pin a bound with its `*_override` key — the common keys, the `*_override` pinning table, and the skip recipes are the shared reference in [`qc_review_and_revise.md`](qc_review_and_revise.md) (they apply at both gates). The binding-constraint diagnosis there (a MAD bound is `max(MAD, floor)` / `min(MAD, ceiling)`, so a non-binding knob has no effect) is just as useful here for picking the right knob.
+
+**`revise` at plan_review is non-destructive.** Nothing has run yet, so it only updates
+`internal/parameters.yaml` and re-renders the plan deliverables + the S0 QC-exploration
+preview (recomputed projected removals) — **no artifact deletion and no stage re-run** (unlike
+post_qc_review, where `revise` deletes downstream QC artifacts; see
+[`qc_review_and_revise.md`](qc_review_and_revise.md)). So no dry-run guardrail is needed here:
+issue the `revise`, re-surface the regenerated plan, and re-ask. The approve / revise / abort
+loop is described once in step 5.
 
 ## 5. Approve / revise / abort
 
