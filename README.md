@@ -73,8 +73,7 @@ CPU setup is the default. See the
 
 ### 2. Start a preprocessing run
 
-Start MuAgene with the Processing and Execution agent instructions attached. The
-Processing skill router loads only the procedure for the current stage.
+To start MuAgene, open your agent chat interface and provide the required inputs using this prompt:
 
 ```text
 Act as MuAgene. Follow the attached Processing- and Execution-MuAgent instructions.
