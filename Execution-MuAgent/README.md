@@ -7,7 +7,8 @@ and remains the user-facing agent.
 
 ## Responsibilities
 
-Execution-MuAgent:
+Execution-MuAgent owns everything from a confirmed cluster specification to a monitored
+job, plus machine-level environment provisioning:
 
 - bootstraps and validates the MuAgene runtime environment;
 - validates Processing-authored job specifications;
@@ -20,39 +21,16 @@ Execution-MuAgent:
 It does not choose scientific methods, change preprocessing parameters, modify job
 specifications, talk to users during a run, or resubmit failed work.
 
-## Relationship to Processing-MuAgent
+### Who runs which commands?
 
-```text
-User
-  ↕
-Processing-MuAgent ── job intent and platform settings ──→ Execution-MuAgent
-Processing-MuAgent ←──── structured status/findings ────── Execution-MuAgent
-                                                           ↕
-                                                         SLURM
-```
+| Goal                                   | User-facing Interface      | Actual Execution (Owner)        |
+|-----------------------------------------|---------------------------|---------------------------------|
+| Set up a new machine                   | Operator (direct CLI)     | Execution-MuAgent               |
+| Provision or validate environments      | Operator (direct CLI)     | Execution-MuAgent               |
+| Submit a preprocessing run              | Processing-MuAgent        | Execution-MuAgent (behind scenes)|
+| Check run status                        | Processing-MuAgent        | Execution-MuAgent (reports back)|
 
-Processing-MuAgent owns:
-
-- scientific planning and user approvals;
-- local-versus-cluster selection and resource confirmation;
-- preprocessing job specifications;
-- user-visible status, failure explanation, recovery, and resubmission.
-
-Execution-MuAgent owns everything from a confirmed cluster specification to a monitored
-job, plus machine-level environment provisioning.
-
-## Who runs which commands?
-
-| Goal | Interface |
-|---|---|
-| Set up a new machine | Execution-MuAgent bootstrap |
-| Provision or validate environments | Execution-MuAgent operator commands |
-| Submit a preprocessing run | Processing-MuAgent |
-| Check run status | Processing-MuAgent |
-| Restart supervision without resubmitting | Processing-MuAgent |
-
-The runtime commands that render, submit, and monitor jobs are invoked by
-Processing-MuAgent. They are not the normal user interface.
+> **Note:**  The user interacts exclusively with Processing-MuAgent during regular preprocessing runs. However, Execution-MuAgent is responsible for actually rendering, submitting, and supervising jobs on the cluster as instructed by Processing-MuAgent. Direct operator interaction with Execution-MuAgent is limited to machine setup and environment management.  
 
 ## Requirements
 
@@ -62,9 +40,6 @@ Processing-MuAgent. They are not the normal user interface.
 - Python 3.10–3.12
 - Processing-MuAgent and Execution-MuAgent checked out as sibling directories
 
-CPU environments are created from the committed lock without solving dependencies on
-the target machine. GPU environments use a pinned, pull-only container image; target
-machines never build that image locally.
 
 ## Installation
 
@@ -75,16 +50,17 @@ bash scripts/bootstrap.sh --processing-repo ../Processing-MuAgent
 conda activate muagene
 ```
 
-The bootstrap:
+The bootstrap script:
 
-1. detects the available environment manager and platform capabilities;
-2. creates or updates the integrated `muagene` environment;
-3. installs both MuAgene agent packages;
-4. validates the installation;
+1. detects the available environment manager and relevant platform capabilities.
+2. creates or updates the integrated `muagene` environment.
+3. installs both MuAgene agent packages.
+4. validates the installation.
 5. records reusable machine settings.
 
-CPU setup is the default. To prepare GPU infrastructure as well, provide a pinned image
-reference and any site-specific container module:
+CPU setup is the default. CPU environments are created directly from the committed environment lock file; no dependency-solving or package downloads are required on the target machine. 
+
+GPU environments use a pre-built container image pulled from a registry (not built locally). To prepare GPU infrastructure as well, supply a pinned GPU image reference and any required container module:
 
 ```bash
 bash scripts/bootstrap.sh \
@@ -93,6 +69,8 @@ bash scripts/bootstrap.sh \
   --gpu-image-uri docker://REGISTRY/IMAGE:TAG \
   --singularity-module MODULE
 ```
+
+> **Note:** All current preprocessing steps run exclusively on CPU. GPU workflows are not yet supported; GPU configuration exists only in preparation for future features (such as multiomic integration) and is not used in present workflows.
 
 ## Operator commands
 
@@ -135,7 +113,7 @@ Processing-MuAgent presents the evidence and recovery choice to the user.
 - **A run fails:** inspect status through Processing-MuAgent. Execution-MuAgent reports
   evidence but does not choose or apply the scientific recovery.
 
-## Contracts and agent instructions
+## Project context
 
 The public README intentionally omits monitor algorithms and internal state layouts.
 Canonical details live in:
@@ -147,4 +125,4 @@ Canonical details live in:
 - [Processing-MuAgent](../Processing-MuAgent/README.md) — the user-facing preprocessing
   workflow.
 
-Execution-MuAgent is one component of [MuAgene](../README.md).
+Execution-MuAgent is the infrastructure component of [MuAgene](../README.md).

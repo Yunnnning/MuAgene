@@ -226,7 +226,14 @@ Raw input files are referenced in place and never overwritten.
 
 ## Project context
 
-Processing-MuAgent is MuAgene's scientific component. See the
-[MuAgene guide](../README.md) for installation, framework-level responsibilities, and
-how to start a run. The concise agent contract is documented in [AGENT.md](AGENT.md);
-implementation procedures remain in the agent instructions rather than this user guide.
+This public README focuses on preprocessing strategy, user decisions, and outputs.
+Canonical details live in:
+
+- [AGENT.md](AGENT.md) — concise role and contract;
+- [agent instructions](agent/skills/index.md) — stage-specific procedures;
+- [tool contracts](agent/tools.md) — command behavior;
+- [shared contracts](../contracts/) — state ownership and handoff schemas;
+- [Execution-MuAgent](../Execution-MuAgent/README.md) — infrastructure setup and cluster
+  execution.
+
+Processing-MuAgent is the scientific component of [MuAgene](../README.md).

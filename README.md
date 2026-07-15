@@ -69,7 +69,7 @@ conda activate muagene
 
 CPU setup is the default. See the
 [Execution-MuAgent installation guide](Execution-MuAgent/README.md#installation) for
-GPU and site-specific cluster setup.
+ details.
 
 ### 2. Start a preprocessing run
 
