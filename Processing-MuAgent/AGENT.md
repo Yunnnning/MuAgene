@@ -38,6 +38,24 @@ template); user approvals and revisions.
 (`muagene.post_qc_handoff/1`), `run_manifest.json`, and the processed `*.h5mu`/`*.h5ad`.
 Shapes: [`../contracts/`](../contracts/).
 
+## Skill filenames
+The Processing router uses these ordered files:
+
+```text
+00_entry_declare.md
+10_inputs_intake.md
+20_plan_confirm.md
+30_run_execution.md
+40_qc_review_and_revise.md
+50_downstream_dimred_clustering.md
+60_completion_handoff.md
+80_hpc_monitoring.md
+90_troubleshooting.md
+```
+
+The `80` and `90` skills are cross-cutting monitoring and recovery procedures, not
+additional happy-path stages. Frontmatter `name` values remain stable semantic IDs.
+
 ## Runtime policy
 Overall composition and terminology live in the root [`AGENT.md`](../AGENT.md). Load the
 canonical hard rules from [`agent/system_prompt.md`](agent/system_prompt.md), then route

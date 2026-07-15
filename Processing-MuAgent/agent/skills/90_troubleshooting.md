@@ -70,11 +70,6 @@ meanings + recovery actions are in [`../../../contracts/findings.yaml`](../../..
   stderr). Root-cause first; don't retry silently. On user insistence, re-`executor submit
   --executor slurm --target <stage>_execute` (HPC) or `executor run --target <stage>_execute`
   (local).
-- **S2 fails with `H5Fcreate(): unable to lock file, errno = 11`** — stale `atac_snap.h5ad`
-  from a previously-killed run holds an HDF5 POSIX lock; SnapATAC2 cannot recreate it.
-  Fix: `rm internal/artifacts/s2_atac_qc/atac_snap.h5ad` (untracked; safe to delete),
-  then `executor submit`. The code now auto-deletes this file at stage start (so this
-  only arises on an older code version). Also clear any `snapatac2_tmp/` temp subdirs.
 - **`submit_rejected_policy`** — scheduler rejected the job (invalid partition/account, or
   walltime over site limit). One-shot `hpc-status` shows the scheduler's exact message. Fix
   the field: partition/account via `executor configure-execution --mode <scheduler> …`
@@ -90,9 +85,6 @@ meanings + recovery actions are in [`../../../contracts/findings.yaml`](../../..
 
 ## Supervisor / sentinels
 
-- **Per-stage specs not written** — written automatically by `executor plan-review`. If
-  `internal/stage_meta/` is missing/empty, re-run `executor plan-review --config $CFG`.
-  Internal state — don't surface unless asked.
 - **`hpc-status` shows "Supervisor: not running" with a RUNNING/PENDING scheduler state** —
   the daemon died but the job is alive (stalls won't be auto-cancelled). Restart:
   `executor supervisor-restart --config $CFG` (resumes the watch loop without resubmitting).
@@ -105,6 +97,3 @@ meanings + recovery actions are in [`../../../contracts/findings.yaml`](../../..
   `squeue -u $USER | grep "pma_head_job_$(basename <run_dir>)"` → `scancel` each; (2)
   `rm internal/proposals/<stage>.awaiting_approval`; (3) `executor submit` and report the
   next one-shot `hpc-status`.
-- **Tempted to monitor a long-running job yourself** — don't. The daemon is the sole
-  monitor; read one-shot `executor hpc-status`. Re-poll only via a non-blocking scheduled
-  wakeup ([`80_hpc_monitoring.md`](80_hpc_monitoring.md)) — never a blocking loop or `tail -f | grep`.

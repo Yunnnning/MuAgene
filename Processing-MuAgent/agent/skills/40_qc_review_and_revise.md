@@ -1,8 +1,8 @@
 ---
 name: qc_review_and_revise
 domain: QC
-purpose: Drive the post_qc_review gate (#2) — relay QC reports verbatim (science) and apply threshold/doublet revisions (action) behind the dry-run guardrail. Canonical home of the never-invent-genes rule.
-activation: status shows post_qc_review awaiting_approval. Also the canonical reference for the QC revise keys / `*_override` / skip recipes used at both gates; plan-review-time revision is driven by 20_plan_confirm.md (non-destructive there), not this skill.
+purpose: Drive the post_qc_review gate (#2), safely revise QC thresholds, close the marker-gene decision, and build the post-QC handoff.
+activation: status shows post_qc_review awaiting_approval; remains active through qc_handoff verification and finish-batch confirmation
 inputs: [deliverables/qc/qc_review_<run>.md, internal/proposals/post_qc_review.yaml, internal/parameters.yaml]
 outputs: [internal/parameters.yaml, post_qc_review.approved, deliverables/qc/post_qc_<run>.h5mu, deliverables/qc/peaks_<run>.bed, deliverables/qc/post_qc_manifest.json]
 calls_tools: [status, revise, "revise --dry-run", approve, marker-gene-check, propose, submit, run]
@@ -11,340 +11,169 @@ writes_state: [parameters.yaml, post_qc_review.approved]
 handoff: { next: run_execution, when: qc_handoff verified + user confirmed finish batch, on_error: troubleshooting }
 ---
 
-# QC review & revise — the post_qc_review gate (#2)
+# QC review and revise — post_qc_review gate (#2)
 
-Use this procedure whenever the user asks to adjust QC filtering or doublet thresholds while the pipeline is paused at the **QC review checkpoint** (`post_qc_review`).
+Relay `deliverables/qc/qc_review_<run>.md` **verbatim** and point the user to
+`deliverables/qc/qc_summary_<run>.html`. This skill owns post-QC revision, approval,
+`qc_handoff`, and confirmation before the finish batch. Plan-review revision is
+non-destructive and stays in [`20_plan_confirm.md`](20_plan_confirm.md).
 
-Canonical user-facing report after re-run: `deliverables/qc/qc_review_<run_name>.md`. The rendered HTML report is `deliverables/qc/qc_summary_<run_name>.html`.
+## Revise guardrail (post-QC only)
 
----
+At this gate, `executor revise` deletes stale stage, downstream, gate, and prior handoff
+outputs so Snakemake recomputes them. Before a real revision:
 
-## Before you revise — diagnose, dry-run, confirm (guardrail)
-
-**Scope:** the destructive behaviour and dry-run guardrail below apply **at `post_qc_review`** (S1a–S3 have already run). At `plan_review` nothing has run, so `revise` is non-destructive — it only re-renders the plan deliverables, with no artifact deletion and no re-run; the binding-constraint diagnosis (step 1) still applies, the dry-run/confirm steps do not. Drive plan-review revision from [`20_plan_confirm.md`](20_plan_confirm.md); use the key / `*_override` / skip tables below at either gate.
-
-At `post_qc_review` a `revise` is **destructive**: it deletes the revised stage's outputs and everything downstream through S3 (plus the gate outputs). Before issuing a real `revise` here:
-
-1. **Diagnose the binding constraint.** For a MAD-derived bound the effective cutoff is `max(MAD, floor)` (lower) or `min(MAD, ceiling)` (upper) — so changing a non-binding knob has no effect. Classic gotcha: when median `pct_mt` is low, `pct_mt_floor` (not `pct_mt_ceiling`) is the binding lower constraint.
-2. **Dry-run first:** `executor revise <stage> <key>=<value> --config $CFG --dry-run`. It prints the parameter change, the **exact** artifacts that would be deleted, and the current thresholds (so you can see which bound is active) — and mutates nothing.
-3. **Confirm with the user** before running the real (mutating) `revise` at this gate — the cost of a mistaken revise is a forced re-run of the deleted stages.
-
-To pin a MAD-derived bound to an exact value, revise its `*_override` key (e.g. `n_genes_min_override=300`); revising the derived output key directly has no effect.
-
-**Recovery if a revise ran by mistake:** the deleted artifacts regenerate by re-running the affected stages — re-approve the revised stage (and `s3_doublets` if S1/S2 changed), then `run`/`submit`. There is no in-place undo; the dry-run + confirm above is the safeguard.
-
----
-
-## Plan vs live parameters
-
-`executor revise` does **not** update the preprocessing plan.
-
-| Artifact | Updated by `revise`? | Role after QC revision |
-|---|---|---|
-| `internal/parameters.yaml` | Yes | Live source of truth; stages read overrides here over the frozen plan |
-| `internal/artifacts/p2_plan/preprocessing_plan.json` | No | Frozen plan snapshot (default layer; the overlay sits on top) |
-| `deliverables/plan/plan_review_<run>.md` / `plan_summary_<run>.html` | Yes, at **both** gates | Re-rendered by `revise` (overlay of `parameters.yaml` on the frozen plan) at plan_review **and** post_qc_review, so they never go stale vs the live overrides. The frozen `preprocessing_plan.json` + its hash are untouched |
-| `deliverables/qc/qc_review_<run>.md` | Yes, after re-run + `propose post_qc_review` | User-facing summary of thresholds actually applied; the **authoritative applied-thresholds record** post-approval |
-| `deliverables/figures/s0_*_data_explore.*` + `internal/artifacts/qc_explore/qc_explore.json` | Yes, at **both** gates | Param-derived QC-exploration preview; `revise` refreshes them from the cached `*_qc_metrics.parquet` (no heavy reload) so the threshold lines track the revise. The metrics parquets survive the post-QC cleanup, so this works post-approval too |
-
-The plan renderer overlays `parameters.yaml` on the frozen plan, so the plan deliverables never display a value that contradicts the live overrides as of their last render. **`revise` re-renders the plan deliverables + the S0 QC-exploration preview at both gates** (via the renderers — it does not re-run the `plan-review` command, which would re-arm the gate, and it never touches the frozen `preprocessing_plan.json` or its hash). So after a post-approval QC revise the plan files reflect the new thresholds too; the regenerated `qc_review_<run>.md` remains the **authoritative** applied-thresholds record (it reports what the QC stages actually filtered, the plan files report the planned overlay).
-
----
-
-## Rule: invalidation is automatic — never hand-delete artifacts
-
-Do not edit `parameters.yaml`, `state.yaml`, biological-context files, or checkpoint sentinels by hand, and **do not hand-delete artifacts.** `executor revise <qc_stage> ...` deterministically clears everything a re-run must regenerate — the revised stage's outputs, all strictly-downstream QC artifacts, and the `post_qc_review` gate outputs (including `post_qc_review.approved`) — and prints what it removed. (The exact file set lives in the executor; the expensive chr-norm fragment cache is always preserved.)
-
-**Reprocess case (post-cleanup):** after `approve post_qc_review` the QC h5ads (`rna_qc.h5ad`, `rna_decontaminated.h5ad`) are deleted by cleanup. If you later call `revise` on `s1_rna_qc`, `s2_atac_qc`, or `s3_doublets` on an RNA-carrying branch, `revise` detects the absent h5ads and also deletes the S1/S1a durable markers (`qc_summary.json`, `summary.json`) so those stages re-run and regenerate the h5ads before S3 reads them.
-
-**Why this matters:** both `post_qc_review.approved` and the durable stage-done markers must be cleared, or Snakemake sees those targets as satisfied, reports "Nothing to be done", and silently skips the re-run. `revise` owns that; you just run it.
-
----
-
-## Procedure for HPC runs
-
-Use this when `execution.mode` is `slurm`.
-
-1. **Update parameters (this also invalidates stale artifacts + gate automatically).** For each changed value, run:
-
+1. Diagnose the binding constraint. A lower bound is `max(MAD, floor)` and an upper
+   bound is `min(MAD, ceiling)`; changing a non-binding knob has no effect. When median
+   mitochondrial percentage is low, `pct_mt_floor` commonly binds instead of
+   `pct_mt_ceiling`.
+2. Preview the exact mutation and deletion set:
    ```bash
-   executor revise <stage> <param>=<value> --config $CFG --rationale "<user's reason>"
+   executor revise <stage> <key>=<value> --config $CFG --dry-run
    ```
+3. Confirm with the user, then apply the same command without `--dry-run`, adding
+   `--rationale "<user's reason>"`.
 
-   The stage prefix is auto-added to the key (`<param>` → `<stage>.<param>` in `parameters.yaml`). The full form `<stage>.<param>=<value>` is also accepted. Valid QC revision stages here are `s1_rna_qc`, `s2_atac_qc`, and `s3_doublets`. `revise` prints the invalidated files — no manual deletion needed.
+Revise input knobs, not computed MAD output keys. Pin an exact MAD-derived cutoff with
+its `*_override` key. Never edit state files or checkpoint sentinels, and do not hand-delete
+artifacts; `revise` owns invalidation. If cleanup already removed QC h5ads,
+the executor also clears the required S1/S1a markers on RNA branches.
 
-2. **(Optional) verify the DAG** before spending cluster time. A dry-run must list the QC execute stages and `post_qc_review_propose`, not "Nothing to be done":
+If a revision was accidental, rerun the invalidated stages; there is no in-place undo.
+See [`90_troubleshooting.md`](90_troubleshooting.md) for recovery.
 
-   ```bash
-   snakemake -s workflow/Snakefile --configfile $CFG -d <run_dir>/internal/snakemake -n post_qc_review_propose
-   ```
+## Re-run after revision
 
-3. **Approve stages that must re-run.**
+Revisions to `s1_rna_qc`, `s2_atac_qc`, or `s3_doublets` delete their required durable
+outputs, so the automated stages rerun without per-stage approval commands. Do not use `--auto-approve`;
+it can prematurely recreate the QC gate approval and trigger cleanup.
 
-   - Approve every revised stage:
+### SLURM
 
-     ```bash
-     executor approve <stage> --config $CFG
-     ```
-
-   - If S1 or S2 was revised, also approve S3 even if you did not run `revise s3_doublets`:
-
-     ```bash
-     executor approve s3_doublets --config $CFG
-     ```
-
-   - Do **not** pass `--auto-approve` to `submit`. It can refresh sentinels and trigger spurious re-runs of already-complete stages.
-
-4. **Submit and monitor.**
-
-   Cancel stale head jobs first. An old head job can recreate sentinels you just cleared and confuse the new run. **Always filter by the current run name** — bare `grep pma_head` matches jobs from every concurrent sample:
-
+1. Check for an older head job for this run and cancel it if still active:
    ```bash
    squeue -u $USER | grep "pma_head_job_$(basename <run_dir>)"
-   # scancel <JOBID> for each listed job
+   # scancel <JOBID>
    ```
-
-   Then submit and monitor:
-
+2. Submit the invalidated QC path:
    ```bash
    source deliverables/plan/config/hpc.env
    executor submit --config $CFG --executor slurm
-   executor hpc-status --config $CFG     # one-shot: report, then re-poll on a scheduled wakeup
+   executor hpc-status --config $CFG
    ```
+3. Follow [`80_hpc_monitoring.md`](80_hpc_monitoring.md). The inferred
+   `post_qc_review_propose` target reruns QC and regenerates the reports. Use
+   `executor propose post_qc_review --config $CFG` only for a manual report refresh.
 
-   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see [`80_hpc_monitoring.md`](80_hpc_monitoring.md)). Never run a blocking loop or `tail -f | grep`.
+### Local
 
-5. **QC reports regenerate automatically.** The inferred submit target is the gate-arming localrule `post_qc_review_propose`, which Snakemake reaches after the revised QC execute stages complete — so the head job re-runs the changed stages **and** rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and the checkpoint figures under `deliverables/figures/`, then arms the gate (`post_qc_review` becomes `awaiting_approval`). You do not need to run `propose` by hand on the happy path.
+```bash
+executor run --config $CFG --target s3_doublets_execute
+executor propose post_qc_review --config $CFG
+```
 
-   Fallback only — if you need to re-render the report without re-submitting (e.g. a `local`-mode run, or a manual refresh after `marker-gene-check`):
+After either path, read `qc_review_<run>.md` and relay it **verbatim**. Do not substitute
+`internal/proposals/post_qc_review.yaml`. Ask the user to approve QC or revise again.
 
-   ```bash
-   executor propose post_qc_review --config $CFG
-   ```
+## Marker-gene decision
 
-6. **Surface the updated report.**
+If the QC report says **"Marker gene expression check not performed"**, relay that notice
+and obtain an explicit decision before approval: provide genes and run the check, or
+explicitly decline.
 
-   Read `deliverables/qc/qc_review_<run_name>.md` and relay it **verbatim**. Point the user to `qc_summary_<run_name>.html` for the rendered report. Ask whether to approve QC and continue to dimensionality reduction and clustering, or revise again.
+**Hard rule — never pick genes:** do not select, suggest, look up, or test gene names.
+Ask the user to provide the symbols, then run:
 
-Do not surface `internal/proposals/post_qc_review.yaml` in place of the QC review markdown after report regeneration.
+```bash
+executor marker-gene-check --config $CFG <gene1> <gene2> ...
+```
 
----
+The command refreshes the QC reports; `--plot-only` is for layout iteration. If
+`internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` exists and the cell set is
+unchanged, run on the login node. Without the cache, use a memory-appropriate cluster job
+for HPC runs or run inline locally. Complete or explicitly waive this check before QC
+approval because approval cleans the source working h5ad.
 
-## Procedure for local runs
+## Approve QC and build the handoff
 
-Use this when `execution.mode` is `local`.
+When thresholds are accepted and the marker-gene decision is closed:
 
-1. Run the same `executor revise` step as the HPC procedure — it auto-invalidates the stale downstream artifacts + gate outputs (no manual deletion).
-2. Approve every revised stage, and also approve `s3_doublets` when S1 or S2 changed.
-3. Re-run execute steps through S3:
-
-   ```bash
-   executor run --config $CFG --target s3_doublets_execute
-   ```
-
-   Do not use `--auto-approve`.
-
-4. Regenerate QC reports:
-
-   ```bash
-   executor propose post_qc_review --config $CFG
-   ```
-
-5. Read `deliverables/qc/qc_review_<run_name>.md` and relay it **verbatim**. Ask whether to approve QC or revise again.
-
----
-
-## Marker gene expression check (post-QC entry)
-
-This section applies when the user did not provide marker genes at plan review, or wants to check a different gene set. If genes were provided at plan review, S1a generated the figure automatically and it is already embedded in the QC report — no action needed here unless the user wants to change the gene set.
-
-**Hard rule — close the marker-gene loop before approving QC:** if `qc_review_<run>.md` contains the notice **"Marker gene expression check not performed"**, this is the second (and last) chance to run the before/after-ambient check — the user deferred or skipped it at plan review. You **must** relay the notice verbatim and obtain an explicit decision (provide genes → run the check; or explicitly decline) **before** `executor approve post_qc_review`. Do not auto-approve QC past a "strongly recommended" notice. The before/after comparison is still fully valid here: `rna_decontaminated.h5ad` retains both the pre-correction (`counts_raw`) and post-correction (`counts`) layers.
-
-**Hard rule — never pick genes yourself:**
-
-> Always ask for the user to provide the gene symbols explicitly before taking any action.
-> You must not autonomously select, suggest, look up, or test any marker gene names unless user approves.
-
-If the user wants to proceed:
-1. Ask them to list the genes they want to check. For example: "Which genes would you like to visualise? Please provide the symbols (e.g. `Cd3e Cd20 Epcam`)."
-2. Once they supply the list, run:
-   ```bash
-   executor marker-gene-check --config $CFG <gene1> <gene2> ...
-   ```
-   This **plots the figure and refreshes QC reports in one command** (no separate `propose post_qc_review` step). Use `--plot-only` when iterating on layout without updating the markdown/HTML reports.
-   **Login node vs cluster:** check whether `internal/artifacts/s1a_ambient/tsne_coords_cache.parquet` exists and the cell set is unchanged.
-   - **Cache present:** run on the **login node** — t-SNE is skipped and the pipeline opens `rna_decontaminated.h5ad` in backed (disk) mode, loading only the requested marker columns plus cached per-cell totals (`cell_totals.parquet`). This avoids loading the full counts matrix into RAM.
-   - **No cache (first check):** t-SNE on all cells needs significant memory. On HPC runs, submit as a separate SLURM job (e.g. `sbatch --mem=48G ...`). On local runs, run inline.
-   Do **not** submit a cluster job when the cache already exists unless the login node still OOMs (rare after backed mode; try a modest ~16G cluster job before 48G).
-3. Relay `deliverables/qc/qc_review_<run_name>.md` verbatim. Ask whether to approve QC and continue, run the check with different genes, or revise thresholds.
-
-If the user declines the marker check or has no relevant markers, proceed to QC approval as normal.
-
----
-
-## Approval — and the mandatory qc_handoff step
-
-When the user approves QC (marker gene check complete or explicitly waived, thresholds accepted):
-
-1. **Approve the gate:**
-
+1. Approve the human gate:
    ```bash
    executor approve post_qc_review --config $CFG
    ```
-
-   Approving also runs `cleanup.cleanup_qc_intermediates`, which deletes the large QC/ingest
-   working caches — including the S0 `rna_ingest.h5ad` and the S1a
-   `rna_decontaminated.h5ad` (see the README QC-cleanup note). These are untracked
-   working files (the durable markers `validation_report.json` / `summary.json` /
-   `qc_summary.json` survive), so no stage re-runs — but the **before/after-ambient
-   marker-gene check must be complete before you approve**, since it reads
-   `rna_decontaminated.h5ad`. (To reclaim this disk later on a run that was approved
-   earlier, run `executor qc-cleanup --config $CFG` — same cleanup, gated on approval.)
-   Re-processing later is still safe: `rna_ingest.h5ad` is a pure cache that S1a
-   reconstructs via `io.load_rna_ingest` (no S0 re-run), and `rna_decontaminated.h5ad`
-   regenerates when S1a re-runs.
-
-2. **Submit `qc_handoff` immediately — do not wait for the user to ask:**
-
+2. Immediately build `qc_handoff`:
    ```bash
-   # HPC:
+   # SLURM
    source deliverables/plan/config/hpc.env
    executor submit --config $CFG --executor slurm --target qc_handoff
-   executor hpc-status --config $CFG   # report, then follow report-and-repoll
+   executor hpc-status --config $CFG
    ```
-
    ```bash
-   # Local:
+   # Local
    executor run --config $CFG --target qc_handoff
    ```
-
-   Follow report-and-repoll ([`80_hpc_monitoring.md`](80_hpc_monitoring.md)) until `qc_handoff` completes. On HPC it is a **SLURM cluster job** (it materialises the post-QC ATAC fragments + the `.h5mu` — too heavy for the login/head node); under local `run` it executes inline.
-
-3. **Verify outputs exist:**
+3. Verify:
    - `deliverables/qc/post_qc_<run>.h5mu`
-   - `deliverables/qc/peaks_<run>.bed` (ATAC runs with a peak set)
+   - `deliverables/qc/peaks_<run>.bed` for ATAC branches
    - `deliverables/qc/post_qc_manifest.json`
+4. Tell the user the handoff is ready and obtain explicit user approval before starting
+   S4–S8. Do not submit the finish batch yet.
 
-4. **Tell the user** the integration handoff artifacts are ready, then ask whether to proceed with the finish batch (S4–S8). **Do not submit the finish batch without explicit user approval.**
+On paired runs, confirm the union doublet-removal policy here; it is not a separate gate.
 
-**Why this is mandatory:** `qc_handoff` depends only on the durable S3 marker (`calls.parquet`) + `post_qc_review.approved`. It writes the integration bundle (`post_qc_<run>.h5mu`, `deliverables/qc/peaks_<run>.bed` on ATAC branches, and `post_qc_manifest.json`) and then **deletes the now-redundant internal `s3_doublets/{rna,atac}_post_doublet.h5ad`** — the h5mu is the canonical post-QC store, which **S4/S5 read** (so `qc_handoff` is upstream of the finish batch, not orthogonal to it). Running it now produces the bundle early; when S4–S8 later run (target `all`), Snakemake sees the handoff outputs already exist and skips `qc_handoff` — no recomputation, and deleting the h5ads never triggers a spurious S3 re-run (S3 declares only the durable `calls.parquet`).
+## QC revision reference
 
----
+### Honored input keys
 
-## Branch note
-
-On paired runs, union doublet removal policy is confirmed at `post_qc_review`. It is not a separate S3 user gate. Threshold revisions at S1, S2, or S3 use this procedure only.
-
----
-
-## Common revise keys
-
-Revise the **input knobs** the stage reads — the override wins over the frozen
-plan via `provenance.effective_value`. The MAD-derived effective bounds
-(`s1_rna_qc.total_counts_min/max`, `n_genes_min/max`, `pct_counts_mt_max`;
-`s2_atac_qc.n_fragments_min/max`) are *outputs* the stage computes and overwrites
-each run — revising **those output keys directly** has no effect. To move a
-MAD-derived cutoff you have two options: tune its recipe knob (the multiplier or
-floor/ceiling) to shift the whole derivation, **or** pin the bound to an exact
-value with the matching `*_override` key (see "Pinning a bound to an exact value"
-below).
-
-| Stage | Honored keys (inputs) |
+| Stage | Keys |
 |---|---|
 | `s1_rna_qc` | `total_counts_k_mad`, `n_genes_k_mad`, `pct_mt_k`, `pct_mt_ceiling`, `pct_mt_floor`, `pct_ribo_max`, `min_counts_floor`, `min_genes_floor`, `min_cells_per_gene` |
 | `s2_atac_qc` | `frip_min`, `tss_enrichment_min`, `tss_enrichment_max`, `nucleosome_signal_max`, `n_fragments_k_mad`, `n_fragments_floor` |
 | `s3_doublets` | `rna_doublet_score_threshold`, `atac_doublet_probability_threshold` |
 
-## Pinning a bound to an exact value (`*_override`)
+### Pin an exact MAD-derived bound
 
-When the user wants a **specific numeric cutoff** for a MAD-derived bound (e.g.
-"set the RNA `n_genes` lower bound to exactly 300"), set the matching `*_override`
-key. The override becomes the *effective filtering bound*; the MAD/floor derivation
-still runs and is shown as a **grey reference line** while the chosen override is
-drawn in **red** on the QC histograms. The directly-settable fixed thresholds
-(`pct_ribo_max`, `tss_enrichment_min/max`, `nucleosome_signal_max`, `frip_min`,
-`pct_mt_floor`/`pct_mt_ceiling`, the `*_floor` keys, and the s3 doublet
-thresholds) already accept any value — they need **no** `_override` suffix.
-
-| Stage | Override keys (pin to an exact value) |
+| Stage | Override keys |
 |---|---|
 | `s1_rna_qc` | `total_counts_min_override`, `total_counts_max_override`, `n_genes_min_override`, `n_genes_max_override`, `pct_counts_mt_max_override` |
 | `s2_atac_qc` | `n_fragments_min_override`, `n_fragments_max_override` |
 
-Example: `executor revise s1_rna_qc n_genes_min_override=300 --config $CFG --rationale "user wants ≥300 genes"`.
+Example:
 
-An override that is **more permissive than its recommended floor/ceiling** (e.g.
-`n_genes_min_override=100` below `min_genes_floor=250`, or
-`pct_counts_mt_max_override` above `pct_mt_ceiling`) is **still applied** — the
-user is trusted — but the stage logs an `override_below_floor` event and the QC
-review report shows a "⚠ Manual threshold override(s) below the recommended floor"
-note so the deviation is visible during review. Overridden bounds are recorded in
-`parameters.yaml` as `source: user` with a rationale that names the MAD-derived
-value they replaced.
+```bash
+executor revise s1_rna_qc n_genes_min_override=300 --config $CFG --rationale "user requested at least 300 genes"
+```
 
-## Stage-done sentinels
+An override is applied even when it is more permissive than the recommended
+floor/ceiling; the report and event log make that deviation visible. Fixed thresholds
+such as `pct_ribo_max`, `frip_min`, TSS/nucleosome limits, floors/ceilings, and doublet
+thresholds do not use an `_override` suffix.
 
-Each QC stage's `qc_summary.json` is its stage-done marker (used by `stage_progress.py` and by Execution-MuAgent for output verification) and persists through the `post_qc_review` approval cleanup. `revise` clears it as part of invalidation, so a re-run correctly shows the stage as incomplete — you do not manage these files yourself.
+### Skip individual metrics
 
----
-
-## Skipping individual QC metrics
-
-Use these workaround commands when the user wants to **fully disable** a metric or
-remove only its upper bound. To instead **pin a bound to an exact value** (not
-disable it), use the `*_override` keys from "Pinning a bound to an exact value"
-above (e.g. `n_genes_min_override=300`) rather than the `k_mad=999` trick. Set
-either with `revise` before approving the plan (at plan review) or before
-re-submitting (at QC review).
-
-### RNA (`s1_rna_qc`)
-
-`total_counts_k_mad` and `n_genes_k_mad` are independent — each metric can be tuned separately.
+RNA:
 
 | User intent | Keys to set |
 |---|---|
-| Skip `total_counts` completely | `total_counts_k_mad=999`, `min_counts_floor=0` |
-| Remove upper bound on `total_counts` only | `total_counts_k_mad=999` |
-| Skip `n_genes` completely | `n_genes_k_mad=999`, `min_genes_floor=0` |
-| Remove upper bound on `n_genes` only | `n_genes_k_mad=999` |
+| Skip `total_counts` | `total_counts_k_mad=999`, `min_counts_floor=0` |
+| Remove only the `total_counts` upper bound | `total_counts_k_mad=999` |
+| Skip `n_genes` | `n_genes_k_mad=999`, `min_genes_floor=0` |
+| Remove only the `n_genes` upper bound | `n_genes_k_mad=999` |
 | Skip `pct_counts_mt` | `pct_mt_k=999`, `pct_mt_ceiling=100` |
 | Skip `pct_counts_ribo` | `pct_ribo_max=100` |
 
-**`*_k_mad` is symmetric** — it scales the MAD bound on *both* sides of a metric
-(`total_counts`/`n_genes`/`n_fragments` use `log_mad_bounds`, one `k` for upper and
-lower). `k_mad=999` "removes the upper bound" only because it also drives the MAD
-*lower* bound to ~0, where the absolute floor (`min_*_floor`) then binds. The reverse
-operation is the gotcha: **re-enabling a MAD upper bound with a finite `k` can also
-raise the MAD lower bound above the floor**, silently tightening the lower cutoff. To
-**add a MAD-derived upper bound while keeping the lower bound exactly at the floor**,
-set the finite `k_mad` *and* pin the lower with `<metric>_min_override=<floor>`. Example
-(restore the `n_genes` MAD upper bound, keep the 250-gene floor as the lower bound):
-`revise s1_rna_qc n_genes_k_mad=5.0` **and** `revise s1_rna_qc n_genes_min_override=250`.
-The override is recorded `source: user`; the displaced MAD-lower value shows as the grey
-reference line.
-
-### ATAC (`s2_atac_qc`)
+ATAC:
 
 | User intent | Keys to set |
 |---|---|
-| Skip `n_fragments` completely | `n_fragments_k_mad=999`, `n_fragments_floor=0` |
-| Remove upper bound on `n_fragments` only | `n_fragments_k_mad=999` |
-| Skip `tss_enrichment` completely | `tss_enrichment_min=0`, `tss_enrichment_max=999` |
-| Remove upper bound on `tss_enrichment` only | `tss_enrichment_max=999` |
-| Skip `nucleosome_signal` (upper-bound metric) | `nucleosome_signal_max=999` |
+| Skip `n_fragments` | `n_fragments_k_mad=999`, `n_fragments_floor=0` |
+| Remove only the `n_fragments` upper bound | `n_fragments_k_mad=999` |
+| Skip `tss_enrichment` | `tss_enrichment_min=0`, `tss_enrichment_max=999` |
+| Remove only the `tss_enrichment` upper bound | `tss_enrichment_max=999` |
+| Skip `nucleosome_signal` | `nucleosome_signal_max=999` |
 | Skip `frip` | `frip_min=0` |
 
-The pipeline renders skip labels automatically — no report editing needed. The threshold display layer detects workaround parameter values and substitutes clean labels (e.g. "0 – no upper bound", "disabled") in both the plan-review appendix and the QC review report. `*_override` values render normally (the chosen cutoff in red, the displaced MAD/floor value in grey) and are recorded `source: user`.
-
-**At plan review** (gate unapproved): `revise` auto-regenerates `plan_review_<run>.md` — the appendix already shows the clean labels.
-
-**At QC review** (after S1–S3 have run): run `revise`, follow the re-run procedure above (approve affected stages + `s3_doublets`, cancel stale head jobs, submit, monitor). The regenerated report shows clean labels.
-
----
-
-## QC report cell-count columns
-
-After re-run, `qc_review_<run>.md` and `qc_summary_<run>.html` show:
-
-- **Before / retained / removed** — one summary block per modality at the top of the RNA and ATAC sections (no intermediate ATAC waterfall).
-- **cells removed\*** — order-independent marginal counts from `cells_removed_per_metric` in each stage's `qc_summary.json`. Each per-metric row counts every cell failing that threshold, evaluated independently against the full set, so a cell can be counted under more than one metric. Cells failing two or more thresholds appear under `multiple_metrics`. `total_removed` is the union — cells failing at least one threshold (for ATAC, includes FRiP failures among core-metric passers). This matches the marginal counting shown in the plan-review QC exploration preview.
+`*_k_mad` is symmetric: it moves both lower and upper MAD bounds. To restore a finite
+upper MAD bound while keeping an exact lower floor, also set the corresponding
+`*_min_override` to that floor.

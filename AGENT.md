@@ -62,23 +62,6 @@ canonical source below, use the canonical source and report the drift.
 - **tool contract**: a Markdown description in `agent/tools.md` of a live Click command.
   MuAgene has no in-repository JSON function-call or MCP tool registry.
 
-The Processing router uses these filenames:
-
-```text
-00_entry_declare.md
-10_inputs_intake.md
-20_plan_confirm.md
-30_run_execution.md
-40_qc_review_and_revise.md
-50_downstream_dimred_clustering.md
-60_completion_handoff.md
-80_hpc_monitoring.md
-90_troubleshooting.md
-```
-
-The `80` and `90` skills are cross-cutting monitoring and recovery procedures, not
-additional happy-path stages. Do not use the former unprefixed filenames.
-
 ## Runtime path
 
 The agent reads one Processing skill, which names allowed CLI commands in

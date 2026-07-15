@@ -18,15 +18,6 @@ gene-regulatory network inference are outside its scope.
 | [Processing-MuAgent](Processing-MuAgent/README.md) | Scientific intent, input validation, preprocessing strategy, parameter provenance, review checkpoints, and deliverables | The user-facing agent |
 | [Execution-MuAgent](Execution-MuAgent/README.md) | Machine setup, environment provisioning, SLURM submission, supervision, and structured execution findings | Operator-facing during setup; no direct user interaction during a run |
 
-```text
-User
-  ↕
-Processing-MuAgent ── scientific job specification ──→ Execution-MuAgent
-Processing-MuAgent ←── structured status/findings ──── Execution-MuAgent
-          │                                                   ↕
-          └── local workflow                                 SLURM
-```
-
 For local runs, Processing-MuAgent executes the scientific workflow directly. For
 SLURM runs, it prepares the confirmed job specification and delegates provisioning,
 submission, and monitoring to Execution-MuAgent. Execution-MuAgent never changes the

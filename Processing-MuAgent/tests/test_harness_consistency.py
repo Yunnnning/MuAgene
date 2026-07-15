@@ -224,6 +224,33 @@ def test_processing_skill_frontmatter_preserves_semantic_ids():
         assert frontmatter["name"] == semantic_id, filename
 
 
+def test_qc_review_skill_is_compact_and_preserves_safety_actions():
+    text = (_skills_dir() / "40_qc_review_and_revise.md").read_text()
+    required = [
+        "--dry-run",
+        "Confirm with the user",
+        "do not hand-delete",
+        "Do not use `--auto-approve`",
+        "relay it **verbatim**",
+        "never pick genes",
+        "executor marker-gene-check --config $CFG",
+        "executor approve post_qc_review --config $CFG",
+        "--target s3_doublets_execute",
+        "executor propose post_qc_review --config $CFG",
+        "--target qc_handoff",
+        "post_qc_<run>.h5mu",
+        "post_qc_manifest.json",
+        "explicit user approval",
+        "total_counts_min_override",
+        "pct_mt_k=999",
+    ]
+    missing = [phrase for phrase in required if phrase not in text]
+    assert not missing, f"QC skill lost safety actions: {missing}"
+    assert len(text.splitlines()) <= 220
+    assert "executor approve s3_doublets" not in text
+    assert "executor approve <stage>" not in text
+
+
 def test_no_markdown_references_unprefixed_processing_skill_filenames():
     old_names = [filename.split("_", 1)[1] for filename in _ORDERED_SKILLS]
     for markdown in _repo_root().rglob("*.md"):
