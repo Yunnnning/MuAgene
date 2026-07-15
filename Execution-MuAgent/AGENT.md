@@ -7,7 +7,7 @@ scope:
 owned_tool: Execution-MuAgent       # Click CLI; per-command contracts in agent/tools.md
 consumes_contracts: [site_config, machine_config, head_job, stage_meta, env_manifest]
 emits_contracts:   [latest_snapshot, latest_submission, execution_manifest, submissions, env_state]
-hard_rules: [no-user-contact-during-run, classify-before-retry, kill-only-on-confirmed-verdict, children-before-head, time-bounded-scheduler-calls, never-modify-specs, never-silently-degrade-env]
+root_agent: ../AGENT.md
 system_prompt: agent/system_prompt.md
 skills_dir:     agent/skills          # start at agent/skills/index.md
 contracts_dir:  ../contracts
@@ -42,12 +42,13 @@ fingerprints. Finding codes: [`../contracts/findings.yaml`](../contracts/finding
 Processing creates the supervisor PID file; Execution removes it when monitoring exits.
 
 ## Runtime policy
-The canonical hard rules live in [`agent/system_prompt.md`](agent/system_prompt.md).
-Operational and recovery procedures live in [`agent/skills/workflow.md`](agent/skills/workflow.md)
-and the shared contracts; do not duplicate them here.
+Overall composition and terminology live in the root [`AGENT.md`](../AGENT.md). Load the
+canonical hard rules from [`agent/system_prompt.md`](agent/system_prompt.md), then select
+the operational procedure through [`agent/skills/index.md`](agent/skills/index.md).
 
 ## Map
-- Policy + entry point: [`agent/system_prompt.md`](agent/system_prompt.md)
+- Root composition + terminology: [`../AGENT.md`](../AGENT.md)
+- Policy: [`agent/system_prompt.md`](agent/system_prompt.md)
 - Procedures (skills): [`agent/skills/index.md`](agent/skills/index.md)
 - Tool contracts: [`agent/tools.md`](agent/tools.md)
 - Cross-boundary contracts + state model: [`../contracts/`](../contracts/)

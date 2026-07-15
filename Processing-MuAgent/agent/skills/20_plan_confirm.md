@@ -13,7 +13,7 @@ handoff: { next: run_execution, when: plan_review approved, on_error: troublesho
 
 # Plan confirmation — the plan_review gate (#1)
 
-Entered after [`inputs_intake.md`](inputs_intake.md) has scaffolded the run, declared the
+Entered after [`10_inputs_intake.md`](10_inputs_intake.md) has scaffolded the run, declared the
 branch, and confirmed execution mode. This skill runs planning compute, presents the plan,
 and drives the first human gate. **Nothing heavy runs until the user approves.**
 
@@ -30,7 +30,7 @@ that stops one rule early and leaves the gate unarmed.
   executor submit --config $CFG --executor slurm     # auto-infers plan_review_propose; S0 needs 100+ GB → compute node
   executor hpc-status --config $CFG                   # one-shot, then report-and-repoll
   ```
-  Then follow [`hpc_monitoring.md`](hpc_monitoring.md) until `plan_review` is
+  Then follow [`80_hpc_monitoring.md`](80_hpc_monitoring.md) until `plan_review` is
   `awaiting_approval`.
 - **Local** (`execution.mode = local`):
   ```
@@ -38,7 +38,7 @@ that stops one rule early and leaves the gate unarmed.
   ```
 
 Do **not** retry logic errors (pairing ambiguous, declared-vs-detected mismatch, missing
-index, S0 OOM) — see [`troubleshooting.md`](troubleshooting.md). A declared `paired`
+index, S0 OOM) — see [`90_troubleshooting.md`](90_troubleshooting.md). A declared `paired`
 run that cannot be validated stops in S0; obtain an explicit branch/input resolution
 before rerunning.
 
@@ -81,7 +81,7 @@ If the plan keeps ambient RNA correction (`s1a_ambient.method != none`) and the 
 > tell me to **defer** this to QC review, or to **skip** it.
 
 **Never invent, suggest, or look up gene names** — canonical rule in
-[`qc_review_and_revise.md`](qc_review_and_revise.md). Record the user's one explicit choice:
+[`40_qc_review_and_revise.md`](40_qc_review_and_revise.md). Record the user's one explicit choice:
 - **provide genes** → `executor revise s1a_ambient "marker_genes=[g1, g2, ...]" --config $CFG --rationale "Marker genes provided at plan review"` (plotted automatically during S1a).
 - **defer** → carry `--defer-marker-genes` on the approve call (`--marker-genes defer` on `submit`).
 - **decline** → carry `--skip-marker-genes` on the approve call (`--marker-genes skip` on `submit`).
@@ -100,13 +100,13 @@ skip any QC threshold here, *before* any stage runs. The "QC strategy" item show
 > metric entirely?
 
 - **Keep defaults** → go to step 5.
-- **Adjust / pin / skip** → `executor revise s1_rna_qc <param>=<value> --config $CFG --rationale "<reason>"` (or `s2_atac_qc`). Revise the input knobs, or pin a bound with its `*_override` key — the common keys, the `*_override` pinning table, and the skip recipes are the shared reference in [`qc_review_and_revise.md`](qc_review_and_revise.md) (they apply at both gates). The binding-constraint diagnosis there (a MAD bound is `max(MAD, floor)` / `min(MAD, ceiling)`, so a non-binding knob has no effect) is just as useful here for picking the right knob.
+- **Adjust / pin / skip** → `executor revise s1_rna_qc <param>=<value> --config $CFG --rationale "<reason>"` (or `s2_atac_qc`). Revise the input knobs, or pin a bound with its `*_override` key — the common keys, the `*_override` pinning table, and the skip recipes are the shared reference in [`40_qc_review_and_revise.md`](40_qc_review_and_revise.md) (they apply at both gates). The binding-constraint diagnosis there (a MAD bound is `max(MAD, floor)` / `min(MAD, ceiling)`, so a non-binding knob has no effect) is just as useful here for picking the right knob.
 
 **`revise` at plan_review is non-destructive.** Nothing has run yet, so it only updates
 `internal/parameters.yaml` and re-renders the plan deliverables + the S0 QC-exploration
 preview (recomputed projected removals) — **no artifact deletion and no stage re-run** (unlike
 post_qc_review, where `revise` deletes downstream QC artifacts; see
-[`qc_review_and_revise.md`](qc_review_and_revise.md)). So no dry-run guardrail is needed here:
+[`40_qc_review_and_revise.md`](40_qc_review_and_revise.md)). So no dry-run guardrail is needed here:
 issue the `revise`, re-surface the regenerated plan, and re-ask. The approve / revise / abort
 loop is described once in step 5.
 
@@ -125,4 +125,4 @@ loop is described once in step 5.
 - The **Summary** section of `plan_review_<run>.md`, **verbatim** (the appendix is reference
   detail). Don't paraphrase values. Point the user at `plan_summary_<run>.html`.
 - If marker genes were stored, confirm the gene list in one line.
-- On approval, hand off to [`run_execution.md`](run_execution.md) for the QC batch.
+- On approval, hand off to [`30_run_execution.md`](30_run_execution.md) for the QC batch.

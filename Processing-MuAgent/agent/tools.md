@@ -26,23 +26,24 @@ chose). `--device gpu` only with a cluster mode. Mutates: `parameters.yaml`, `si
 Probe the cluster (partitions/accounts/GPU). **Read-only** — no run state touched.
 
 ### executor plan-review
-Assemble `preprocessing_plan.json` (defaults from `executor/defaults.py`) and render the
-plan-review deliverables + `stage_meta/`. `--intro-context` emits metadata; `--intro "<text>"`
-re-renders. Mutates: plan artifacts, `deliverables/plan/plan_review_<run>.md` + `.html`,
-`stage_meta/`. Idempotent (deterministic re-render).
+Render plan-review deliverables + `stage_meta/` from the frozen
+`preprocessing_plan.json` assembled by S0 (whose defaults come from
+`executor/defaults.py`). `--intro-context` emits metadata; `--intro "<text>"`
+re-renders. Mutates: `deliverables/plan/plan_review_<run>.md` + `.html`, `stage_meta/`.
+Idempotent (deterministic re-render).
 
 ### executor approve
 Write `internal/checkpoints/<gate>.approved`, unblocking downstream Snakemake rules. Gates:
 `plan_review`, `post_qc_review`. Marker-gene flags: `--defer-marker-genes` / `--skip-marker-genes`.
 On `post_qc_review`, also runs `cleanup.cleanup_qc_intermediates` (large QC caches). Does **not** run
 `qc_handoff` itself — submit/run `--target qc_handoff` immediately after approval (see
-[`skills/qc_review_and_revise.md`](skills/qc_review_and_revise.md)). Failure: refuses
+[`skills/40_qc_review_and_revise.md`](skills/40_qc_review_and_revise.md)). Failure: refuses
 `plan_review` while the marker-gene decision is unresolved.
 
 ### executor finish-cleanup
 Validate the branch's S8 deliverable, then remove regenerable S4–S8 working files while
 preserving deliverables and durable markers. Refuses without a valid final output. Run from
-[`skills/completion_handoff.md`](skills/completion_handoff.md); authoritative deletion sets
+[`skills/60_completion_handoff.md`](skills/60_completion_handoff.md); authoritative deletion sets
 live in `executor/cleanup.py`.
 
 ### executor qc-cleanup
@@ -55,7 +56,8 @@ and integration fragment caches by default. Authoritative deletion sets live in
 Change a planned/QC parameter: `revise <stage> <key>=<value> [--rationale STR]`. Mutates:
 `parameters.yaml` (adds `revision_of`) and **deletes** the revised stage's downstream
 artifacts so they re-run. At `post_qc_review` this is destructive — diagnose the binding
-constraint and confirm first ([`skills/qc_review_and_revise.md`](skills/qc_review_and_revise.md)).
+constraint and confirm first
+([`skills/40_qc_review_and_revise.md`](skills/40_qc_review_and_revise.md)).
 Also clears `post_qc_review.approved` (so a previously-approved gate re-arms) and, on
 RNA-carrying branches when the QC h5ads are absent (post-cleanup reprocess), additionally
 deletes the S1/S1a durable markers so those stages re-run rather than being skipped.
@@ -74,14 +76,15 @@ source `hpc.env` first. Refuses until `execution.user_confirmed=true`. Mutates: 
 per-stage `stage_meta/<stage>.yaml` from the current code + `PMA_RESOURCES_SCALE` (and prunes
 orphan specs from renamed/branch-dropped stages) so the monitor always verifies the stages that
 will actually run, writes `stage_meta/head_job.yaml`, and starts the supervision daemon. After it
-returns, follow [`skills/hpc_monitoring.md`](skills/hpc_monitoring.md).
+returns, follow [`skills/80_hpc_monitoring.md`](skills/80_hpc_monitoring.md).
 
 ### executor status
 Per-stage state report (awaiting / running / approved / complete). **Read-only.**
 
 ### executor hpc-status
 One-shot HPC health, read from Execution's `latest_snapshot.json`. **Read-only.** Never run
-`--watch` (blocking) — use report-and-repoll ([`skills/hpc_monitoring.md`](skills/hpc_monitoring.md)).
+`--watch` (blocking) — use report-and-repoll
+([`skills/80_hpc_monitoring.md`](skills/80_hpc_monitoring.md)).
 
 ### executor marker-gene-check
 `marker-gene-check <gene1> <gene2> ...`: plot marker expression before/after ambient correction

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # launch_runner.sh — activate project env and invoke snakemake.
 #
-# Used by both interactive mode (called from executor.cli._snakemake when
-# --executor != local) and headless mode (called from runner.slurm).
+# Used by the SLURM head job rendered by Execution-MuAgent. Local `executor run`
+# invokes Snakemake through executor.snakemake_runner instead.
 #
 # All trailing args are forwarded to snakemake. Typical invocation:
 #   launch_runner.sh --profile workflow/profiles/slurm --configfile $CFG all

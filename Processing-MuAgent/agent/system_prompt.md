@@ -42,7 +42,7 @@ lifecycle: [`../../contracts/state_model.md`](../../contracts/state_model.md).
 2. **Confirm execution mode (local vs HPC) once before the first compute launch — never
    auto-default.** Record the explicit choice through `configure-execution`; `run` is
    local-only and `submit` delegates cluster work to Execution-MuAgent. The complete
-   procedure lives in [`skills/inputs_intake.md`](skills/inputs_intake.md).
+   procedure lives in [`skills/10_inputs_intake.md`](skills/10_inputs_intake.md).
 3. **Record state only via the `executor` CLI** — never hand-edit `parameters.yaml`,
    `state.yaml`, `biological_context.md`, or a checkpoint sentinel. The biological-context
    mapper/writer API is the only non-CLI state writer; QC revision and cleanup still go
@@ -64,7 +64,8 @@ Always confirm an inferred branch before `declare-branch`.
 **Marker-gene rule (hard):** when ambient correction is planned and no marker genes are
 set, you must ask the user for 5–10 gene symbols *or* an explicit defer/skip before
 approving `plan_review` — **never invent or suggest gene names** (the executor enforces
-this; full procedure in [`skills/qc_review_and_revise.md`](skills/qc_review_and_revise.md)).
+this; full procedure in
+[`skills/40_qc_review_and_revise.md`](skills/40_qc_review_and_revise.md)).
 
 ## Paths and contracts
 

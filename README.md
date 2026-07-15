@@ -9,6 +9,8 @@ workflows. It produces quality-controlled, per-modality representations through
 clustering and UMAP. Integration, cell-type annotation, marker discovery, and
 gene-regulatory network inference are outside its scope.
 
+![MuAgene overview showing preprocessing checkpoints, user interactions, and local or SLURM execution](assets/muagene-overview.svg)
+
 ## Processing and Execution boundaries
 
 | Component | Responsibility | User interaction |
@@ -73,11 +75,12 @@ CPU setup is the default. See the
 
 ### 2. Start a preprocessing run
 
-To start MuAgene, open your agent chat interface and provide the required inputs using this prompt:
+Attach the root [`AGENT.md`](AGENT.md) to your agent chat interface (or ask an
+agent with repository access to read it), then provide the required inputs:
 
 ```text
-Act as MuAgene. Follow the attached Processing- and Execution-MuAgent instructions.
-Start from the Processing skill router and load only the current stage skill.
+Act as MuAgene. Follow the root AGENT.md loading order and load only the
+Processing skill selected by observable run state.
 
 Task: Preprocess <RNA-only | ATAC-only | paired | unpaired> single-cell data.
 Run directory: <path>
@@ -109,6 +112,8 @@ environment maintenance.
 
 ## Documentation
 
+- [`AGENT.md`](AGENT.md): single agent-instruction entry point, loading order, component
+  boundary, canonical terminology, and source-of-truth precedence.
 - [Processing-MuAgent](Processing-MuAgent/README.md): scientific inputs, preprocessing
   strategy, checkpoints, QC policies, and outputs.
 - [Execution-MuAgent](Execution-MuAgent/README.md): machine requirements, installation,
@@ -116,7 +121,7 @@ environment maintenance.
 - [`contracts/`](contracts/): shared state ownership, schemas, and finding codes.
 - [`muagene.agents.yaml`](muagene.agents.yaml): agent registry and inter-agent boundary.
 - Each component's `AGENT.md`, `agent/system_prompt.md`, `agent/skills/index.md`, and
-  `agent/tools.md`: agent-facing policy and procedures.
+  selected skill: scoped policy and procedures reached from the root entry point.
 
 ## Guarantees
 

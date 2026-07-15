@@ -3,11 +3,12 @@
 `../system_prompt.md` is always loaded; read the skill below on demand.
 
 ## Loading order
-1. [`../../AGENT.md`](../../AGENT.md) — identity and scope.
-2. [`../system_prompt.md`](../system_prompt.md) — always-loaded policy and hard rules.
-3. This index — select the needed procedure.
-4. One selected skill — operational procedure.
-5. [`../tools.md`](../tools.md) and [`../../../contracts/`](../../../contracts/) — consult
+1. [`../../../AGENT.md`](../../../AGENT.md) — root composition and terminology.
+2. [`../../AGENT.md`](../../AGENT.md) — Execution identity and scope.
+3. [`../system_prompt.md`](../system_prompt.md) — always-loaded policy and hard rules.
+4. This index — select the needed procedure.
+5. One selected skill — operational procedure.
+6. [`../tools.md`](../tools.md) and [`../../../contracts/`](../../../contracts/) — consult
    only for command or machine-contract details.
 
 The public README is operator guidance, not an agent instruction source.

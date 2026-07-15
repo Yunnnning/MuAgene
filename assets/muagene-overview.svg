@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="svg-title svg-desc">
+  <title id="svg-title">MuAgene preprocessing overview</title>
+  <desc id="svg-desc">Two-panel overview of MuAgene. Environment setup, combined user intake and inputs, Processing-MuAgent orchestration, planning, and the first user checkpoint appear in the first panel. Quality control, the second checkpoint, post-QC handoff, processing, deliverables, and local or HPC runtime execution appear in the second panel. Solid arrows show workflow, teal arrows show interaction or revision, blue arrows show execution dispatch, and dashed arrows show contracts or returned status.</desc>
+  <defs>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#0f766e"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .title { font-size: 28px; font-weight: 700; fill: #0f172a; }
+      .panel-title { font-size: 17px; font-weight: 700; letter-spacing: 1.2px; fill: #475569; }
+      .node-title { font-size: 20px; font-weight: 700; fill: #0f172a; }
+      .label { font-size: 18px; fill: #475569; }
+      .label-strong { font-size: 18px; font-weight: 700; fill: #0f172a; }
+      .helper { font-size: 17px; fill: #475569; }
+      .on-dark { fill: #ffffff; }
+      .teal-text { fill: #0f766e; }
+      .orange-text { fill: #9a3412; }
+      .panel { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.7; }
+      .module { fill: #ffffff; stroke: #64748b; stroke-width: 1.8; }
+      .flow { fill: none; stroke: #475569; stroke-width: 2.6; marker-end: url(#arrow-slate); }
+      .execution { fill: none; stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrow-blue); }
+      .dialogue { fill: none; stroke: #0f766e; stroke-width: 2.5; marker-start: url(#arrow-teal); marker-end: url(#arrow-teal); }
+      .revision { fill: none; stroke: #0f766e; stroke-width: 2.3; marker-end: url(#arrow-teal); }
+      .contract { fill: none; stroke: #64748b; stroke-width: 2.2; stroke-dasharray: 8 6; marker-end: url(#arrow-slate); }
+      .artifact { fill: #ffffff; stroke: #64748b; stroke-width: 1.7; stroke-dasharray: 7 5; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="800" fill="#ffffff"/>
+  <text x="24" y="36" class="title">MuAgene preprocessing</text>
+
+  <!-- Panel 1: setup, intake, orchestration, and planning -->
+  <text x="42" y="84" class="panel-title">SETUP, INTAKE &amp; PLAN</text>
+
+  <rect x="40" y="130" width="195" height="76" rx="12" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+  <text x="138" y="160" text-anchor="middle" class="node-title">Execution-MuAgent</text>
+  <text x="138" y="187" text-anchor="middle" class="label orange-text">environment setup</text>
+
+  <path d="M238 168 H272" class="flow"/>
+  <rect x="275" y="118" width="220" height="100" rx="12" fill="#ffffff" stroke="#334155" stroke-width="1.9"/>
+  <circle cx="305" cy="148" r="11" fill="#334155"/>
+  <path d="M288 184 C291 164 319 164 322 184" fill="#334155"/>
+  <text x="407" y="149" text-anchor="middle" class="node-title">User intake</text>
+  <text x="407" y="177" text-anchor="middle" class="label">RNA / ATAC data</text>
+  <text x="407" y="201" text-anchor="middle" class="label">biological context</text>
+
+  <path d="M498 168 H532" class="dialogue"/>
+  <rect x="535" y="130" width="230" height="76" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="650" y="160" text-anchor="middle" class="node-title">Processing-MuAgent</text>
+  <text x="650" y="187" text-anchor="middle" class="label">scientific orchestration</text>
+
+  <path d="M768 168 H802" class="execution"/>
+  <rect x="805" y="130" width="135" height="76" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="873" y="158" text-anchor="middle" class="label-strong">PLAN</text>
+  <text x="873" y="184" text-anchor="middle" class="label">plan &amp; validate</text>
+
+  <path d="M943 168 H977" class="flow"/>
+  <polygon points="980,168 1000,112 1118,112 1138,168 1118,224 1000,224" fill="#0f766e" stroke="#0b5f59" stroke-width="2"/>
+  <text x="1059" y="153" text-anchor="middle" class="helper on-dark" font-weight="700">CHECKPOINT 1</text>
+  <text x="1059" y="179" text-anchor="middle" class="label-strong on-dark">PLAN REVIEW</text>
+  <text x="1059" y="203" text-anchor="middle" class="helper on-dark">approve or revise</text>
+
+  <!-- Panel 2: QC, finish processing, outputs, and runtime collaboration -->
+  <text x="42" y="334" class="panel-title">QC &amp; PROCESSING</text>
+  <path d="M1059 228 V295 H15 V453 H125" class="flow"/>
+
+  <rect x="128" y="405" width="140" height="96" rx="10" class="module"/>
+  <rect x="128" y="405" width="140" height="30" rx="10" fill="#475569"/>
+  <rect x="128" y="425" width="140" height="10" fill="#475569"/>
+  <text x="198" y="427" text-anchor="middle" class="label-strong on-dark">QC</text>
+  <text x="198" y="465" text-anchor="middle" class="node-title">QC &amp; filtering</text>
+
+  <path d="M271 453 H305" class="flow"/>
+  <polygon points="308,453 328,394 448,394 468,453 448,512 328,512" fill="#0f766e" stroke="#0b5f59" stroke-width="2"/>
+  <text x="388" y="435" text-anchor="middle" class="helper on-dark" font-weight="700">CHECKPOINT 2</text>
+  <text x="388" y="462" text-anchor="middle" class="label-strong on-dark">QC REVIEW</text>
+  <text x="388" y="486" text-anchor="middle" class="helper on-dark">approve or revise</text>
+  <path d="M388 516 V540 H198 V505" class="revision"/>
+  <text x="293" y="558" text-anchor="middle" class="helper teal-text">revise QC</text>
+
+  <path d="M471 453 H505" class="flow"/>
+  <rect x="508" y="405" width="150" height="96" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-width="2"/>
+  <rect x="508" y="405" width="150" height="30" rx="10" fill="#0f766e"/>
+  <rect x="508" y="425" width="150" height="10" fill="#0f766e"/>
+  <text x="583" y="427" text-anchor="middle" class="label-strong on-dark">HANDOFF</text>
+  <text x="583" y="474" text-anchor="middle" class="helper">post-QC handoff</text>
+
+  <path d="M661 453 H695" class="flow"/>
+
+  <rect x="698" y="405" width="190" height="96" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+  <rect x="698" y="405" width="190" height="30" rx="10" fill="#475569"/>
+  <rect x="698" y="425" width="190" height="10" fill="#475569"/>
+  <text x="793" y="427" text-anchor="middle" class="label-strong on-dark">PROCESS</text>
+  <text x="793" y="453" text-anchor="middle" class="helper">normalization</text>
+  <text x="793" y="472" text-anchor="middle" class="helper">dimensionality reduction</text>
+  <text x="793" y="491" text-anchor="middle" class="helper">clustering | UMAP</text>
+
+  <path d="M891 453 H925" class="flow"/>
+  <rect x="928" y="405" width="145" height="96" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="1001" y="439" text-anchor="middle" class="label-strong">Deliverables</text>
+  <text x="1001" y="465" text-anchor="middle" class="helper">processed data</text>
+  <text x="1001" y="486" text-anchor="middle" class="helper">reports + manifest</text>
+
+  <text x="42" y="602" class="panel-title">EXECUTION</text>
+  <rect x="40" y="630" width="200" height="66" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
+  <text x="140" y="657" text-anchor="middle" class="label-strong">Processing-MuAgent</text>
+  <text x="140" y="682" text-anchor="middle" class="helper">execution dispatch</text>
+
+  <text x="282" y="621" text-anchor="end" class="helper">LOCAL</text>
+  <path d="M243 649 C263 649 268 634 292 634" class="execution"/>
+  <rect x="295" y="608" width="145" height="56" rx="9" class="module"/>
+  <text x="368" y="633" text-anchor="middle" class="label-strong">Snakemake</text>
+  <text x="368" y="655" text-anchor="middle" class="helper">local execution</text>
+
+  <text x="250" y="716" text-anchor="middle" class="helper">HPC</text>
+  <path d="M243 682 C265 682 270 709 292 709" class="contract"/>
+  <rect x="295" y="682" width="150" height="56" rx="9" class="artifact"/>
+  <text x="370" y="707" text-anchor="middle" class="label-strong">HPC</text>
+  <text x="370" y="729" text-anchor="middle" class="helper">confirmed contracts</text>
+
+  <path d="M448 710 H487" class="contract"/>
+  <rect x="490" y="682" width="220" height="56" rx="9" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+  <text x="600" y="707" text-anchor="middle" class="label-strong">Execution-MuAgent</text>
+  <text x="600" y="729" text-anchor="middle" class="helper orange-text">runtime orchestrator</text>
+
+  <path d="M713 710 H747" class="execution"/>
+  <rect x="750" y="682" width="90" height="56" rx="9" class="module"/>
+  <text x="795" y="717" text-anchor="middle" class="label-strong">SLURM</text>
+
+  <path d="M600 741 V758 H140 V699" class="contract"/>
+  <rect x="410" y="742" width="190" height="30" rx="15" fill="#ffffff" stroke="#64748b" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="505" y="763" text-anchor="middle" class="helper">status returned</text>
+</svg>

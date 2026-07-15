@@ -13,8 +13,8 @@ handoff: { next: qc_review_and_revise OR downstream_dimred_clustering, when: a g
 
 # Run execution — the dispatch + checkpoint engine
 
-Entered after a gate approval — from [`plan_confirm.md`](plan_confirm.md) for the **QC
-batch**, or from [`qc_review_and_revise.md`](qc_review_and_revise.md) for the **finish
+Entered after a gate approval — from [`20_plan_confirm.md`](20_plan_confirm.md) for the **QC
+batch**, or from [`40_qc_review_and_revise.md`](40_qc_review_and_revise.md) for the **finish
 batch**. This skill only *moves compute and arms gates*; the science at each gate is owned by
 that gate's own skill.
 
@@ -40,16 +40,16 @@ exits. (On `KillUserProcesses=yes` sites, run `submit` inside `tmux`/`screen`.)
 | Phase | Stages | Executes on | Owner skill |
 |---|---|---|---|
 | Context | P1 | login node (localrule) | — |
-| S0 ingest (+plan) | S0 | head-job (HPC) / login (local) | [`plan_confirm.md`](plan_confirm.md) |
-| Gate #1 | plan_review | login node | [`plan_confirm.md`](plan_confirm.md) |
+| S0 ingest (+plan) | S0 | head-job (HPC) / login (local) | [`20_plan_confirm.md`](20_plan_confirm.md) |
+| Gate #1 | plan_review | login node | [`20_plan_confirm.md`](20_plan_confirm.md) |
 | QC | S1a → S3 | head-job | this skill |
-| Gate #2 | post_qc_review | — | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
-| Integration handoff | qc_handoff | SLURM cluster job at QC approval (`submit --target qc_handoff`) | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
-| Finish | S4 → S5 → S6 → S7 → S8 → manifest | head-job | [`downstream_dimred_clustering.md`](downstream_dimred_clustering.md) |
+| Gate #2 | post_qc_review | — | [`40_qc_review_and_revise.md`](40_qc_review_and_revise.md) |
+| Integration handoff | qc_handoff | SLURM cluster job at QC approval (`submit --target qc_handoff`) | [`40_qc_review_and_revise.md`](40_qc_review_and_revise.md) |
+| Finish | S4 → S5 → S6 → S7 → S8 → manifest | head-job | [`50_downstream_dimred_clustering.md`](50_downstream_dimred_clustering.md) |
 
 After plan-review approval, `source deliverables/plan/config/hpc.env`, then:
 - **QC batch:** `executor submit --config $CFG --executor slurm --auto-approve --auto-approve-except post_qc_review`
-- **After QC approval:** the agent immediately submits the separate `qc_handoff` target (see [`qc_review_and_revise.md`](qc_review_and_revise.md)). After it verifies the handoff and the user confirms the finish batch, `executor submit --config $CFG --executor slurm` runs S4→S8→manifest (target `all`; Snakemake skips the completed handoff).
+- **After QC approval:** the agent immediately submits the separate `qc_handoff` target (see [`40_qc_review_and_revise.md`](40_qc_review_and_revise.md)). After it verifies the handoff and the user confirms the finish batch, `executor submit --config $CFG --executor slurm` runs S4→S8→manifest (target `all`; Snakemake skips the completed handoff).
 
 Each gated phase's head-job target is the **gate-arming `*_propose` localrule** (e.g.
 `post_qc_review_propose`), not the phase's last execute stage. Snakemake pulls every execute
@@ -63,10 +63,10 @@ phase has no gate → target `all`. You never run `propose` by hand to surface a
 2. Read `internal/proposals/<stage>.yaml` (and any linked summary, e.g.
    `deliverables/qc/qc_review_<run>.md`).
 3. Route by stage via [`index.md`](index.md): `post_qc_review` →
-   [`qc_review_and_revise.md`](qc_review_and_revise.md); other gated stages → approve, or
+   [`40_qc_review_and_revise.md`](40_qc_review_and_revise.md); other gated stages → approve, or
    `executor revise <stage> <key>=<value> --config $CFG` then re-surface.
 4. Approve → `executor approve <stage> --config $CFG`; re-submit/re-run the next batch.
-5. Continue until `manifest` completes → [`completion_handoff.md`](completion_handoff.md).
+5. Continue until `manifest` completes → [`60_completion_handoff.md`](60_completion_handoff.md).
 
 The only human checkpoints are `plan_review` and `post_qc_review`. The handoff-to-finish
 confirmation is conversational agent policy, not another Snakemake gate. `s7_clustering`
@@ -75,7 +75,7 @@ uses fixed planned resolutions and is not a checkpoint.
 ## Monitoring + signals
 
 After any `submit`, follow **report-and-repoll** — canonical procedure in
-[`hpc_monitoring.md`](hpc_monitoring.md) (never a blocking loop or `tail -f`).
+[`80_hpc_monitoring.md`](80_hpc_monitoring.md) (never a blocking loop or `tail -f`).
 `monitor.pid` removal means the daemon stopped (this phase's compute is over); treat it and
 the gate sentinel as **independent** signals — drive the next checkpoint on **either**.
 
@@ -90,4 +90,5 @@ Cluster jobs are `pma_{stage}_{run_name}` (head) / `pma_{rule}_{run_name}` (chil
 
 `executor run --config $CFG` (no `--auto-approve`) runs every stage whose `.approved`
 sentinel exists, stopping at the first missing one. Drive the same checkpoint loop; re-run
-after each approval. Local QC-revision re-run details: [`qc_review_and_revise.md`](qc_review_and_revise.md).
+after each approval. Local QC-revision re-run details:
+[`40_qc_review_and_revise.md`](40_qc_review_and_revise.md).

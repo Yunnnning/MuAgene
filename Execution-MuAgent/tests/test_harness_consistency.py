@@ -39,8 +39,14 @@ def test_every_cli_command_is_documented():
     cli = importlib.import_module("execution_muagent.cli")
     grp = getattr(cli, "cli", None) or getattr(cli, "main", None)
     tools = (pathlib.Path(__file__).resolve().parents[1] / "agent" / "tools.md").read_text()
-    missing = [c for c in grp.commands if c not in tools]
-    assert not missing, f"Execution commands missing from agent/tools.md: {sorted(missing)}"
+    documented = set(
+        re.findall(r"^### Execution-MuAgent ([a-z0-9-]+)$", tools, flags=re.MULTILINE)
+    )
+    live = set(grp.commands)
+    assert documented == live, (
+        f"agent/tools.md mismatch: missing={sorted(live - documented)}, "
+        f"stale={sorted(documented - live)}"
+    )
 
 
 def test_state_model_records_supervisor_ownership_and_resume_source():

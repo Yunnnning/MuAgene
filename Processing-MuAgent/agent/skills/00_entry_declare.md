@@ -73,7 +73,7 @@ Confirm in one sentence, and list the checkpoints relevant to their branch:
 >
 > Ready to send me the paths?
 
-Then hand off to [`inputs_intake.md`](inputs_intake.md).
+Then hand off to [`10_inputs_intake.md`](10_inputs_intake.md).
 
 ## Corner cases
 
@@ -109,6 +109,7 @@ Peek at `<run_dir>/internal/state.yaml` (if it exists) and mention what's there 
 
 ## Explicit non-actions
 
-- Do NOT call `executor init` here — that's the next skill ([`inputs_intake.md`](inputs_intake.md)), once you have a draft `run.yaml`.
+- Do NOT call `executor init` here — that's the next skill
+  ([`10_inputs_intake.md`](10_inputs_intake.md)), once you have a draft `run.yaml`.
 - Do NOT infer paths from filesystem hints. If the user didn't supply them, ask.
 - Do NOT auto-pick `paired` over `unpaired` when the user is ambiguous — both are valid workflows with different output shapes.

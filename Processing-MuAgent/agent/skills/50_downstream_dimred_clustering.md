@@ -14,7 +14,7 @@ handoff: { next: completion_handoff, when: manifest complete, on_error: troubles
 # Downstream — dimensionality reduction & clustering (S4–S8, unattended)
 
 Entered after `post_qc_review` is approved **and** `qc_handoff` has already run (see
-[`qc_review_and_revise.md`](qc_review_and_revise.md) — `qc_handoff` runs at the approval
+[`40_qc_review_and_revise.md`](40_qc_review_and_revise.md) — `qc_handoff` runs at the approval
 step, not here). This skill is entered when the finish batch is submitted:
 `executor submit --config $CFG --executor slurm` (target `all`; Snakemake skips
 `qc_handoff` since its outputs already exist) or `executor run` locally. From here to
@@ -41,11 +41,11 @@ DAG automatically. On `paired`, S7 labels are diagnostic (UMAP only); on
 
 - **Do not** intervene — no gate, no revise. S7 resolutions are fixed by the plan; a
   different value requires `revise s7_clustering …` back at plan review, not here.
-- **HPC:** follow **report-and-repoll** ([`hpc_monitoring.md`](hpc_monitoring.md)); report
+- **HPC:** follow **report-and-repoll** ([`80_hpc_monitoring.md`](80_hpc_monitoring.md)); report
   only when the `State:` fingerprint changes. Stop when `monitor.pid` is gone or `manifest`
   is complete.
 - **Local:** the finish batch runs straight through under `executor run`.
-- On any runtime failure → [`troubleshooting.md`](troubleshooting.md) ("a stage execute
+- On any runtime failure → [`90_troubleshooting.md`](90_troubleshooting.md) ("a stage execute
   fails at runtime").
 
-When `manifest` completes → [`completion_handoff.md`](completion_handoff.md).
+When `manifest` completes → [`60_completion_handoff.md`](60_completion_handoff.md).

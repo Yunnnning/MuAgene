@@ -107,4 +107,4 @@ meanings + recovery actions are in [`../../../contracts/findings.yaml`](../../..
   next one-shot `hpc-status`.
 - **Tempted to monitor a long-running job yourself** — don't. The daemon is the sole
   monitor; read one-shot `executor hpc-status`. Re-poll only via a non-blocking scheduled
-  wakeup ([`hpc_monitoring.md`](hpc_monitoring.md)) — never a blocking loop or `tail -f | grep`.
+  wakeup ([`80_hpc_monitoring.md`](80_hpc_monitoring.md)) — never a blocking loop or `tail -f | grep`.

@@ -26,6 +26,30 @@ def _contracts_dir() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[2] / "contracts"
 
 
+def _repo_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[2]
+
+
+def test_root_agent_is_the_two_agent_entry_point():
+    root_agent = (_repo_root() / "AGENT.md").read_text()
+    assert "Processing-MuAgent/AGENT.md" in root_agent
+    assert "Execution-MuAgent/AGENT.md" in root_agent
+    assert "muagene.agents.yaml" in root_agent
+    assert "## Global safeguards" not in root_agent
+    import yaml
+    registry = yaml.safe_load((_repo_root() / "muagene.agents.yaml").read_text())
+    assert registry["root_manifest"] == "AGENT.md"
+
+
+def test_component_instruction_hierarchies_start_at_root_agent():
+    for component in ("Processing-MuAgent", "Execution-MuAgent"):
+        manifest = (_repo_root() / component / "AGENT.md").read_text()
+        router = (_repo_root() / component / "agent" / "skills" / "index.md").read_text()
+        loading_order = router.split("## Loading order", 1)[1].split("\n## ", 1)[0]
+        assert "Policy + entry point" not in manifest
+        assert loading_order.index("../../../AGENT.md") < loading_order.index("../../AGENT.md")
+
+
 def test_plan_assembler_values_match_qc_defaults(tmp_path):
     """assemble_plan must emit exactly the centralised QC_DEFAULTS values+types.
 
@@ -126,10 +150,15 @@ def test_run_manifest_contract_version_matches_emitter():
 # --- Stage 5: every CLI command has a tool contract ---
 
 def test_every_executor_command_is_documented():
+    import re
     from executor.cli import main
     tools = (pathlib.Path(__file__).resolve().parents[1] / "agent" / "tools.md").read_text()
-    missing = [c for c in main.commands if c not in tools]
-    assert not missing, f"executor commands missing from agent/tools.md: {sorted(missing)}"
+    documented = set(re.findall(r"^### executor ([a-z0-9-]+)$", tools, flags=re.MULTILINE))
+    live = set(main.commands)
+    assert documented == live, (
+        f"agent/tools.md mismatch: missing={sorted(live - documented)}, "
+        f"stale={sorted(documented - live)}"
+    )
 
 
 # --- Stage 6: revise --dry-run previews without mutating ---
@@ -166,6 +195,41 @@ _REQUIRED_FRONTMATTER = {
     "name", "domain", "purpose", "activation", "inputs", "outputs",
     "calls_tools", "reads_contracts", "writes_state", "handoff",
 }
+
+_ORDERED_SKILLS = {
+    "00_entry_declare.md": "entry_declare",
+    "10_inputs_intake.md": "inputs_intake",
+    "20_plan_confirm.md": "plan_confirm",
+    "30_run_execution.md": "run_execution",
+    "40_qc_review_and_revise.md": "qc_review_and_revise",
+    "50_downstream_dimred_clustering.md": "downstream_dimred_clustering",
+    "60_completion_handoff.md": "completion_handoff",
+    "80_hpc_monitoring.md": "hpc_monitoring",
+    "90_troubleshooting.md": "troubleshooting",
+}
+
+
+def test_processing_skill_filenames_encode_router_order():
+    actual = sorted(md.name for md in _skills_dir().glob("*.md") if md.name != "index.md")
+    assert actual == list(_ORDERED_SKILLS)
+
+
+def test_processing_skill_frontmatter_preserves_semantic_ids():
+    import yaml
+    for filename, semantic_id in _ORDERED_SKILLS.items():
+        text = (_skills_dir() / filename).read_text()
+        frontmatter = yaml.safe_load(text.split("---\n", 2)[1])
+        assert isinstance(frontmatter, dict), filename
+        assert _REQUIRED_FRONTMATTER <= set(frontmatter), filename
+        assert frontmatter["name"] == semantic_id, filename
+
+
+def test_no_markdown_references_unprefixed_processing_skill_filenames():
+    old_names = [filename.split("_", 1)[1] for filename in _ORDERED_SKILLS]
+    for markdown in _repo_root().rglob("*.md"):
+        text = markdown.read_text()
+        stale = [name for name in old_names if f"({name})" in text or f"skills/{name}" in text]
+        assert not stale, f"{markdown.relative_to(_repo_root())}: stale skill links {stale}"
 
 
 def test_every_skill_has_required_frontmatter():

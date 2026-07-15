@@ -29,7 +29,8 @@ genome_assembly: GRCh38
 # Optional metadata file (CSV or TSV). If absent, minimal reconstruction is used.
 # metadata_path: /path/to/metadata.csv
 
-# Optional Biological Context Report path. Defaults to <run_dir>/biological_context.md.
+# Optional Biological Context Report path.
+# Defaults to <run_dir>/deliverables/plan/config/biological_context.md.
 # biological_context_path: /path/to/biological_context.md
 
 # Seed for reproducibility

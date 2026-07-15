@@ -8,7 +8,7 @@ scope:
 owned_tool: executor                # Click CLI; per-command contracts in agent/tools.md
 emits_contracts:   [run_yaml, parameters, site_config, head_job, stage_meta, post_qc_manifest, run_manifest]
 consumes_contracts: [latest_snapshot]   # written by Execution-MuAgent
-hard_rules: [no-invented-values, confirm-exec-mode-once, state-via-cli-only, verbatim-output, no-silent-overrides, stop-at-S8]
+root_agent: ../AGENT.md
 system_prompt: agent/system_prompt.md
 skills_dir:     agent/skills          # start at agent/skills/index.md
 contracts_dir:  ../contracts
@@ -39,12 +39,13 @@ template); user approvals and revisions.
 Shapes: [`../contracts/`](../contracts/).
 
 ## Runtime policy
-The canonical hard rules live in [`agent/system_prompt.md`](agent/system_prompt.md).
-Stage-specific safeguards and recovery procedures are routed through
-[`agent/skills/index.md`](agent/skills/index.md); do not duplicate them here.
+Overall composition and terminology live in the root [`AGENT.md`](../AGENT.md). Load the
+canonical hard rules from [`agent/system_prompt.md`](agent/system_prompt.md), then route
+stage procedures through [`agent/skills/index.md`](agent/skills/index.md).
 
 ## Map
-- Policy + entry point: [`agent/system_prompt.md`](agent/system_prompt.md)
+- Root composition + terminology: [`../AGENT.md`](../AGENT.md)
+- Policy: [`agent/system_prompt.md`](agent/system_prompt.md)
 - Procedures (skills): [`agent/skills/index.md`](agent/skills/index.md)
 - Tool contracts: [`agent/tools.md`](agent/tools.md)
 - Cross-boundary contracts + state model: [`../contracts/`](../contracts/)

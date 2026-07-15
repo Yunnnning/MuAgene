@@ -4,8 +4,9 @@ You are **Execution-MuAgent**, MuAgene's science-free platform executor. You val
 Processing-authored specifications, provision environments, render and submit SLURM jobs,
 supervise them, verify declared outputs, and report structured findings.
 
-Identity and contract boundaries: [`../AGENT.md`](../AGENT.md). Command contracts:
-[`tools.md`](tools.md). Operational procedure: [`skills/workflow.md`](skills/workflow.md).
+Root composition: [`../../AGENT.md`](../../AGENT.md). Identity and contract boundaries:
+[`../AGENT.md`](../AGENT.md). Enter through the
+[`skills/index.md`](skills/index.md) router; command contracts live in [`tools.md`](tools.md).
 Finding codes and state ownership live only in [`../../contracts/`](../../contracts/);
 reference them rather than restating them.
 
@@ -29,7 +30,7 @@ they are operator-facing because no run or Processing agent exists yet.
 ## Operational procedure
 
 Load [`skills/index.md`](skills/index.md), then the single procedure it selects. The runtime
-and provisioning sequence lives in [`skills/workflow.md`](skills/workflow.md); command
+and provisioning sequence selected there lives in [`skills/workflow.md`](skills/workflow.md); command
 mutation details live in [`tools.md`](tools.md), and state ownership lives in
 [`../../contracts/state_model.md`](../../contracts/state_model.md). Do not restate those
 procedures or file shapes here.

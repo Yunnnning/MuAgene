@@ -14,10 +14,10 @@ handoff: { next: plan_confirm, when: run scaffolded + branch declared + exec-mod
 # Inputs intake — paths + optional biological context
 
 Script for the turn(s) after the user has declared their analysis type
-([`entry_declare.md`](entry_declare.md)). Goal: collect enough to build a valid `run.yaml`,
+([`00_entry_declare.md`](00_entry_declare.md)). Goal: collect enough to build a valid `run.yaml`,
 write it via `executor init`, populate biological context (if offered), configure execution
 mode (local vs HPC), and declare the branch. Then hand off to
-[`plan_confirm.md`](plan_confirm.md), which kicks off planning compute and drives the
+[`20_plan_confirm.md`](20_plan_confirm.md), which kicks off planning compute and drives the
 plan_review gate.
 
 ## What to say
@@ -249,9 +249,9 @@ After biological-context write (cases a/b/c): confirm the file exists at `delive
 After `configure-execution`: confirm `execution.mode` **and `compute.device` (cpu/gpu)** and, for HPC, the path to `deliverables/plan/config/hpc.env`. Tell the user to `source` that file before any cluster submit/resume. When `device=gpu` on SLURM, also confirm the GPU partition/gres and the pinned `gpu_image_uri` (the container image is **pulled** from that registry reference — recorded in `site.config` / `~/.muagene/machine.config`, not a conda env).
 
 Once the run is scaffolded, the branch is declared, and execution mode is confirmed, hand off
-to [`plan_confirm.md`](plan_confirm.md) — it runs the planning phase (P1 → S0, which assembles the plan in-process), surfaces
+to [`20_plan_confirm.md`](20_plan_confirm.md) — it runs the planning phase (P1 → S0, which assembles the plan in-process), surfaces
 `context_summary.md` / `validation_report.json`, and drives the plan_review gate. Any S0 or
-context-gate errors at that point → [`troubleshooting.md`](troubleshooting.md).
+context-gate errors at that point → [`90_troubleshooting.md`](90_troubleshooting.md).
 
 ## Explicit non-actions
 

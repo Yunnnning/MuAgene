@@ -2,6 +2,7 @@
 # between them. The single machine-readable place that says "these agents exist and
 # this is how they hand off". Prose (READMEs, system prompts) references this.
 schema_version: "1"
+root_manifest: AGENT.md
 
 agents:
   processing:

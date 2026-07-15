@@ -2,7 +2,7 @@
 name: qc_review_and_revise
 domain: QC
 purpose: Drive the post_qc_review gate (#2) — relay QC reports verbatim (science) and apply threshold/doublet revisions (action) behind the dry-run guardrail. Canonical home of the never-invent-genes rule.
-activation: status shows post_qc_review awaiting_approval. Also the canonical reference for the QC revise keys / `*_override` / skip recipes used at both gates; plan-review-time revision is driven by plan_confirm.md (non-destructive there), not this skill.
+activation: status shows post_qc_review awaiting_approval. Also the canonical reference for the QC revise keys / `*_override` / skip recipes used at both gates; plan-review-time revision is driven by 20_plan_confirm.md (non-destructive there), not this skill.
 inputs: [deliverables/qc/qc_review_<run>.md, internal/proposals/post_qc_review.yaml, internal/parameters.yaml]
 outputs: [internal/parameters.yaml, post_qc_review.approved, deliverables/qc/post_qc_<run>.h5mu, deliverables/qc/peaks_<run>.bed, deliverables/qc/post_qc_manifest.json]
 calls_tools: [status, revise, "revise --dry-run", approve, marker-gene-check, propose, submit, run]
@@ -21,7 +21,7 @@ Canonical user-facing report after re-run: `deliverables/qc/qc_review_<run_name>
 
 ## Before you revise — diagnose, dry-run, confirm (guardrail)
 
-**Scope:** the destructive behaviour and dry-run guardrail below apply **at `post_qc_review`** (S1a–S3 have already run). At `plan_review` nothing has run, so `revise` is non-destructive — it only re-renders the plan deliverables, with no artifact deletion and no re-run; the binding-constraint diagnosis (step 1) still applies, the dry-run/confirm steps do not. Drive plan-review revision from [`plan_confirm.md`](plan_confirm.md); use the key / `*_override` / skip tables below at either gate.
+**Scope:** the destructive behaviour and dry-run guardrail below apply **at `post_qc_review`** (S1a–S3 have already run). At `plan_review` nothing has run, so `revise` is non-destructive — it only re-renders the plan deliverables, with no artifact deletion and no re-run; the binding-constraint diagnosis (step 1) still applies, the dry-run/confirm steps do not. Drive plan-review revision from [`20_plan_confirm.md`](20_plan_confirm.md); use the key / `*_override` / skip tables below at either gate.
 
 At `post_qc_review` a `revise` is **destructive**: it deletes the revised stage's outputs and everything downstream through S3 (plus the gate outputs). Before issuing a real `revise` here:
 
@@ -112,7 +112,7 @@ Use this when `execution.mode` is `slurm`.
    executor hpc-status --config $CFG     # one-shot: report, then re-poll on a scheduled wakeup
    ```
 
-   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see [`hpc_monitoring.md`](hpc_monitoring.md)). Never run a blocking loop or `tail -f | grep`.
+   After `submit`, the daemon is the sole monitor; report its status via one-shot `hpc-status` and follow **report-and-repoll** (re-poll on a non-blocking scheduled wakeup at the `Next check:` cadence — see [`80_hpc_monitoring.md`](80_hpc_monitoring.md)). Never run a blocking loop or `tail -f | grep`.
 
 5. **QC reports regenerate automatically.** The inferred submit target is the gate-arming localrule `post_qc_review_propose`, which Snakemake reaches after the revised QC execute stages complete — so the head job re-runs the changed stages **and** rewrites `qc_review_<run>.md`, `qc_summary_<run>.html`, and the checkpoint figures under `deliverables/figures/`, then arms the gate (`post_qc_review` becomes `awaiting_approval`). You do not need to run `propose` by hand on the happy path.
 
@@ -218,7 +218,7 @@ When the user approves QC (marker gene check complete or explicitly waived, thre
    executor run --config $CFG --target qc_handoff
    ```
 
-   Follow report-and-repoll ([`hpc_monitoring.md`](hpc_monitoring.md)) until `qc_handoff` completes. On HPC it is a **SLURM cluster job** (it materialises the post-QC ATAC fragments + the `.h5mu` — too heavy for the login/head node); under local `run` it executes inline.
+   Follow report-and-repoll ([`80_hpc_monitoring.md`](80_hpc_monitoring.md)) until `qc_handoff` completes. On HPC it is a **SLURM cluster job** (it materialises the post-QC ATAC fragments + the `.h5mu` — too heavy for the login/head node); under local `run` it executes inline.
 
 3. **Verify outputs exist:**
    - `deliverables/qc/post_qc_<run>.h5mu`
