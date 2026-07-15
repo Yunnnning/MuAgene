@@ -4,12 +4,15 @@ MuAgene is an agent-first framework for reproducible single-cell RNA and ATAC
 preprocessing. It separates scientific decision-making from platform execution while
 presenting one conversational interface to the user.
 
-MuAgene supports RNA-only, ATAC-only, paired multiome, and unpaired RNA-plus-ATAC
-workflows. It produces quality-controlled, per-modality representations through
-clustering and UMAP. Integration, cell-type annotation, marker discovery, and
-gene-regulatory network inference are outside its scope.
+MuAgene supports RNA-only, ATAC-only, paired multiome, and unpaired RNA-plus-ATAC 
+workflows. It generates quality-controlled, per-modality processed data representations suitable for downstream analysis. Integration and cell-type annotation are outside its scope.
 
 ![MuAgene overview showing preprocessing checkpoints, user interactions, and local or SLURM execution](assets/muagene-overview.svg)
+
+The agent stops for decisions rather than silently changing inputs, workflow type,
+scientific parameters, or execution settings. Detailed preprocessing stages, supported
+formats, QC defaults, and outputs are documented in the
+[Processing-MuAgent guide](Processing-MuAgent/README.md).
 
 ## Processing and Execution boundaries
 
@@ -23,30 +26,6 @@ SLURM runs, it prepares the confirmed job specification and delegates provisioni
 submission, and monitoring to Execution-MuAgent. Execution-MuAgent never changes the
 scientific plan or chooses recovery actions; Processing-MuAgent explains findings and
 asks the user how to proceed.
-
-The machine-readable boundary is declared in
-[`muagene.agents.yaml`](muagene.agents.yaml), with shared state and handoff contracts
-under [`contracts/`](contracts/).
-
-## What to expect
-
-The normal user journey is:
-
-```text
-intake and context
-  → preprocessing plan and QC preview
-  → plan review
-  → modality-aware QC and doublet filtering
-  → QC review
-  → verified post-QC handoff
-  → user confirms the unattended finish batch
-  → normalization, embeddings, clustering, UMAP, and final manifest
-```
-
-The agent stops for decisions rather than silently changing inputs, workflow type,
-scientific parameters, or execution settings. Detailed preprocessing stages, supported
-formats, QC defaults, and outputs are documented in the
-[Processing-MuAgent guide](Processing-MuAgent/README.md).
 
 ## Getting started
 
