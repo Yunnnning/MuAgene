@@ -224,49 +224,9 @@ Comments identify each output; brackets show the generating pipeline stage.
 Only files relevant to the selected workflow branch and execution mode are created.
 Raw input files are referenced in place and never overwritten.
 
-## Getting started
-
-1. Set up MuAgene once using the
-   [Execution-MuAgent installation guide](../Execution-MuAgent/README.md#installation).
-2. Start Processing-MuAgent and describe the analysis, for example:
-
-   ```text
-   Act as MuAgene. Follow the attached Processing- and Execution-MuAgent
-   instructions. Use the Processing skill router and load only the current stage skill.
-
-   Task: Preprocess <RNA-only | ATAC-only | paired | unpaired> single-cell data.
-   Run directory: <path>
-   Inputs: <input path(s)>
-
-   Biological context:
-   - genome assembly: <assembly>
-   - organism: <organism>
-   - tissue or cell line: <context>
-   - assay: <assay>
-   - marker genes for the ambient-RNA check: <genes | defer | skip>
-
-   Execution mode: <local | SLURM>
-   Environment: muagene
-
-   Stop at each review checkpoint and wait for my explicit approval. After the
-   post-QC handoff, ask before proceeding to downstream stages.
-   ```
-
-3. The agent will collect the remaining inputs, inspect the available resources, and
-   present each required decision before launching compute.
-
-### Local and cluster execution
-
-Local execution runs the scientific workflow directly on the current machine. On
-SLURM, Processing-MuAgent prepares the scientific job specification and delegates
-provisioning, submission, and supervision to Execution-MuAgent.
-
-You continue interacting only with Processing-MuAgent for plan review, QC review,
-status, and recovery. See [Execution-MuAgent](../Execution-MuAgent/README.md) for
-machine prerequisites and bootstrap commands.
-
 ## Project context
 
-Processing-MuAgent is one component of [MuAgene](../README.md). The concise agent
-contract is documented in [AGENT.md](AGENT.md); implementation procedures remain in
-the agent instructions rather than this user guide.
+Processing-MuAgent is MuAgene's scientific component. See the
+[MuAgene guide](../README.md) for installation, framework-level responsibilities, and
+how to start a run. The concise agent contract is documented in [AGENT.md](AGENT.md);
+implementation procedures remain in the agent instructions rather than this user guide.

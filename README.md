@@ -1,75 +1,128 @@
 # MuAgene
 
-A two-subagent framework for **single-cell multi-omics preprocessing**. One agent owns the
-science; the other owns the machine. They communicate through versioned, machine-readable
-contracts.
+MuAgene is an agent-first framework for reproducible single-cell RNA and ATAC
+preprocessing. It separates scientific decision-making from platform execution while
+presenting one conversational interface to the user.
 
-## The two agents
+MuAgene supports RNA-only, ATAC-only, paired multiome, and unpaired RNA-plus-ATAC
+workflows. It produces quality-controlled, per-modality representations through
+clustering and UMAP. Integration, cell-type annotation, marker discovery, and
+gene-regulatory network inference are outside its scope.
 
-| Agent | Owns | Manifest |
-|-------|------|----------|
-| **[Processing-MuAgent](Processing-MuAgent/AGENT.md)** | Scientific intent — branch selection, biological context, the QC/preprocessing plan, parameter provenance, the two human-in-the-loop gates, deterministic deliverables. Pipeline `P1 → S0 → [plan_review] → S1a..S3 → [post_qc_review → qc_handoff] → S4..S8 → manifest` (`qc_handoff` runs at QC approval, before the finish batch). | `Processing-MuAgent/AGENT.md` |
-| **[Execution-MuAgent](Execution-MuAgent/AGENT.md)** | Platform mechanics + machine infra — validate spec → render → submit (SLURM) → monitor → report; plus environment provisioning (CPU conda-lock, pull-only GPU container). Science-free; never contacts the user during a run. | `Execution-MuAgent/AGENT.md` |
+## Processing and Execution boundaries
 
-The boundary is declared in [`muagene.agents.yaml`](muagene.agents.yaml): Processing writes
-`site.config` + the per-stage specs; Execution writes `latest_snapshot.json` (findings +
-monitor state + kill action) that Processing reads and acts on.
+| Component | Responsibility | User interaction |
+|---|---|---|
+| [Processing-MuAgent](Processing-MuAgent/README.md) | Scientific intent, input validation, preprocessing strategy, parameter provenance, review checkpoints, and deliverables | The user-facing agent |
+| [Execution-MuAgent](Execution-MuAgent/README.md) | Machine setup, environment provisioning, SLURM submission, supervision, and structured execution findings | Operator-facing during setup; no direct user interaction during a run |
 
-## Repository map
-
-```
-MuAgene/
-├── README.md                 # you are here
-├── muagene.agents.yaml       # agent registry + the inter-agent contract boundary
-├── contracts/                # SHARED single source of truth (machine-readable)
-│   ├── findings.yaml         #   inter-agent finding-code registry
-│   ├── state_model.md        #   every run/machine state file: writer / reader / lifecycle
-│   └── *.schema.json         #   cross-boundary + handoff artifact schemas
-├── Processing-MuAgent/
-│   ├── AGENT.md              # manifest (identity, scope, I/O, hard rules)
-│   ├── agent/                # system_prompt.md + skills/ (on-demand procedures) + tools.md
-│   ├── executor/             # the Click CLI + science stages (executor/defaults.py = QC-default SSOT)
-│   └── workflow/             # Snakemake DAG + envs
-└── Execution-MuAgent/
-    ├── AGENT.md
-    ├── agent/                # system_prompt.md + skills/ + tools.md
-    └── execution_muagent/    # the orchestration/monitoring CLI
+```text
+User
+  ↕
+Processing-MuAgent ── scientific job specification ──→ Execution-MuAgent
+Processing-MuAgent ←── structured status/findings ──── Execution-MuAgent
+          │                                                   ↕
+          └── local workflow                                 SLURM
 ```
 
-## How the harness is organized
-- **Identity & policy** → each agent's `AGENT.md` + slim `agent/system_prompt.md`.
-- **Procedures** → `agent/skills/` (progressive disclosure; start at `skills/index.md`).
-- **Tool behavior** → `agent/tools.md` (per CLI command).
-- **Cross-boundary shapes, finding codes, state lifecycle** → `contracts/`.
-- **QC default values** → `Processing-MuAgent/executor/defaults.py`.
+For local runs, Processing-MuAgent executes the scientific workflow directly. For
+SLURM runs, it prepares the confirmed job specification and delegates provisioning,
+submission, and monitoring to Execution-MuAgent. Execution-MuAgent never changes the
+scientific plan or chooses recovery actions; Processing-MuAgent explains findings and
+asks the user how to proceed.
 
-## Quickstart
+The machine-readable boundary is declared in
+[`muagene.agents.yaml`](muagene.agents.yaml), with shared state and handoff contracts
+under [`contracts/`](contracts/).
 
-**Bootstrap a machine once** (operator-facing; creates the `muagene` env + installs both packages):
+## What to expect
+
+The normal user journey is:
+
+```text
+intake and context
+  → preprocessing plan and QC preview
+  → plan review
+  → modality-aware QC and doublet filtering
+  → QC review
+  → verified post-QC handoff
+  → user confirms the unattended finish batch
+  → normalization, embeddings, clustering, UMAP, and final manifest
+```
+
+The agent stops for decisions rather than silently changing inputs, workflow type,
+scientific parameters, or execution settings. Detailed preprocessing stages, supported
+formats, QC defaults, and outputs are documented in the
+[Processing-MuAgent guide](Processing-MuAgent/README.md).
+
+## Getting started
+
+### 1. Set up MuAgene
+
+From the MuAgene repository, bootstrap the integrated `muagene` environment:
+
 ```bash
-Execution-MuAgent init-machine --processing-repo /path/to/Processing-MuAgent --device cpu
+bash Execution-MuAgent/scripts/bootstrap.sh \
+  --processing-repo Processing-MuAgent
+conda activate muagene
 ```
 
-**Run a preprocessing job** (the agent drives this conversationally; the CLI underneath):
-```bash
-executor init --config run.yaml                 # scaffold the run dir
-executor declare-branch paired --config $CFG    # paired | unpaired | rna_only | atac_only
-executor configure-execution --config $CFG --mode local --confirmed-by-user   # or --mode slurm
-executor plan-review --config $CFG              # gate #1 — review deliverables/plan/plan_review_<run>.md
-executor approve plan_review --config $CFG
-executor run --config $CFG                      # local; or: executor submit (cluster, via Execution-MuAgent)
-#   ... at gate #2: review QC, optionally `revise`, then approve ...
-executor approve post_qc_review --config $CFG
-executor run --config $CFG --target qc_handoff  # or submit; agent verifies the handoff
-#   ... confirm that the agent may start the unattended finish batch ...
-executor run --config $CFG --target all         # or submit
+CPU setup is the default. See the
+[Execution-MuAgent installation guide](Execution-MuAgent/README.md#installation) for
+GPU and site-specific cluster setup.
+
+### 2. Start a preprocessing run
+
+Start MuAgene with the Processing and Execution agent instructions attached. The
+Processing skill router loads only the procedure for the current stage.
+
+```text
+Act as MuAgene. Follow the attached Processing- and Execution-MuAgent instructions.
+Start from the Processing skill router and load only the current stage skill.
+
+Task: Preprocess <RNA-only | ATAC-only | paired | unpaired> single-cell data.
+Run directory: <path>
+Inputs: <input path(s)>
+
+Biological context:
+- genome assembly: <assembly>
+- organism: <organism>
+- tissue or cell line: <context>
+- assay: <assay>
+- marker genes for the ambient-RNA check: <genes | defer | skip>
+
+Execution mode: <local | SLURM>
+Environment: muagene
+
+Stop at each review checkpoint and wait for my explicit approval. After the
+post-QC handoff, ask before proceeding to downstream stages.
 ```
 
-See each agent's `agent/system_prompt.md` and `agent/skills/index.md` for the full flow.
+The agent collects any missing information, confirms the workflow and execution mode,
+and presents each required decision before launching compute.
 
-## Conventions
-- All run state mutates **only** through the `executor` / `Execution-MuAgent` CLIs.
-- Raw data files are never overwritten; processed/output files are saved separately.
-- Failures fail **loud** (no silent degradation); environment/execution errors are fixed at
-  the environment level and documented.
-- Tests: per agent, `PYTHONPATH=. conda run -n muagene python -m pytest tests/ -q`.
+### 3. Interact through Processing-MuAgent
+
+Continue using Processing-MuAgent for plan review, QC review, status, failure
+explanations, recovery, and final outputs. Execution-MuAgent runtime commands are
+invoked internally; users interact with them directly only for machine setup and
+environment maintenance.
+
+## Documentation
+
+- [Processing-MuAgent](Processing-MuAgent/README.md): scientific inputs, preprocessing
+  strategy, checkpoints, QC policies, and outputs.
+- [Execution-MuAgent](Execution-MuAgent/README.md): machine requirements, installation,
+  operator commands, and cluster behavior.
+- [`contracts/`](contracts/): shared state ownership, schemas, and finding codes.
+- [`muagene.agents.yaml`](muagene.agents.yaml): agent registry and inter-agent boundary.
+- Each component's `AGENT.md`, `agent/system_prompt.md`, `agent/skills/index.md`, and
+  `agent/tools.md`: agent-facing policy and procedures.
+
+## Guarantees
+
+- Raw inputs are referenced in place and never overwritten.
+- Run state changes only through MuAgene's official commands and tools—never by directly editing files by hand.
+- Review checkpoints require explicit user approval.
+- Failures are reported explicitly; execution never silently degrades environments or
+  scientific intent.
