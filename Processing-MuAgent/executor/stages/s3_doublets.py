@@ -121,8 +121,8 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     art.mkdir(parents=True, exist_ok=True)
     params_path = run_dir / "internal" / "parameters.yaml"
 
-    has_rna = workflow_branch in ("paired", "separate", "rna_only")
-    has_atac = workflow_branch in ("paired", "separate", "atac_only")
+    has_rna = workflow_branch in ("paired", "unpaired", "rna_only")
+    has_atac = workflow_branch in ("paired", "unpaired", "atac_only")
 
     # ---- RNA path (Scrublet) ---------------------------------------------
     rna = None
@@ -242,12 +242,12 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
             atac_bc = list(atac.obs_names) if hasattr(atac, "obs_names") else []
             atac_method = "log_fragment_zscore_fallback"
 
-    # ---- Branch: per-modality independent (separate) vs unified policy ----
+    # ---- Branch: per-modality independent (unpaired) vs unified policy ----
     n_dropped_rna_at_join = 0
     n_dropped_atac_at_join = 0
     n_joint: int | None = None
 
-    if workflow_branch == "separate":
+    if workflow_branch == "unpaired":
         # Independent per-modality removal.
         # RNA and ATAC are from independent samples with disjoint barcodes;
         # cross-modal union policy is undefined here.
@@ -280,9 +280,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         ], ignore_index=True)
         _io.write_parquet_safe(combined, art / "calls.parquet")
         _io.write_text_safe(art / "overlap_summary.json", json.dumps({
-            "branch": "separate",
+            "branch": "unpaired",
             "policy": "independent",
-            "rationale": ("separate branch: modalities are independent samples with disjoint "
+            "rationale": ("unpaired branch: modalities are independent samples with disjoint "
                           "barcodes; each modality's doublets are removed by its own detector."),
             "n_rna_removed": n_rna_removed,
             "n_atac_removed": n_atac_removed,
@@ -290,7 +290,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
 
         _prov.set_param(params_path, "s3_doublets.removal_policy", "independent",
                         source="derived", confidence="high",
-                        rationale=("separate branch: modalities are from independent samples "
+                        rationale=("unpaired branch: modalities are from independent samples "
                                    "with disjoint barcodes. Each modality's doublets are removed "
                                    "by its own detector (Scrublet for RNA, SnapATAC2 for ATAC). "
                                    "Cross-modal union reconciliation does not apply."),

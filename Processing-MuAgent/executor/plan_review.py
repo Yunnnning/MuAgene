@@ -364,9 +364,9 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "reason": "Paired multiome always uses union: remove if either detector flags.",
             "certainty": "needs confirmation",
         })
-    elif branch == "separate":
+    elif branch == "unpaired":
         detail = [
-            "- separate branch: each modality's doublets removed independently "
+            "- unpaired branch: each modality's doublets removed independently "
             "(Scrublet for RNA, SnapATAC2 for ATAC).",
         ]
         if rna_doub_thr.get("value") is not None:
@@ -377,7 +377,7 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
             "label": "Doublet removal policy",
             "value": "independent (per-modality; fixed score thresholds)",
             "detail": detail,
-            "reason": ("separate branch: modalities are independent samples with disjoint barcodes; "
+            "reason": ("unpaired branch: modalities are independent samples with disjoint barcodes; "
                        "each modality's doublets are removed by its own detector."),
             "certainty": "needs confirmation",
         })
@@ -416,11 +416,11 @@ def build_summary(run_dir: Path | str) -> list[dict[str, Any]]:
     branch = plan.get("workflow_branch", "unknown")
     outputs = {
         "paired": str(paths.processed_h5mu),
-        "separate": f"{paths.rna_processed_h5ad} + {paths.atac_processed_h5ad}",
+        "unpaired": f"{paths.rna_processed_h5ad} + {paths.atac_processed_h5ad}",
     }.get(branch, "(branch unknown)")
     branch_labels = {
         "paired": "Paired multiome run",
-        "separate": "Separate RNA and ATAC samples",
+        "unpaired": "Unpaired RNA and ATAC samples",
         "rna_only": "RNA-only run",
         "atac_only": "ATAC-only run",
     }

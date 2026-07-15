@@ -22,26 +22,6 @@ def _registry() -> set[str]:
     return set(data["findings"])
 
 
-# The finding-code contract as documented in Execution-MuAgent/README.md. The
-# registry must cover all of these (a code removed from the registry, or a new
-# documented code never registered, fails here).
-DOCUMENTED_CODES = {
-    "spec_validation_error", "submit_rejected_policy", "submit_rejected_transient",
-    "scheduler_failed", "workflow_error_marker", "output_missing", "stall_confirmed",
-    "filesystem_hang_suspected", "stall_suspected", "stall_recovered",
-    "no_progress_files", "scheduler_completing", "scheduler_query_failed",
-    "stage_output_verified", "workflow_complete",
-    "env_missing", "env_stale", "env_stale_reprovision", "lock_stale_vs_yaml",
-    "platform_unsupported", "gpu_image_unavailable", "gpu_import_needs_node",
-    "import_failed", "provision_failed",
-}
-
-
-def test_registry_covers_documented_codes():
-    missing = DOCUMENTED_CODES - _registry()
-    assert not missing, f"codes documented but absent from contracts/findings.yaml: {sorted(missing)}"
-
-
 def test_emitted_code_literals_are_registered():
     """Every `code: "x"` / `code="x"` literal in the package is registered."""
     reg = _registry()
@@ -61,3 +41,10 @@ def test_every_cli_command_is_documented():
     tools = (pathlib.Path(__file__).resolve().parents[1] / "agent" / "tools.md").read_text()
     missing = [c for c in grp.commands if c not in tools]
     assert not missing, f"Execution commands missing from agent/tools.md: {sorted(missing)}"
+
+
+def test_state_model_records_supervisor_ownership_and_resume_source():
+    state_model = (_root() / "contracts" / "state_model.md").read_text()
+    assert "| `monitor.pid` | Processing `submit` / `supervisor-restart`" in state_model
+    assert "| `latest_submission.json` | `execute-spec`" in state_model
+    assert "resume-monitor reconstructs context" not in state_model

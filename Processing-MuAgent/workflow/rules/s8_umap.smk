@@ -11,19 +11,13 @@ rule s8_umap_propose:
         from pathlib import Path
         Path(output.proposal).write_text(yaml.safe_dump({
             "stage": "s8_umap",
-            "action": "per-modality UMAP; final h5mu (paired) or two h5ad (separate). HARD STOP.",
+            "action": "per-modality UMAP; final h5mu (paired) or two h5ad (unpaired). HARD STOP.",
         }))
 
 
-def _s8_outputs(wildcards):
-    from executor import provenance
-    branch = provenance.current_branch(str(INTERNAL / "parameters.yaml"))
-    if branch == "paired":
-        return [str(RESULTS / f"processed_{RUN_DIR.name}.h5mu")]
-    return [
-        str(RESULTS / "rna_processed.h5ad"),
-        str(RESULTS / "atac_processed.h5ad"),
-    ]
+# NOTE: s8_umap_execute declares only the s8_done.txt sentinel as its output; the
+# branch-specific processed deliverables (processed_<run>.h5mu, or rna/atac_processed.h5ad)
+# are written by the stage body and validated by cleanup.s8_outputs_valid at finish-cleanup.
 
 
 rule s8_umap_execute:

@@ -1159,10 +1159,10 @@ def _doublet_section(
             "(SnapATAC2) flags a doublet.\n"
             + f"- Joint cells after doublet removal: **{counts.get('n_cells_joint', 'n/a')}**\n"
         )
-    elif branch == "separate":
+    elif branch == "unpaired":
         policy_note = (
             "\n"
-            "### Per-modality removal (separate branch)\n"
+            "### Per-modality removal (unpaired branch)\n"
             "\n"
             "RNA and ATAC doublet calls are applied independently; each modality "
             "keeps its own survivor set.\n"
@@ -1255,20 +1255,27 @@ def _final_section(run_dir: Path, counts: dict[str, Any]) -> str:
         return "## Final retained dataset\n\n_(processed objects not available)_\n"
 
     from .run_paths import RunPaths
-    s8 = RunPaths(run_dir).stage_dir("s8_umap")
-    branch = "paired (processed.h5mu)" if (s8 / "processed.h5mu").exists() else "separate (two h5ads)"
+    paths = RunPaths(run_dir)
+    if paths.processed_h5mu.exists():
+        branch = "paired (processed h5mu)"
+    elif paths.rna_processed_h5ad.exists() and paths.atac_processed_h5ad.exists():
+        branch = "unpaired (two h5ads)"
+    elif paths.rna_processed_h5ad.exists():
+        branch = "RNA-only (h5ad)"
+    else:
+        branch = "ATAC-only (h5ad)"
 
     # Cluster counts
     try:
         import mudata as mu
         import anndata as ad
-        if (s8 / "processed.h5mu").exists():
-            m = mu.read_h5mu(str(s8 / "processed.h5mu"))
+        if paths.processed_h5mu.exists():
+            m = mu.read_h5mu(str(paths.processed_h5mu))
             rna = m.mod.get("rna")
             atac = m.mod.get("atac")
         else:
-            rna = ad.read_h5ad(s8 / "rna_processed.h5ad")
-            atac = ad.read_h5ad(s8 / "atac_processed.h5ad")
+            rna = ad.read_h5ad(paths.rna_processed_h5ad) if paths.rna_processed_h5ad.exists() else None
+            atac = ad.read_h5ad(paths.atac_processed_h5ad) if paths.atac_processed_h5ad.exists() else None
     except Exception as e:
         return f"## Final retained dataset\n\n_Error loading processed object: {e}_\n"
 

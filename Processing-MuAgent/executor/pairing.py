@@ -1,4 +1,4 @@
-"""Detect whether RNA and ATAC modalities are paired multiome or separate datasets."""
+"""Detect whether RNA and ATAC modalities are paired multiome or unpaired datasets."""
 from __future__ import annotations
 
 import re
@@ -133,7 +133,7 @@ def is_rna_subset_of_atac(
 
 @dataclass
 class PairingResult:
-    status: str           # paired | separate | ambiguous | rna_only | atac_only
+    status: str           # paired | unpaired | ambiguous | rna_only | atac_only
     confidence: str       # high | medium | low
     method: str           # pairing.{exact_barcode_match|prefix_suffix_normalized|
                           #           atac_subset_of_rna|rna_subset_of_atac|
@@ -307,7 +307,7 @@ def detect_pairing(
         )
 
     return PairingResult(
-        status="separate",
+        status="unpaired",
         confidence="high",
         method="pairing.no_match",
         overlap=overlap,
@@ -370,7 +370,7 @@ def pairing_via_translation(
         return result
 
     return PairingResult(
-        status="separate",
+        status="unpaired",
         confidence="medium",
         method="pairing.translation_table",
         overlap=overlap,

@@ -1,53 +1,65 @@
-"""Processing-MuAgent CLI — wraps Snakemake for the interactive checkpointed workflow."""
+"""Processing-MuAgent CLI — thin command-entry layer over the executor modules.
+
+Each command resolves the run dir, then delegates to a focused module:
+  - pipeline.py          — stage topology (order, per-branch membership, aliases)
+  - cleanup.py           — cleanup/reset policy (QC + S4–S8 intermediates)
+  - revision.py          — `revise` + the QC-invalidation cascade
+  - gates.py             — context / execution-mode / marker-gene gates + approval seeding
+  - snakemake_runner.py  — local Snakemake invocation + unlock
+  - reporting.py         — `status` / `hpc-status` rendering
+The moved helpers are re-bound below under their original (underscore) names so the
+public/internal API and test patch targets (e.g. cli._snakemake) are unchanged.
+"""
 from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 import click
 import yaml
 
-from . import approval, context as _ctx, hpc, plan_review as _pr, provenance, specs as _specs, stage_progress as _sp
+from . import approval, context as _ctx, hpc, plan_review as _pr, provenance, reporting, specs as _specs, stage_progress as _sp
 from .log import log_event
 from .run_paths import RunPaths
+from .pipeline import (
+    HUMAN_CHECKPOINTS as HUMAN_CHECKPOINT_STAGES,
+    canonical_stage as _canonical_stage,
+    display_stage as _display_stage,
+)
+from .cleanup import (
+    cleanup_qc_intermediates as _cleanup_qc_intermediates,
+    cleanup_process_intermediates as _cleanup_process_intermediates,
+    s8_outputs_valid as _s8_outputs_valid,
+    ensure_process_markers as _ensure_process_markers,
+)
+from .revision import (
+    qc_downstream_targets as _qc_downstream_targets,
+    invalidate_qc_downstream as _invalidate_qc_downstream,
+    revise_dry_run as _revise_dry_run,
+    regenerate_plan_deliverables as _regenerate_plan_deliverables,
+)
+from .gates import (
+    apply_marker_gene_ack as _apply_marker_gene_ack,
+    resolve_marker_gene_gate as _resolve_marker_gene_gate,
+    enforce_context_gate as _enforce_context_gate,
+    enforce_execution_mode_gate as _enforce_execution_mode_gate,
+    infer_submit_target as _infer_submit_target,
+    missing_approvals as _missing_approvals,
+    seed_approvals as _seed_approvals,
+    prepare_submit_approvals as _prepare_submit_approvals,
+)
+from .snakemake_runner import (
+    run_snakemake as _snakemake,
+    unlock_snakemake as _unlock_snakemake,
+)
 
-
-PACKAGE_DIR = Path(__file__).resolve().parent.parent  # Processing-MuAgent/
-SNAKEFILE = PACKAGE_DIR / "workflow" / "Snakefile"
 
 EXECUTOR_CHOICE = click.Choice(["local", "slurm"])
 # Cluster-only executor for `submit` — `run` is local-only, so `local` is not a
 # valid submit target (all cluster execution is owned by Execution-MuAgent).
 CLUSTER_EXECUTOR_CHOICE = click.Choice(["slurm"])
-
-# s0_ingest is the merged planning compute (load + validate + assemble plan +
-# QC exploration); the former standalone p2_plan stage no longer exists.
-STAGES = ["p1_context", "plan_review", "s0_ingest",
-          "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-          "post_qc_review",
-          "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
-          "qc_handoff"]
-
-HUMAN_CHECKPOINT_STAGES = ("plan_review", "post_qc_review")
-STAGE_ALIASES = {
-    "qc_review": "post_qc_review",
-}
-STAGE_DISPLAY = {
-    "post_qc_review": "qc_review",
-}
-AUTOMATED_STAGES = tuple(s for s in STAGES if s not in HUMAN_CHECKPOINT_STAGES)
-
-
-def _canonical_stage(stage: str) -> str:
-    return STAGE_ALIASES.get(stage, stage)
-
-
-def _display_stage(stage: str) -> str:
-    return STAGE_DISPLAY.get(stage, stage)
 
 
 def _resolve_run_dir(config_path: Path | str) -> Path:
@@ -95,466 +107,6 @@ def propose(stage: str, config_path: str) -> None:
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
     _snakemake(["--configfile", str(paths.run_yaml), f"{stage}_propose"], run_dir)
-
-
-# S1a recompute caches: regenerated whenever S1a re-runs, so they are both the
-# stale-on-revise set (see _S1A_QC_ARTIFACTS) AND safe to delete once QC is
-# approved (no further S1a re-run can occur). Single source of truth for both.
-_S1A_REGEN_CACHES = [
-    ("s1a_ambient", "tsne_coords_cache.parquet"),
-    ("s1a_ambient", "cell_totals.parquet"),
-]
-
-
-def _run_config(run_dir: Path) -> dict:
-    """Best-effort load of the run's canonical run.yaml (returns {} on any failure)."""
-    try:
-        return yaml.safe_load(RunPaths(run_dir).run_yaml.read_text()) or {}
-    except Exception:
-        return {}
-
-
-def _retain_for_integration(run_dir: Path) -> bool:
-    """Whether to KEEP the prepared ATAC fragment caches past the post_qc gate.
-
-    Default True: Integration-MuAgent re-counts fragments against a consensus peak
-    set, so the caches must survive approval. A single-sample-and-done run can set
-    `retain_for_integration: false` in run.yaml to delete them and reclaim the disk.
-    """
-    return bool(_run_config(run_dir).get("retain_for_integration", True))
-
-
-def _cleanup_qc_intermediates(run_dir: Path) -> list[str]:
-    """Remove large QC-only working files after post_qc_review is approved.
-
-    This is the single authority that deletes QC intermediate working files. None
-    of these are declared Snakemake outputs — every QC/ingest stage declares only its
-    durable marker (s0 validation_report.json, s1a summary.json, s1/s2 qc_summary.json)
-    that carries the dependency edges, so removing them here does NOT make any rule's
-    declared output "missing" and therefore never triggers a re-run of S0/S1a/S1/S2/S3
-    on a later submit. None is read by any post-gate stage (S4–S8); the post-QC h5mu is
-    the canonical store S4/S5 read. Removed:
-      - rna_qc.h5ad / atac_qc.h5ad — untracked QC matrices, consumed only by S3.
-      - atac_snap.h5ad — the pre-filter SnapATAC2 import.
-      - atac_snap_explore.h5ad — the qc_explore ATAC import (reused by S2 during
-        QC, no longer needed once QC is approved).
-      - rna_ingest.h5ad / metadata_minimal.tsv — the S0 RNA ingest (~200 MB) and the
-        unused reconstructed metadata TSV. rna_ingest.h5ad is consumed only by S1a (read
-        by path) and is a deterministic function of the original input, so it is a pure
-        cache: if a re-process needs it again, S1a reconstructs it via io.load_rna_ingest
-        (no S0 re-run). metadata_minimal.tsv has no reader. Safe to delete.
-      - rna_decontaminated.h5ad — the S1a ambient-corrected RNA (~400 MB), consumed
-        only by S1 (read by path). Dead once QC is approved (S4 reads the post-QC h5mu).
-      - atac_fragments_cbf[_chrnorm].tsv.gz (+ .tbi) — the chr-normalised fragment
-        caches written by io.prepare_fragments_for_snapatac. These are the single
-        biggest QC artifact and are RETAINED by default: Integration-MuAgent
-        re-counts them against a consensus peak set (reading their *contents*, not
-        just the cached filename recorded in parameters.yaml), so the old "dead once
-        QC is approved" assumption no longer holds. They are deleted here only when
-        run.yaml sets `retain_for_integration: false` (single-sample run reclaiming disk).
-      - tsne_coords_cache.parquet / cell_totals.parquet — S1a recompute caches.
-
-    Keeps the durable markers (validation_report.json — also read post-gate by S5 —,
-    summary.json, qc_summary.json), the s1/s2 qc_metrics parquets (the durable
-    QC-metrics record, consumed by the QC-review summary), and all S3+ artifacts so
-    downstream stages are unaffected. Deleting an already-absent file is a no-op.
-
-    Re-processing note: a *post-approval* re-process (re-revise QC thresholds and re-run)
-    works without an S0 re-run — S1a reconstructs rna_ingest.h5ad from the original input
-    via io.load_rna_ingest, and rna_decontaminated.h5ad regenerates when S1a re-runs. With
-    `retain_for_integration` (default true) the fragment caches also survive, so S2 re-runs
-    too. Only the previews (figures/plan/qc_explore.json) regenerate from the retained
-    *_qc_metrics.parquet (a `revise` does this automatically).
-    """
-    rp = RunPaths(run_dir)
-    # Untracked QC working matrices + the S0/S1a heavy RNA caches (DAG edges are the
-    # durable markers validation_report.json / summary.json / qc_summary.json).
-    targets = [
-        rp.artifact("s1_rna_qc",  "rna_qc.h5ad"),
-        rp.artifact("s2_atac_qc", "atac_qc.h5ad"),
-        rp.artifact("s2_atac_qc", "atac_snap.h5ad"),
-        rp.artifact("qc_explore", "atac_snap_explore.h5ad"),
-        rp.artifact("s0_ingest",  "rna_ingest.h5ad"),
-        rp.artifact("s0_ingest",  "metadata_minimal.tsv"),
-        rp.artifact("s1a_ambient", "rna_decontaminated.h5ad"),
-    ]
-    # Chr-normalised fragment caches: both naming variants + tabix index, in
-    # whichever stage dir they landed in (qc_explore import or an S2 re-derive).
-    # RETAINED by default — Integration-MuAgent re-counts them against a consensus
-    # peak set, so it reads their contents (not just the cached filename). Deleted
-    # only when run.yaml opts out via `retain_for_integration: false`.
-    if not _retain_for_integration(run_dir):
-        for stage in ("qc_explore", "s2_atac_qc"):
-            for name in ("atac_fragments_cbf_chrnorm.tsv.gz", "atac_fragments_cbf.tsv.gz"):
-                targets.append(rp.artifact(stage, name))
-                targets.append(rp.artifact(stage, name + ".tbi"))
-    # S1a recompute caches (no S1a re-run can happen after approval).
-    targets += [rp.artifact(s, f) for (s, f) in _S1A_REGEN_CACHES]
-
-    deleted: list[str] = []
-    for p in targets:
-        if p.exists():
-            p.unlink()
-            deleted.append(str(p))
-    return deleted
-
-
-# S4–S8 working files that `finish-cleanup` deletes once the run's final processed
-# deliverable exists. All are content-duplicates of the processed h5mu / h5ads
-# (normalized RNA, PCA/neighbors, Leiden labels, ATAC spectral embedding, the
-# exported peak/tile matrix + its peak-export scratch) — nothing downstream re-reads
-# them. None is a declared Snakemake output, and every S4..S8 rule edge depends on the
-# durable *_summary.json / s8_done.txt markers (see _PROCESS_MARKERS) instead, so
-# deleting them never triggers a re-run on a later `submit --target all`.
-_PROCESS_INTERMEDIATES = [
-    # RNA chain (empty stubs on atac_only are removed too)
-    ("s4_rna_norm", "rna_norm.h5ad"),
-    ("s6_neighbors", "rna_neighbors.h5ad"),
-    ("s7_clustering", "rna_clustered.h5ad"),
-    # ATAC chain: S5 spectral working file + exported feature sidecars + peak-export
-    # scratch (peak_matrix_*.h5ad / *_prepared.bed), and S7 ATAC labels.
-    ("s5_atac_spectral", "atac_spectral.h5ad"),
-    ("s5_atac_spectral", "feature_matrix.npz"),
-    ("s5_atac_spectral", "feature_names.tsv"),
-    ("s5_atac_spectral", "feature_kind.txt"),
-    ("s5_atac_spectral", "peak_matrix_s2peaks.h5ad"),
-    ("s5_atac_spectral", "peak_matrix_user.h5ad"),
-    ("s5_atac_spectral", "_s2_peaks_prepared.bed"),
-    ("s5_atac_spectral", "_user_peaks_prepared.bed"),
-    ("s7_clustering", "atac_leiden_labels.parquet"),
-]
-
-# Durable per-stage done-markers that MUST survive finish-cleanup: `executor status`
-# and the S4..S8 Snakemake edges key off them. (stage, filename).
-_PROCESS_MARKERS = [
-    ("s4_rna_norm", "norm_summary.json"),
-    ("s5_atac_spectral", "spectral_summary.json"),
-    ("s6_neighbors", "neighbors_summary.json"),
-    ("s7_clustering", "clustering_summary.json"),
-    ("s8_umap", "s8_done.txt"),
-]
-
-
-def _cleanup_process_intermediates(run_dir: Path) -> list[str]:
-    """Remove the large S4–S8 working files once the processed deliverable exists.
-
-    Mirrors `_cleanup_qc_intermediates` for the finish phase. Branch-awareness is by
-    delete-if-exists: a branch simply never wrote the files it does not apply to
-    (rna_only writes no ATAC sidecars), while an atac_only run's empty RNA stubs ARE
-    removed. None of these is a declared Snakemake output — the durable markers in
-    `_PROCESS_MARKERS` carry status + the DAG edges — so deletion never triggers a
-    re-run. Deleting an absent file is a no-op. Returns the paths actually deleted.
-    """
-    rp = RunPaths(run_dir)
-    deleted: list[str] = []
-    for stage, name in _PROCESS_INTERMEDIATES:
-        p = rp.artifact(stage, name)
-        if p.exists():
-            p.unlink()
-            deleted.append(str(p))
-    return deleted
-
-
-def _processed_outputs_for_branch(rp: RunPaths, branch: str) -> list[Path]:
-    """The final S8 processed deliverable(s) for `branch` — what finish-cleanup validates."""
-    if branch == "paired":
-        return [rp.processed_h5mu]
-    out: list[Path] = []
-    if branch in ("separate", "rna_only"):
-        out.append(rp.rna_processed_h5ad)
-    if branch in ("separate", "atac_only"):
-        out.append(rp.atac_processed_h5ad)
-    return out
-
-
-def _s8_outputs_valid(run_dir: Path) -> tuple[bool, list[str]]:
-    """Whether S8 produced its final processed deliverable(s) — the precondition for
-    finish-cleanup. The processed h5mu / h5ads are the user-facing S8 output; a run
-    that failed before producing them must keep its intermediates so it can resume.
-
-    Primary check: the branch-derived processed file(s) exist and are non-empty.
-    `run_manifest.json` is NOT required (a run can be S8-complete but not yet
-    manifest-finalized — e.g. interrupted before the manifest rule); when present, the
-    processed paths it records are additionally validated. Returns (ok, problems).
-    """
-    rp = RunPaths(run_dir)
-    branch = provenance.current_branch(str(rp.parameters_yaml))
-    problems: list[str] = []
-
-    expected = _processed_outputs_for_branch(rp, branch)
-    if not expected:
-        problems.append(f"unknown workflow_branch {branch!r}; cannot locate S8 outputs")
-    for p in expected:
-        if not p.exists():
-            problems.append(f"missing S8 output: {p}")
-        elif p.stat().st_size == 0:
-            problems.append(f"empty S8 output: {p}")
-
-    manifest = rp.run_manifest_json
-    if manifest.exists():
-        import json
-        try:
-            outputs = (json.loads(manifest.read_text()) or {}).get("outputs") or {}
-        except (json.JSONDecodeError, OSError) as e:
-            problems.append(f"unreadable run_manifest.json: {e}")
-            outputs = {}
-        # outputs is a dict of {key: rel_path}; `figures` is a list (non-critical).
-        for key, val in outputs.items():
-            if key == "figures" or not isinstance(val, str):
-                continue
-            mp = run_dir / val
-            if not mp.exists():
-                problems.append(f"manifest output missing: {mp}")
-            elif mp.is_file() and mp.stat().st_size == 0:
-                problems.append(f"manifest output empty: {mp}")
-
-    return (not problems, problems)
-
-
-def _ensure_process_markers(run_dir: Path) -> list[str]:
-    """Backfill any missing S4–S8 durable marker so `executor status` stays `done`
-    after cleanup. Safe because the caller only invokes this once the processed
-    deliverable is validated (the whole pipeline produced its final output), so every
-    stage necessarily completed. Covers legacy / un-finalized runs predating the
-    marker refactor (which lack norm/neighbors/clustering_summary.json and/or
-    s8_done.txt). Returns the markers written.
-    """
-    import json
-    rp = RunPaths(run_dir)
-    written: list[str] = []
-    for stage, name in _PROCESS_MARKERS:
-        p = rp.artifact(stage, name)
-        if p.exists():
-            continue
-        p.parent.mkdir(parents=True, exist_ok=True)
-        if name.endswith(".json"):
-            p.write_text(json.dumps({"stage": stage, "backfilled": True}, indent=2))
-        else:
-            p.write_text("backfilled\n")
-        written.append(str(p))
-    return written
-
-
-# Per-stage QC artifacts that become stale when that stage is re-run, listed as
-# (artifact_stage, filename). Revising a QC stage invalidates its own outputs and
-# everything strictly downstream of it through S3 (the DAG is
-# s1a_ambient -> s1_rna_qc -> s3_doublets and s2_atac_qc -> s3_doublets). The
-# expensive chr-normalized fragment cache (atac_fragments_cbf_chrnorm.tsv.gz*) is
-# intentionally NOT listed — it is reused across re-runs, and only deleted once QC
-# is approved (by _cleanup_qc_intermediates, when no further re-run can occur).
-_S1A_QC_ARTIFACTS = [
-    ("s1a_ambient", "rna_decontaminated.h5ad"),  # untracked working file (read by S1 by path)
-    ("s1a_ambient", "summary.json"),             # stage-done marker — delete to force re-run
-] + _S1A_REGEN_CACHES
-_S1_QC_ARTIFACTS = [
-    ("s1_rna_qc", "rna_qc.h5ad"),
-    ("s1_rna_qc", "qc_summary.json"),  # stage-done marker
-]
-_S2_QC_ARTIFACTS = [
-    ("s2_atac_qc", "atac_qc.h5ad"),
-    ("s2_atac_qc", "atac_snap.h5ad"),
-    ("s2_atac_qc", "qc_summary.json"),  # stage-done marker
-]
-_S3_QC_ARTIFACTS = [
-    ("s3_doublets", "rna_post_doublet.h5ad"),
-    ("s3_doublets", "atac_post_doublet.h5ad"),
-    ("s3_doublets", "calls.parquet"),
-    ("s3_doublets", "joint_barcodes.txt"),
-    ("s3_doublets", "overlap_summary.json"),
-]
-# stage -> stage-and-downstream artifact list (gate outputs always added on top).
-_QC_INVALIDATION: dict[str, list[tuple[str, str]]] = {
-    "s1a_ambient": _S1A_QC_ARTIFACTS + _S1_QC_ARTIFACTS + _S3_QC_ARTIFACTS,
-    "s1_rna_qc":   _S1_QC_ARTIFACTS + _S3_QC_ARTIFACTS,
-    "s2_atac_qc":  _S2_QC_ARTIFACTS + _S3_QC_ARTIFACTS,
-    "s3_doublets": _S3_QC_ARTIFACTS,
-}
-
-
-_S3_TRIGGERING_STAGES = frozenset({"s1_rna_qc", "s2_atac_qc", "s3_doublets"})
-_RNA_BRANCHES = frozenset({"paired", "separate", "rna_only"})
-
-
-def _qc_downstream_targets(run_dir: Path, stage: str) -> list[Path]:
-    """The artifacts a revise of `stage` invalidates (whether or not they exist).
-
-    The revised QC stage's own outputs, every strictly-downstream QC stage's
-    outputs, AND the `post_qc_review_propose` gate outputs (proposal,
-    awaiting_approval sentinel, qc_review_<run>.md, qc_summary_<run>.html). The
-    gate outputs are always included: while they exist Snakemake reports "Nothing
-    to be done" and silently skips the re-run even though upstream was invalidated.
-
-    Also clears `post_qc_review.approved` when it exists — in the reprocess case
-    (gate was previously approved) the sentinel must be deleted or Snakemake skips
-    the QC review pause entirely and runs straight to S4-S8.
-
-    When the revised stage triggers S3 and a post-cleanup reprocess is detected
-    (rna_qc.h5ad absent on an RNA-carrying branch), the S1/S1a durable markers are
-    added so Snakemake re-runs those stages rather than assuming they are done.
-
-    Pure — computes paths only, deletes nothing (so `revise --dry-run` can preview
-    exactly what `revise` would remove).
-    """
-    if stage not in _QC_INVALIDATION:
-        return []
-    rp = RunPaths(run_dir)
-    targets = [rp.artifact(s, f) for (s, f) in _QC_INVALIDATION[stage]]
-    targets += [
-        rp.proposal("post_qc_review"),
-        rp.awaiting_sentinel("post_qc_review"),
-        rp.approved_sentinel("post_qc_review"),
-        rp.qc_review_summary_md,
-        rp.qc_summary_html,
-        rp.post_qc_h5mu,
-        rp.post_qc_manifest_json,
-        rp.post_qc_peaks_bed,
-    ]
-    if stage in _S3_TRIGGERING_STAGES:
-        branch = provenance.current_branch(rp.parameters_yaml)
-        if branch in _RNA_BRANCHES:
-            if not rp.artifact("s1_rna_qc", "rna_qc.h5ad").exists():
-                targets.append(rp.artifact("s1_rna_qc", "qc_summary.json"))
-            if not rp.artifact("s1a_ambient", "rna_decontaminated.h5ad").exists():
-                targets.append(rp.artifact("s1a_ambient", "summary.json"))
-    return targets
-
-
-def _invalidate_qc_downstream(run_dir: Path, stage: str) -> list[str]:
-    """Delete the stale artifacts from `_qc_downstream_targets` so a re-run from
-    `stage` actually re-executes. Deleting non-existent files is a no-op (safe to
-    call before QC has ever run, e.g. a marker-gene revise at plan review).
-    Returns the paths actually deleted (for transparent logging).
-    """
-    deleted: list[str] = []
-    for p in _qc_downstream_targets(run_dir, stage):
-        if p.exists():
-            p.unlink()
-            deleted.append(str(p))
-    return deleted
-
-
-def _echo_binding_constraint(paths: RunPaths, stage: str) -> None:
-    """Print the current QC thresholds for a QC stage so the user can see which
-    bound (MAD-derived vs floor vs ceiling) is actually binding before revising —
-    the pct_mt floor-vs-ceiling case is the classic gotcha."""
-    if stage not in ("s1_rna_qc", "s2_atac_qc"):
-        return
-    import json as _json
-    # Prefer LIVE effective thresholds (current parameters.yaml overlay) over the
-    # frozen qc_explore.json snapshot — the snapshot is only refreshed at S0 /
-    # plan-review, so it lags a post-QC revise (e.g. would show the old pct_mt
-    # ceiling). Fall back to the snapshot only when the metrics parquet is absent.
-    th = None
-    try:
-        from executor import qc_explore as _qe
-        th = _qe.effective_thresholds(paths.run_dir, stage)
-    except Exception:
-        th = None
-    if not th:
-        qexp = paths.artifact("qc_explore", "qc_explore.json")
-        if not qexp.exists():
-            return
-        try:
-            th = (_json.loads(qexp.read_text()).get(stage) or {}).get("thresholds")
-        except Exception:
-            return
-    if th:
-        click.echo(f"  binding-constraint check ({stage}) — current thresholds "
-                   "(compare MAD-derived vs floor/ceiling to see which is active):")
-        for k, v in th.items():
-            click.echo(f"    {k} = {v}")
-
-
-def _revise_dry_run(run_dir: Path, paths: RunPaths, stage: str, key: str, value_parsed) -> None:
-    """Preview a `revise`: the parameter change, the binding-constraint context, and
-    the EXACT artifacts that would be deleted — mutating nothing. Closes the
-    destructive-revise gap (revise at post_qc_review used to delete downstream
-    outputs with no preview or undo)."""
-    click.echo("DRY RUN — no changes made.")
-    current = provenance.get_value(str(paths.parameters_yaml), key, None)
-    cur_disp = repr(current) if current is not None else "(plan default; no override set)"
-    click.echo(f"  param: {key}: {cur_disp} -> {value_parsed!r}")
-    if not approval.is_approved(run_dir, "plan_review"):
-        click.echo("  checkpoint: plan_review (not yet approved) -> would re-render the plan "
-                   "deliverables (overlay); NO artifacts deleted.")
-    else:
-        existing = [p for p in _qc_downstream_targets(run_dir, stage) if p.exists()]
-        if existing:
-            click.echo(f"  checkpoint: post_qc_review -> WOULD DELETE {len(existing)} artifact(s):")
-            for p in existing:
-                click.echo(f"    - {p}")
-            click.echo("  Re-running the affected stages regenerates them. Confirm before "
-                       "running the real `revise`.")
-        else:
-            click.echo("  checkpoint: post_qc_review -> no existing downstream artifacts to delete.")
-    _echo_binding_constraint(paths, stage)
-
-
-def _regenerate_plan_deliverables(run_dir: Path) -> list[str]:
-    """Re-render the plan-review deliverables after a `revise` at the (still
-    unapproved) plan_review gate, so the overlay reflects the change.
-
-    Cheap: the QC-exploration preview re-derives from the persisted per-cell
-    metrics parquets (no h5ad reload, no fragment re-import), then the markdown
-    and HTML re-render with the effective (override-overlaid) plan. No-op-safe
-    when the metrics or plan are absent. Returns what was regenerated.
-    """
-    from executor import plan_review as _plan_review
-    from executor import qc_explore
-
-    paths = RunPaths(run_dir)
-    regenerated: list[str] = []
-    try:
-        qc_explore.rederive_from_metrics(run_dir)
-        regenerated.append("qc_explore preview")
-    except Exception as exc:  # preview is best-effort; rendering proceeds either way
-        log_event(run_dir, {"stage": "plan_review", "event": "qc_rederive_failed",
-                            "error": str(exc)})
-    try:
-        _plan_review.write_summary(run_dir)
-        _plan_review.write_plan_summary_html(run_dir)
-        regenerated += [paths.plan_review_md.name, paths.plan_summary_html.name]
-    except Exception as exc:
-        log_event(run_dir, {"stage": "plan_review", "event": "plan_rerender_failed",
-                            "error": str(exc)})
-    return regenerated
-
-
-_MARKER_GENE_GATE_MSG = (
-    "Ambient RNA correction is planned but no marker genes are set and no explicit "
-    "decision was recorded. Ask the user whether to check marker-gene expression "
-    "before vs after correction (recommended, especially at elevated contamination) "
-    "and to provide 5-10 gene symbols. Then re-run approve with one of:\n"
-    "  - provide genes:  executor revise s1a_ambient s1a_ambient.marker_genes=\"[GENE1, GENE2]\" --config <cfg>\n"
-    "  - defer to QC review:  approve plan_review --defer-marker-genes\n"
-    "  - decline:  approve plan_review --skip-marker-genes\n"
-    "Never invent or suggest gene symbols yourself."
-)
-
-
-def _apply_marker_gene_ack(run_dir: Path, ack: str | None) -> None:
-    """Record an unattended-batch marker-gene decision (`--marker-genes defer|skip`)."""
-    if not ack:
-        return
-    decision = {"defer": "deferred_to_qc", "skip": "declined"}[ack]
-    _pr.record_marker_gene_decision(run_dir, decision)
-    log_event(run_dir, {"stage": "plan_review", "event": "marker_gene_decision",
-                        "decision": decision})
-
-
-def _resolve_marker_gene_gate(run_dir: Path, *, defer: bool, skip: bool) -> None:
-    """Enforce an explicit marker-gene decision before plan_review is approved."""
-    if defer and skip:
-        raise click.ClickException(
-            "Pass at most one of --defer-marker-genes / --skip-marker-genes.")
-    if defer or skip:
-        decision = "deferred_to_qc" if defer else "declined"
-        _pr.record_marker_gene_decision(run_dir, decision)
-        log_event(run_dir, {"stage": "plan_review", "event": "marker_gene_decision",
-                            "decision": decision})
-        return
-    if _pr.marker_gene_decision_pending(run_dir):
-        raise click.ClickException(_MARKER_GENE_GATE_MSG)
 
 
 @main.command()
@@ -650,7 +202,7 @@ def qc_cleanup(config_path: str) -> None:
 
 
 @main.command(name="declare-branch")
-@click.argument("branch", type=click.Choice(["paired", "separate", "rna_only", "atac_only"]))
+@click.argument("branch", type=click.Choice(["paired", "unpaired", "rna_only", "atac_only"]))
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 def declare_branch(branch: str, config_path: str) -> None:
     """Declare the workflow branch up front (user assertion).
@@ -770,7 +322,7 @@ def configure_execution(
 
     # Explicit, auditable record of whether the USER confirmed this execution mode.
     # `run`/`submit` refuse to launch any compute job until this is true (see
-    # `_enforce_execution_mode_gate`). Recording the mode alone is not enough —
+    # `gates.enforce_execution_mode_gate`). Recording the mode alone is not enough —
     # the agent must never silently choose local vs HPC.
     #
     # Re-config semantics: an explicit --confirmed-by-user always confirms. Without
@@ -1034,7 +586,7 @@ def revise(stage: str, param_kv: str, config_path: str, rationale: str, dry_run:
         )
 
 
-def _stage_states(paths: RunPaths) -> list[tuple[str, str]]:
+def _stage_states(paths: RunPaths) -> list[tuple[str, str, str]]:
     return _sp.stage_states(paths)
 
 
@@ -1048,45 +600,7 @@ def status(config_path: str, watch: bool, interval: float) -> None:
     """Print per-step pipeline state (S1a–S8 + review gates). With --watch, polls until something changes."""
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
-
-    def _print(states: list[tuple[str, str, str]]) -> None:
-        for label, task, st in states:
-            click.echo(f"  {label:18s}  {task:30s}  {st}")
-
-    if not watch:
-        _print(_stage_states(paths))
-        return
-
-    sys.stdout.reconfigure(line_buffering=True)
-    last: list[tuple[str, str, str]] | None = None
-    while True:
-        states = _stage_states(paths)
-        if states != last:
-            click.echo(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
-            _print(states)
-            last = states
-        else:
-            active = next((task for _, task, st in states if st == "in_progress"), "idle")
-            click.echo(f"[{time.strftime('%H:%M:%S')}] {active}")
-        if any(st == "failed" for _, _, st in states):
-            click.echo("\n→ a step failed; inspect logs under "
-                       f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
-                       "then fix and `submit` again (resume target is inferred).")
-            return
-        if any(st == "cancelled" for _, _, st in states):
-            click.echo("\n→ a step was cancelled by the HPC monitor; see "
-                       f"{paths.run_dir / 'internal' / 'hpc_monitor' / 'latest_report.md'} "
-                       "for the confirmed-dead reason and investigation evidence. "
-                       "Re-`submit` to resume.")
-            return
-        if any(st == "awaiting_approval" for _, _, st in states):
-            click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
-                       "`Processing-MuAgent approve <stage>` (e.g. qc_review).")
-            return
-        if paths.run_manifest_json.exists():
-            click.echo("\n→ run_manifest.json present; pipeline complete.")
-            return
-        time.sleep(max(2.0, interval))
+    reporting.run_status(paths, watch=watch, interval=interval)
 
 
 @main.command(name="hpc-status")
@@ -1108,121 +622,7 @@ def hpc_status(config_path: str) -> None:
     """
     run_dir = _resolve_run_dir(config_path)
     paths = RunPaths(run_dir)
-    submission = _sp.load_latest_hpc_submission(paths)
-    snapshot = _sp.load_hpc_monitor_state(paths) or {}
-
-    def _supervisor_status() -> str:
-        pid_path = paths.run_dir / "internal" / "hpc_monitor" / "monitor.pid"
-        if not pid_path.exists():
-            return "not started"
-        try:
-            pid = int(pid_path.read_text().strip())
-            os.kill(pid, 0)
-            return f"alive (PID {pid})"
-        except (ValueError, OSError):
-            return "not running"
-
-    def _print_hpc_header() -> None:
-        if submission is None:
-            click.echo("  (no HPC submission registered)")
-            return
-        job_id = submission.get("job_id", "?")
-        stage = submission.get("target", "?").removesuffix("_execute")
-        submitted_at = submission.get("submitted_at", "?")
-        sched = (snapshot.get("scheduler") or {}) if snapshot else {}
-        sched_state = sched.get("state") or "unknown"
-        elapsed = sched.get("elapsed") or "?"
-        timelimit = sched.get("timelimit") or "?"
-        ms = (snapshot.get("monitor_state") or {}) if snapshot else {}
-        health = ms.get("health", "unknown")
-        silence = ms.get("silence_intervals", "?")
-        tolerance = ms.get("tolerance_n", "?")
-        sup_status = _supervisor_status()
-        sup_offline = "not running" in sup_status
-        displayed_health = "stale (supervisor offline)" if sup_offline else health
-        click.echo(f"  Stage: {stage}  Job: {job_id}  Submitted: {submitted_at}")
-        click.echo(f"  Scheduler: {sched_state}  Elapsed: {elapsed} / {timelimit}")
-        click.echo(f"  Health: {displayed_health}  (silence {silence}/{tolerance} intervals)")
-        click.echo(f"  Supervisor: {sup_status}")
-        reason = ms.get("confirmed_dead_reason")
-        if reason:
-            click.echo(f"  Confirmed-dead reason: {reason}")
-        if "not running" in sup_status:
-            active_states = {"running", "pending", "r", "q", "cf"}
-            if any(s in sched_state.lower() for s in active_states):
-                click.echo(
-                    "\n  WARNING: Supervision offline — stalled/failed jobs will NOT be "
-                    "auto-cancelled. Restart with:\n"
-                    f"    Processing-MuAgent supervisor-restart --config {paths.run_yaml}"
-                )
-
-    def _print_findings() -> None:
-        findings = _sp.load_hpc_findings(paths)
-        if not findings:
-            return
-        click.echo("")
-        click.echo("--- Monitor findings (latest check) ---")
-        for f in findings:
-            severity = str(f.get("severity", "info")).upper()
-            click.echo(f"  [{severity}] {f.get('code', '?')}: {f.get('message', '')}")
-
-    def _print(states: list[tuple[str, str, str]]) -> None:
-        click.echo("")
-        click.echo("--- HPC monitor ---")
-        _print_hpc_header()
-        _print_findings()
-        click.echo("")
-        click.echo("--- Pipeline state ---")
-        for label, task, st in states:
-            click.echo(f"  {label:18s}  {task:30s}  {st}")
-
-    states = _stage_states(paths)
-    _print(states)
-
-    # --- report-and-repoll: deterministic fingerprint + the single next-action ---
-    state_set = {st for _, _, st in states}
-    gate = "awaiting_approval" in state_set
-    cancelled = "cancelled" in state_set
-    failed = "failed" in state_set
-    complete = paths.run_manifest_json.exists()
-    pid_present = (paths.run_dir / "internal" / "hpc_monitor" / "monitor.pid").exists()
-    sup_alive = pid_present and "alive" in _supervisor_status()
-
-    sched_state = ((snapshot.get("scheduler") or {}).get("state")) or "unknown"
-    health = (snapshot.get("monitor_state") or {}).get("health", "unknown")
-    n_findings = len(_sp.load_hpc_findings(paths) or [])
-    # Stable single line the report-and-repoll rule diffs to decide whether to re-report.
-    click.echo("")
-    click.echo(f"State: {sched_state}/{health}/sup={'alive' if sup_alive else 'offline'}/"
-               f"gate={'awaiting_approval' if gate else 'none'}/findings={n_findings}")
-
-    # Informative guidance for terminal / gate states.
-    if cancelled:
-        click.echo("\n→ a step was cancelled by the HPC monitor (see the kill_action / "
-                   "confirmed-dead reason above). Fix the cause and re-`submit` to resume.")
-    elif failed:
-        click.echo("\n→ a step failed; inspect logs under "
-                   f"{paths.snakemake_workdir}/.snakemake/slurm_logs/ "
-                   "then fix and `submit` again (resume target is inferred).")
-    elif gate:
-        click.echo("\n→ a review gate is awaiting approval; review deliverables and run "
-                   "`Processing-MuAgent approve <stage>` (e.g. qc_review).")
-    elif complete:
-        click.echo("\n→ run_manifest.json present; pipeline complete.")
-
-    # The single next-action token the report-and-repoll rule keys on.
-    if gate or complete:
-        click.echo("→ Gate signal present — drive the next checkpoint now (no re-poll).")
-    elif cancelled or failed:
-        click.echo("→ Run halted — no re-poll; resolve the above, then `submit` again.")
-    elif sup_alive:
-        repoll_s = int(snapshot.get("next_recheck_after_s") or hpc.DEFAULT_REPOLL_AFTER_S)
-        interval_s = int(snapshot.get("interval_s") or 270)
-        click.echo(f"Next check: re-poll via scheduled wakeup in ~{repoll_s}s "
-                   f"(daemon interval {interval_s}s + {repoll_s - interval_s}s buffer)")
-    else:
-        click.echo("→ Supervisor offline with no gate armed — re-check pipeline state / logs "
-                   "before re-polling, or `supervisor-restart` if the cluster job is still active.")
+    reporting.run_hpc_status(paths)
 
 
 @main.command(name="supervisor-restart")
@@ -1281,7 +681,7 @@ def supervisor_restart(config_path: str, kill_existing: bool) -> None:
 def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only: bool) -> None:
     """Render and write the merged plan-review markdown (summary + appendix).
 
-    Also writes per-stage job spec YAMLs to internal/specs/ so Execution-MuAgent
+    Also writes per-stage job spec YAMLs to internal/stage_meta/ so Execution-MuAgent
     can read science intent, resource hints, and progress_timeout_hint per stage.
 
     This command is a *renderer*: it requires the planning compute (P1 → S0)
@@ -1329,25 +729,6 @@ def plan_review_cmd(config_path: str, intro_text: str | None, intro_context_only
     # gate-arming path is the plan_review_propose Snakemake rule; this CLI path
     # is a re-render convenience after planning compute has finished.
     approval.mark_awaiting(run_dir, "plan_review")
-
-
-def _unlock_snakemake(run_dir: Path, config_path: Path) -> None:
-    paths = RunPaths(run_dir)
-    env = os.environ.copy()
-    env.setdefault("PYTHONPATH", str(PACKAGE_DIR))
-    env.setdefault("PMA_REPO_ROOT", str(PACKAGE_DIR))
-    paths.snakemake_workdir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        sys.executable, "-m", "snakemake",
-        "-s", str(SNAKEFILE),
-        "--directory", str(paths.snakemake_workdir),
-        "--unlock",
-        "--configfile", str(config_path),
-    ]
-    click.echo(f"$ {' '.join(cmd)}")
-    result = subprocess.run(cmd, env=env, cwd=str(PACKAGE_DIR))
-    if result.returncode != 0:
-        raise click.ClickException(f"snakemake --unlock exited with {result.returncode}")
 
 
 @main.command(name="marker-gene-check")
@@ -1427,76 +808,6 @@ def unlock_cmd(config_path: str) -> None:
     click.echo(f"Unlocked {paths.snakemake_workdir}")
 
 
-def _enforce_context_gate(paths: RunPaths, no_context: bool) -> None:
-    """Phase 1 biological-context gate (MANDATORY before any preprocessing).
-
-    Shared by `run` (local execution) and `submit` (cluster execution) so the gate
-    is enforced identically regardless of which entry point starts the pipeline.
-    Raises if the report is still the blank template and the caller did not pass
-    --no-context.
-    """
-    report_path = paths.biological_context_md
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    if not report_path.exists():
-        _ctx.write_template(report_path)
-    if _ctx.is_unfilled_template(report_path) and not no_context:
-        raise click.ClickException(
-            "Biological Context Report at "
-            f"{report_path}\nis empty (template only). Per Phase 1 policy, preprocessing "
-            "cannot proceed until the user provides biological context.\n\n"
-            "Choose one of:\n"
-            "  1. Paste context into the report file (fields: Organism, Tissue / sample, "
-            "Assay, DOI(s) optional, Notes optional) and re-run.\n"
-            "  2. Supply a report document (.docx/.pdf/.md/.txt) path in run.yaml under "
-            "'biological_context_path' and re-run.\n"
-            "  3. Explicitly proceed without context by adding --no-context to this command; "
-            "the subagent will mark user-declared fields as status=missing and rely on "
-            "file inputs + inference.\n"
-        )
-    if _ctx.is_unfilled_template(report_path) and no_context:
-        click.echo("Proceeding WITHOUT biological context (--no-context set). User-declared "
-                   "fields will be marked status=missing.", err=True)
-
-
-def _enforce_execution_mode_gate(run_dir: Path, paths: RunPaths) -> None:
-    """Require an explicit, user-confirmed execution mode before launching compute.
-
-    System requirement: Processing-MuAgent must ALWAYS confirm execution mode
-    (local vs HPC) with the user before running ANY compute job — not only at S0.
-    This is enforced unconditionally on every `run` and `submit`, so it also
-    covers resume submissions (S1+) and runs whose config never recorded an
-    execution mode. Mirrors `_enforce_context_gate`.
-
-    Idempotent: once `execution.user_confirmed` is true the gate passes instantly
-    on every subsequent call, so re-checking has no cost.
-    """
-    params = str(paths.parameters_yaml)
-    mode = provenance.get_value(params, "execution.mode", None)
-    confirmed = provenance.get_value(params, "execution.user_confirmed", False)
-    if mode is None:
-        raise click.ClickException(
-            "Execution mode is not set for this run. Per system policy, you MUST "
-            "confirm local vs HPC with the user before any compute job runs "
-            "(this applies to resume sessions too, not only the first S0 ingest).\n"
-            "  1. Ask the user: run locally on this machine, or submit to an HPC "
-            "cluster (SLURM)?\n"
-            "  2. For HPC, probe the login node first: Processing-MuAgent hpc-info\n"
-            "  3. Record the user's explicit choice:\n"
-            f"     Processing-MuAgent configure-execution --config {paths.run_yaml} "
-            "--mode local --confirmed-by-user\n"
-            "     (or --mode slurm with partition + account, "
-            "plus --confirmed-by-user)"
-        )
-    if not confirmed:
-        raise click.ClickException(
-            f"Execution mode is set to {mode!r} but was not confirmed by the user. "
-            "Per system policy, confirm local vs HPC with the user before launching "
-            "any compute job, then re-run:\n"
-            f"  Processing-MuAgent configure-execution --config {paths.run_yaml} "
-            f"--mode {mode} --confirmed-by-user"
-        )
-
-
 @main.command(name="run")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("--auto-approve", is_flag=True, help="Auto-approve every checkpoint (noninteractive).")
@@ -1551,101 +862,6 @@ def run_pipeline(config_path: str, auto_approve: bool, auto_except: tuple[str, .
                        f"{sorted(_display_stage(s) for s in kept)}. "
                        "Snakemake will stop at those gates.")
     _snakemake(["--configfile", str(paths.run_yaml), target], run_dir)
-
-
-def _infer_submit_target(run_dir: Path) -> str:
-    """Pick the Snakemake target from the first incomplete pipeline step."""
-    return _sp.infer_resume_target(run_dir)
-
-
-def _missing_approvals(run_dir: Path, stages: tuple[str, ...]) -> list[str]:
-    paths = RunPaths(run_dir)
-    return [stage for stage in stages if not paths.approved_sentinel(stage).exists()]
-
-
-def _seed_approvals(
-    run_dir: Path,
-    stages: tuple[str, ...],
-    *,
-    note: str,
-    kept: set[str] | None = None,
-) -> list[str]:
-    kept = kept or set()
-    seeded: list[str] = []
-    protected = False  # any gate left in the approved state (freshly seeded OR already)
-    for stage in stages:
-        if stage in kept:
-            continue
-        if approval.is_approved(run_dir, stage):
-            # Already approved on a prior call — do NOT re-stamp. approval.approve
-            # rewrites the sentinel and bumps its mtime; since every QC/downstream
-            # execute rule declares <gate>.approved as an input, a fresh mtime is an
-            # "Updated input files" trigger that needlessly re-runs the whole approved
-            # upstream chain on the next submit. The gate is already honoured; leave
-            # the original sentinel (and its mtime) untouched.
-            protected = True
-            continue
-        if stage == "plan_review" and _pr.marker_gene_decision_pending(run_dir):
-            raise click.ClickException(
-                "Cannot auto-approve plan_review: " + _MARKER_GENE_GATE_MSG
-                + "\nFor an unattended batch, pass --marker-genes defer|skip.")
-        approval.approve(run_dir, stage, note=note)
-        seeded.append(stage)
-        protected = True
-        if stage == "post_qc_review":
-            deleted = _cleanup_qc_intermediates(run_dir)
-            if deleted:
-                log_event(run_dir, {"stage": "post_qc_review", "event": "qc_cleanup",
-                                     "deleted": deleted})
-    # Set the revoke-protection flag whenever a gate is in the approved state, not
-    # only when one was freshly seeded — otherwise a submit that re-enters an
-    # already-approved phase would let the propose rules revoke those approvals.
-    if protected:
-        os.environ["PMA_AUTO_APPROVE"] = "1"
-    return seeded
-
-
-def _prepare_submit_approvals(
-    run_dir: Path,
-    target: str,
-    *,
-    inferred_target: bool,
-    auto_approve: bool,
-    auto_except: tuple[str, ...],
-) -> list[str]:
-    """Seed internal phase approvals or fail fast for explicit unsafe targets."""
-    internal: tuple[str, ...] = ()
-    human = _sp.required_human_approvals(target)
-    missing_human = _missing_approvals(run_dir, human)
-    if missing_human:
-        raise click.ClickException(
-            f"Target {target!r} requires human approval sentinel(s): "
-            f"{', '.join(_display_stage(s) for s in missing_human)}. "
-            "Review/approve these gates before submitting."
-        )
-
-    if auto_approve:
-        return []
-
-    if inferred_target:
-        kept = set(auto_except)
-        seeded = _seed_approvals(
-            run_dir,
-            tuple(s for s in internal if s not in _sp.required_human_approvals("all")),
-            note=f"phase-auto-approved for {target}",
-            kept=kept,
-        )
-        return seeded
-
-    missing_internal = _missing_approvals(run_dir, internal)
-    if missing_internal:
-        raise click.ClickException(
-            f"Explicit target {target!r} requires internal approval sentinel(s): "
-            f"{', '.join(missing_internal)}. Use --auto-approve for an unattended "
-            "batch, approve those stages, or omit --target so submit can infer and "
-            "prepare the current phase."
-        )
-    return []
 
 
 @main.command()
@@ -1709,10 +925,12 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
         Processing-MuAgent submit --config $CFG --executor slurm \\
                 --auto-approve --auto-approve-except post_qc_review
 
-        # After QC review, approve and resume (target auto-inferred); the run
-        # proceeds through clustering and UMAP to the final outputs with no
-        # further checkpoint:
+        # After QC review, approve and build the handoff (target auto-inferred):
         Processing-MuAgent approve post_qc_review --config $CFG
+        Processing-MuAgent submit --config $CFG --executor slurm
+
+        # Verify the handoff, obtain explicit user confirmation, then submit
+        # again; the target now resolves to the unattended S4-S8 finish batch:
         Processing-MuAgent submit --config $CFG --executor slurm
     """
     run_dir = _resolve_run_dir(config_path)
@@ -1885,66 +1103,9 @@ def submit(config_path: str, executor: str, target: str | None, no_context: bool
         click.echo(
             "\nNote: --no-watch — no supervisor daemon started. "
             "Stalled/hung jobs will NOT be auto-cancelled.\n"
-            f"Poll progress: Processing-MuAgent status --watch --config {paths.run_yaml}"
+            f"Attach MuAgene monitoring: Processing-MuAgent supervisor-restart "
+            f"--config {paths.run_yaml}"
         )
-
-
-def _snakemake(args: list[str], run_dir: Path) -> None:
-    """Invoke snakemake LOCALLY with --cores 1 for reproducibility.
-
-    `run` and `propose` are local-only entry points. All cluster execution is
-    owned by Execution-MuAgent and reached via `submit` (which renders + submits
-    a supervised head-job) — never through this helper. The head-job's own
-    snakemake invocation (in launch_runner.sh) attaches the cluster profile; this
-    helper does not.
-
-    Expected args shape from callers: ["--configfile", <path>, <target>].
-    """
-    env = os.environ.copy()
-    env.setdefault("PYTHONPATH", str(PACKAGE_DIR))
-    env.setdefault("PMA_REPO_ROOT", str(PACKAGE_DIR))
-    paths = RunPaths(run_dir)
-    paths.snakemake_workdir.mkdir(parents=True, exist_ok=True)
-    env.setdefault("XDG_CACHE_HOME", str(paths.snakemake_workdir / "cache"))
-    # Single-thread for reproducibility (UMAP / numba) — unchanged on local;
-    # cluster jobs inherit these unless the user overrides in their shell.
-    env.setdefault("NUMBA_NUM_THREADS", "1")
-    env.setdefault("OMP_NUM_THREADS", "1")
-    env.setdefault("PYTHONHASHSEED", "0")
-    if os.environ.get("PMA_AUTO_APPROVE"):
-        env["PMA_AUTO_APPROVE"] = os.environ["PMA_AUTO_APPROVE"]
-
-    configfile_path = None
-    targets: list[str] = []
-    rest: list[str] = []
-    it = iter(args)
-    for a in it:
-        if a == "--configfile":
-            configfile_path = next(it, None)
-        elif a.startswith("-"):
-            rest.append(a)
-        else:
-            targets.append(a)
-
-    cmd = [
-        sys.executable, "-m", "snakemake",
-        "-s", str(SNAKEFILE),
-        "--directory", str(paths.snakemake_workdir),
-        # Rerun only on mtime/missing-output, not params/code/input-set/software-env.
-        # This pipeline forces reruns by explicit artifact deletion (executor revise
-        # -> _invalidate_qc_downstream), so content/input-set triggers only cause
-        # spurious reruns. Mirrors `rerun-triggers: [mtime]` in the cluster profiles.
-        "--rerun-triggers", "mtime",
-        "--rerun-incomplete", *targets, *rest,
-        "--cores", "1",
-    ]
-
-    if configfile_path:
-        cmd += ["--configfile", configfile_path]
-    click.echo(f"$ {' '.join(cmd)}")
-    r = subprocess.run(cmd, env=env, cwd=str(PACKAGE_DIR))
-    if r.returncode != 0:
-        raise click.ClickException(f"snakemake exited with {r.returncode}")
 
 
 if __name__ == "__main__":

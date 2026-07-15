@@ -1,30 +1,33 @@
 # Execution-MuAgent — tool contracts
 
-Each command lists purpose · what it mutates · failure/idempotency. Run-time commands write
-only to `internal/hpc_monitor/` (Processing is the sole consumer); bootstrap commands are
-operator-facing and print to stdout. Finding codes: [`../../contracts/findings.yaml`](../../contracts/findings.yaml);
+Each command lists purpose · what it mutates · failure/idempotency. Run-time state is written
+under `internal/hpc_monitor/`; environment reconciliation may also update
+`~/.muagene/env_state.json`. Bootstrap commands are operator-facing and print to stdout.
+Finding codes: [`../../contracts/findings.yaml`](../../contracts/findings.yaml);
 state lifecycle: [`../../contracts/state_model.md`](../../contracts/state_model.md). A tripwire
 test asserts every command here matches the live CLI.
 
 ### Execution-MuAgent execute-spec
 The run-time lifecycle entry point (Processing invokes it): validate spec → render submission
-script → submit (``sbatch`) → record → monitor until exit. **No user-facing output** —
-all state goes to `internal/hpc_monitor/` (`latest_snapshot.json`, `execution_manifest.jsonl`,
-`submissions.jsonl`, `scripts/`, `monitor.pid`). Flags: `--watch`, `--interval`, `--kill-on-hang`.
-Failure: policy rejection → finding + non-zero exit; transient → retry ≤2×. Never resubmits.
+script → submit (`sbatch`) → record, then optionally monitor with `--watch`. Processing supplies
+the spec, site config, run directory, repository root, and target; monitoring controls are
+`--watch`, `--interval`, and `--kill-on-hang`. Every classified pre-submit failure writes a
+snapshot finding and exits non-zero; transient submission retries ≤2×. Never resubmits.
 
 ### Execution-MuAgent resume-monitor
 Resume supervision of the latest submission **without** resubmitting (recovers from daemon
-death). Reads `latest_submission.json`; re-arms the watch loop; refreshes `monitor.pid`.
+death). Reads `latest_submission.json` and re-enters the watch loop. Processing creates the
+supervisor PID file; this command removes it on exit.
 
 ### Execution-MuAgent report
-Print the latest `latest_report.md` — an **internal debug/audit helper only**. Processing never
-parses it and it is never shown to the user. Read-only.
+Print the latest `latest_report.md` for manual debugging. It is read-only and is not the
+Processing contract; Processing reads `latest_snapshot.json`.
 
 ### Execution-MuAgent init-machine
-Fresh-machine bootstrap (operator-facing): probe capabilities → write `~/.muagene/machine.config`
-→ create the CPU env from the committed conda-lock → `pip install -e` both packages → pull the
-GPU image → validate → print a readiness report. Mutates: `~/.muagene/`, the conda env.
+Fresh-machine provisioning (operator-facing): probe capabilities → write
+`~/.muagene/machine.config` → reconcile the requested environment → install both packages →
+pull a GPU image when GPU setup is requested → validate → print readiness. Mutates:
+`~/.muagene/` and the configured environment.
 
 ### Execution-MuAgent provision-env
 `--device cpu|gpu|both`: idempotently create/update the env from the `environments:` recipe (CPU
@@ -38,5 +41,5 @@ CPU lock), `gpu_image_unavailable`, `provision_failed` — all fail loud, never 
 `env_missing`/`env_stale`). On a CPU login node the GPU import check defers (`gpu_import_needs_node`).
 
 ### Execution-MuAgent doctor
-Print machine capabilities (scheduler, env manager, container runtime, GPU presence) and validate
-the configured envs. **Read-only** diagnostics.
+Print machine capabilities (scheduler, env manager, container runtime, GPU presence). If a
+machine profile exists, also validate its configured environments. **Read-only** diagnostics.

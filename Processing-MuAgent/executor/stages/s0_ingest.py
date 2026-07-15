@@ -16,6 +16,21 @@ from .. import translation as _translation
 from ..log import log_event
 
 
+def _resolve_declared_branch(
+    declared: str | None,
+    pairing_result: _pair.PairingResult,
+) -> str:
+    """Require explicit consent before changing a declared paired workflow."""
+    if declared == "paired" and pairing_result.status != "paired":
+        raise ValueError(
+            "S0 could not validate the declared `paired` workflow "
+            f"(detected {pairing_result.status!r}, overlap={pairing_result.overlap:.4f}). "
+            "Review the pairing diagnostics, then provide a barcode translation, correct "
+            "the inputs, or explicitly declare `unpaired` before rerunning S0."
+        )
+    return pairing_result.status
+
+
 def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     run_dir = Path(run_dir)
     artifacts = run_dir / "internal" / "artifacts" / "s0_ingest"
@@ -202,8 +217,7 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     #   2. ATAC or RNA barcode subset (>= SUBSET_COVERAGE_THRESHOLD of smaller set)
     #   3. Suffix-normalized Jaccard or subset -> prefix_suffix_normalized / *_subset_of_*
     #   4. `barcode_translation_path` or cell_metadata translation table
-    #   5. otherwise -> separate (auto-downgrade with logged reason)
-    _pair_thresh = _pair.PAIRING_OVERLAP_THRESHOLD
+    #   5. otherwise -> require explicit confirmation before switching to unpaired
     declared = _prov.get_value(str(params_path), "plan.workflow_branch_declared", None)
     barcode_translation_path = config.get("barcode_translation_path")
     cell_metadata_path = config.get("cell_metadata_path")
@@ -225,7 +239,6 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     ladder_steps: list[dict[str, Any]] = [_ladder_step(pr_initial)]
     translation_table_loaded: dict[str, str] | None = None
     translation_source: str | None = None
-    downgrade_reason: str | None = None
 
     if declared == "paired" and committed_branch != "paired" and rna_bc and atac_bc:
         # Try barcode_translation_path first.
@@ -275,26 +288,13 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
                     artifacts / "barcode_translation.parquet",
                 )
             else:
-                committed_branch = "separate"
+                committed_branch = "unpaired"
                 pairing_result = pr_trans
-                downgrade_reason = (
-                    f"User declared 'paired' but translation table from {translation_source} "
-                    f"yielded overlap={pr_trans.overlap:.4f} (Jaccard < {_pair_thresh}; no "
-                    f"subset relation ≥ {_pair.SUBSET_COVERAGE_THRESHOLD}). Auto-downgraded to "
-                    "'separate'. Doublet calls still run per modality; the S3 joint-barcode "
-                    "intersection is skipped because no validated cell-level pairing exists."
-                )
         else:
-            committed_branch = "separate"
+            committed_branch = "unpaired"
             pairing_result = pr_initial
-            downgrade_reason = (
-                f"User declared 'paired' but pairing detection committed "
-                f"{pr_initial.status!r} (overlap={pr_initial.overlap:.4f}); no "
-                "`barcode_translation_path` or `cell_metadata_path` (with both "
-                "`rna_barcode` and `atac_barcode` columns) was provided. Auto-downgraded "
-                "to 'separate'. To enable the paired branch, supply a translation table "
-                "mapping ATAC barcodes to RNA barcodes."
-            )
+
+    committed_branch = _resolve_declared_branch(declared, pairing_result)
 
     # Ambiguous overlap with no resolution path is still a hard stop — needs human input.
     if pairing_result.status == "ambiguous" and committed_branch == "ambiguous":
@@ -310,12 +310,12 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     if declared is not None and declared != "paired" and declared != committed_branch:
         raise ValueError(
             f"S0: declared workflow_branch={declared!r} conflicts with detected "
-            f"{committed_branch!r}. For the paired<->separate decision, supply a "
+            f"{committed_branch!r}. For the paired<->unpaired decision, supply a "
             "`barcode_translation_path`; for rna_only/atac_only declarations, either "
             "remove the unwanted modality from the inputs or correct the declaration."
         )
 
-    workflow_branch = committed_branch  # paired | separate | rna_only | atac_only
+    workflow_branch = committed_branch  # paired | unpaired | rna_only | atac_only
 
     # Commit workflow_branch with appropriate provenance source/method.
     if declared == "paired" and workflow_branch == "paired" \
@@ -331,12 +331,6 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
                         rationale=(f"User declared 'paired' via `executor declare-branch`; "
                                    f"S0 detection via {pairing_result.method} confirmed "
                                    f"overlap={pairing_result.overlap:.4f}."))
-    elif declared == "paired" and workflow_branch == "separate":
-        _prov.set_param(params_path, "plan.workflow_branch", workflow_branch,
-                        source="derived", confidence="high",
-                        rationale=downgrade_reason or "Paired declaration downgraded to separate.",
-                        method={"name": "s0.paired_to_separate_downgrade",
-                                "code_ref": "executor/stages/s0_ingest.py"})
     elif declared is not None and declared == workflow_branch:
         _prov.set_param(params_path, "plan.workflow_branch", workflow_branch,
                         source="user", confidence="high",
@@ -366,8 +360,6 @@ def run(run_dir: Path | str, config: dict[str, Any]) -> dict[str, Any]:
     if pairing_result.subset_relation:
         pairing_record["subset_relation"] = pairing_result.subset_relation
         pairing_record["subset_coverage"] = pairing_result.subset_coverage
-    if downgrade_reason:
-        pairing_record["downgrade_reason"] = downgrade_reason
     if translation_source:
         pairing_record["translation_source"] = translation_source
         pairing_record["n_translation_pairs"] = len(translation_table_loaded or {})

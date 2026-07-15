@@ -230,7 +230,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     params_path = str(paths.parameters_yaml)
 
     s3 = "s3_doublets"
-    has_rna = workflow_branch in ("paired", "separate", "rna_only")
+    has_rna = workflow_branch in ("paired", "unpaired", "rna_only")
     has_atac = _prov.branch_has_atac(workflow_branch)
 
     rna = _load_rna_mod(paths.artifact(s3, "rna_post_doublet.h5ad")) if has_rna else None

@@ -249,7 +249,7 @@ class StageProgressTests(unittest.TestCase):
 
             self.assertEqual(infer_resume_target(tmp), "post_qc_review_propose")
 
-    def test_infer_resume_after_qc_approval_at_s5(self):
+    def test_infer_resume_after_qc_approval_targets_handoff_first(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._init_run(tmp)
             paths.approved_sentinel("plan_review").write_text("")
@@ -265,8 +265,16 @@ class StageProgressTests(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("")
 
-            # No gate follows QC: the final phase targets `all`, so one
-            # submission chains s5→s6→s7→s8→manifest through to final results.
+            self.assertEqual(infer_resume_target(tmp), "qc_handoff")
+
+    def test_infer_resume_after_handoff_targets_finish_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._init_run(tmp)
+            paths.approved_sentinel("plan_review").write_text("")
+            paths.approved_sentinel("post_qc_review").write_text("")
+            paths.post_qc_manifest_json.parent.mkdir(parents=True, exist_ok=True)
+            paths.post_qc_manifest_json.write_text("{}")
+
             self.assertEqual(infer_resume_target(tmp), "all")
 
     def test_infer_resume_targets_planning_first(self):

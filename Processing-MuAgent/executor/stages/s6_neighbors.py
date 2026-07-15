@@ -57,8 +57,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     params_path = run_dir / "internal" / "parameters.yaml"
     branch = _prov.current_branch(str(params_path))
 
-    has_rna = branch in ("paired", "separate", "rna_only")
-    has_atac = branch in ("paired", "separate", "atac_only")
+    has_rna = branch in ("paired", "unpaired", "rna_only")
+    has_atac = branch in ("paired", "unpaired", "atac_only")
 
     s6_params = plan["stages"].get("s6_neighbors", {}).get("parameters", {})
     n_pcs_param = s6_params.get("rna_n_pcs", {}).get("value", "auto")

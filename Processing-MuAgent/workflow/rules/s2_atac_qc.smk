@@ -5,7 +5,7 @@ def _s2_propose_inputs(wildcards):
         "plan": str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
     }
     # Order-only dependency on S1 in branches where S1 exists (serialize for reproducibility).
-    if branch in ("paired", "separate"):
+    if branch in ("paired", "unpaired"):
         # Use qc_summary.json (not rna_qc.h5ad) — it survives post_qc_review cleanup.
         paths["rna_done"] = str(INTERNAL / "artifacts" / "s1_rna_qc" / "qc_summary.json")
     # For atac_only, S2 is the first modality stage after plan_review — demand

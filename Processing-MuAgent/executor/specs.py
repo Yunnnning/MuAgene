@@ -5,6 +5,13 @@ what the biology needs (resources, inputs, outputs, science description) plus
 the progress_timeout_hint that tells the monitor how long to wait before treating
 the stage as hung. Platform mechanics (partition, account, container) come from
 site.config and are never encoded here.
+
+The spec I/O mirrors the Snakemake rule's DECLARED inputs/outputs — i.e. the durable
+per-stage markers (validation_report.json, *_summary.json, calls.parquet, …), never the
+deletable working h5ads. That is what survives cleanup and what the monitor should verify.
+Branch membership and branch-aware inputs are derived from `pipeline` (the single source
+of truth), so e.g. atac_only correctly gets s6_neighbors/s7_clustering specs whose inputs
+key off the S5 spectral marker rather than the (absent) S4 RNA marker.
 """
 from __future__ import annotations
 
@@ -15,6 +22,13 @@ from typing import Any
 
 import yaml
 
+from .pipeline import (
+    PIPELINE_STAGE_ORDER,
+    STAGES_BY_BRANCH,
+    branch_has_atac,
+    stages_for_branch,
+)
+
 
 _SCIENCE_DESCRIPTIONS: dict[str, str] = {
     "s0_ingest":        "Validate/ingest RNA+ATAC, assemble the preprocessing plan, and derive data-driven QC thresholds with per-metric removal previews and figures",
@@ -24,21 +38,29 @@ _SCIENCE_DESCRIPTIONS: dict[str, str] = {
     "s3_doublets":      "Detect and remove doublets using Scrublet (RNA) and SnapATAC2 (ATAC); fixed score thresholds",
     "s4_rna_norm":      "Normalize RNA counts and select highly variable genes",
     "s5_atac_spectral": "Compute ATAC spectral embedding from peak-by-cell matrix",
-    "s6_neighbors":     "Build RNA PCA and shared nearest-neighbor graph",
+    "s6_neighbors":     "Build the neighbor graph: RNA PCA on RNA-bearing branches, ATAC KNN on the spectral embedding (X_spectral) when ATAC is present",
     "s7_clustering":    "Run Leiden clustering at fixed per-modality resolutions (RNA=0.7, ATAC=0.5)",
     "s8_umap":          "Project RNA and ATAC embeddings to 2D UMAP for visualization",
     "qc_handoff":        "Assemble the per-sample post-QC .h5mu + handoff manifest for Integration-MuAgent",
 }
 
-# Run-dir-relative input/output artifact paths per stage.
-# Uses {run_dir} as a template token; resolved to absolute paths at write time.
-_STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
+# Run-dir-relative input/output artifact paths per stage, mirroring each rule's DECLARED
+# durable I/O (see module docstring). {run_dir}/{run} are templated, resolved at write time.
+# Per-entry shape:
+#   inputs           — always-present input markers
+#   inputs_by_stage  — name -> (source_stage, path); included only when source_stage runs
+#                      on this branch (branch-aware DAG edges, e.g. s3/s6). Ties directly to
+#                      pipeline.STAGES_BY_BRANCH so spec inputs can never drift from membership.
+#   outputs          — always-present declared outputs (the durable stage-done marker)
+#   outputs_atac     — merged into outputs only on ATAC-bearing branches
+_STAGE_IO: dict[str, dict[str, Any]] = {
     "s0_ingest": {
         "inputs": {
             "context": "{run_dir}/internal/artifacts/p1_context/context_extraction.json",
         },
         "outputs": {
-            "rna_h5ad":          "{run_dir}/internal/artifacts/s0_ingest/rna_ingest.h5ad",
+            # validation_report.json is the durable S0 done-marker; rna_ingest.h5ad is a
+            # deletable cache and is intentionally NOT a declared output.
             "validation_report": "{run_dir}/internal/artifacts/s0_ingest/validation_report.json",
             "plan":              "{run_dir}/internal/artifacts/p2_plan/preprocessing_plan.json",
             "qc_explore":        "{run_dir}/internal/artifacts/qc_explore/qc_explore.json",
@@ -46,21 +68,23 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
     },
     "s1a_ambient": {
         "inputs": {
-            # The real DAG edge is S0's durable marker; rna_ingest.h5ad is a deletable
-            # cache S1a reconstructs via io.load_rna_ingest when absent, so it is not the
-            # dependency the monitor should key off.
+            # Real DAG edge is S0's durable marker; rna_ingest.h5ad is a deletable cache
+            # S1a reconstructs via io.load_rna_ingest when absent.
             "s0_marker": "{run_dir}/internal/artifacts/s0_ingest/validation_report.json",
         },
         "outputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s1a_ambient/rna_decontaminated.h5ad",
+            # Sole declared output + durable stage-done marker (rna_decontaminated.h5ad is
+            # a deletable working file read by S1 by path).
+            "summary": "{run_dir}/internal/artifacts/s1a_ambient/summary.json",
         },
     },
     "s1_rna_qc": {
         "inputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s1a_ambient/rna_decontaminated.h5ad",
+            # Durable S1a marker, not the deletable rna_decontaminated.h5ad.
+            "s1a_marker": "{run_dir}/internal/artifacts/s1a_ambient/summary.json",
         },
         "outputs": {
-            "qc_summary_json": "{run_dir}/internal/artifacts/s1_rna_qc/qc_summary.json",
+            "qc_summary": "{run_dir}/internal/artifacts/s1_rna_qc/qc_summary.json",
         },
     },
     "s2_atac_qc": {
@@ -68,17 +92,19 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "plan": "{run_dir}/internal/artifacts/p2_plan/preprocessing_plan.json",
         },
         "outputs": {
-            "qc_summary_json": "{run_dir}/internal/artifacts/s2_atac_qc/qc_summary.json",
+            "qc_summary": "{run_dir}/internal/artifacts/s2_atac_qc/qc_summary.json",
         },
     },
     "s3_doublets": {
-        "inputs": {
-            "rna_h5ad":  "{run_dir}/internal/artifacts/s1_rna_qc/rna_qc.h5ad",
-            "atac_h5ad": "{run_dir}/internal/artifacts/s2_atac_qc/atac_qc.h5ad",
+        "inputs_by_stage": {
+            # Durable upstream QC markers; present per branch (RNA branches get rna, ATAC
+            # branches get atac), exactly mirroring s3_doublets.smk's _s3_inputs.
+            "rna_qc_marker":  ("s1_rna_qc",  "{run_dir}/internal/artifacts/s1_rna_qc/qc_summary.json"),
+            "atac_qc_marker": ("s2_atac_qc", "{run_dir}/internal/artifacts/s2_atac_qc/qc_summary.json"),
         },
         "outputs": {
-            # Durable stage-done marker + DAG edge to qc_handoff. The post-doublet
-            # h5ads are transient working files (deleted by qc_handoff), not declared.
+            # Durable stage-done marker + DAG edge to qc_handoff. The post-doublet h5ads
+            # are transient working files (deleted by qc_handoff), not declared.
             "calls": "{run_dir}/internal/artifacts/s3_doublets/calls.parquet",
         },
     },
@@ -87,7 +113,8 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
             "post_qc_h5mu": "{run_dir}/deliverables/qc/post_qc_{run}.h5mu",
         },
         "outputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s4_rna_norm/rna_norm.h5ad",
+            # Durable marker, not the deletable rna_norm.h5ad (read by S6 by path).
+            "summary": "{run_dir}/internal/artifacts/s4_rna_norm/norm_summary.json",
         },
     },
     "s5_atac_spectral": {
@@ -99,24 +126,32 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
         },
     },
     "s6_neighbors": {
-        "inputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s4_rna_norm/rna_norm.h5ad",
+        "inputs_by_stage": {
+            # Branch-aware durable upstream markers, mirroring s6_neighbors.smk's _s6_inputs:
+            # RNA branches depend on the S4 norm marker, ATAC branches on the S5 spectral
+            # marker. On atac_only only the spectral marker is advertised (S4 does not run).
+            "rna_norm_marker":      ("s4_rna_norm",      "{run_dir}/internal/artifacts/s4_rna_norm/norm_summary.json"),
+            "atac_spectral_marker": ("s5_atac_spectral", "{run_dir}/internal/artifacts/s5_atac_spectral/spectral_summary.json"),
         },
         "outputs": {
-            "rna_neighbors": "{run_dir}/internal/artifacts/s6_neighbors/rna_neighbors.h5ad",
+            # Durable marker, not the deletable rna_neighbors.h5ad (read by S7 by path).
+            "summary": "{run_dir}/internal/artifacts/s6_neighbors/neighbors_summary.json",
         },
     },
     "s7_clustering": {
         "inputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s6_neighbors/rna_neighbors.h5ad",
+            # Durable S6 marker, not the deletable rna_neighbors.h5ad.
+            "s6_marker": "{run_dir}/internal/artifacts/s6_neighbors/neighbors_summary.json",
         },
         "outputs": {
-            "rna_clustered": "{run_dir}/internal/artifacts/s7_clustering/rna_clustered.h5ad",
+            # Durable marker, not the deletable rna_clustered.h5ad / atac_leiden_labels.parquet.
+            "summary": "{run_dir}/internal/artifacts/s7_clustering/clustering_summary.json",
         },
     },
     "s8_umap": {
         "inputs": {
-            "rna_h5ad": "{run_dir}/internal/artifacts/s7_clustering/rna_clustered.h5ad",
+            # Durable S7 marker, not the deletable rna_clustered.h5ad.
+            "s7_marker": "{run_dir}/internal/artifacts/s7_clustering/clustering_summary.json",
         },
         "outputs": {
             "sentinel": "{run_dir}/internal/artifacts/s8_umap/s8_done.txt",
@@ -138,24 +173,18 @@ _STAGE_IO: dict[str, dict[str, dict[str, str]]] = {
     },
 }
 
-_BRANCH_STAGES: dict[str, list[str]] = {
-    "paired": [
-        "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "qc_handoff",
-    ],
-    "separate": [
-        "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-        "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap", "qc_handoff",
-    ],
-    "rna_only": [
-        "s0_ingest", "s1a_ambient", "s1_rna_qc", "s3_doublets",
-        "s4_rna_norm", "s6_neighbors", "s7_clustering", "s8_umap", "qc_handoff",
-    ],
-    "atac_only": [
-        "s0_ingest", "s2_atac_qc", "s3_doublets",
-        "s5_atac_spectral", "s8_umap", "qc_handoff",
-    ],
-}
+
+def _spec_stages(branch: str) -> list[str]:
+    """Stages that get a per-stage spec for `branch`, in workflow order.
+
+    Derived from pipeline membership (the single source of truth) plus the two
+    non-plan stages that always bracket a cluster run: the s0_ingest planning compute
+    and the qc_handoff Integration bundle. Because this reads STAGES_BY_BRANCH directly,
+    specs can never drift from the DAG (e.g. atac_only includes s6_neighbors/s7_clustering).
+    """
+    members = stages_for_branch(branch)
+    ordered = [s for s in PIPELINE_STAGE_ORDER if s in members]
+    return ["s0_ingest", *ordered, "qc_handoff"]
 
 
 def _load_resources_smk() -> Any:
@@ -181,6 +210,27 @@ def _resolve_io(io: dict[str, str], run_dir: str) -> dict[str, str]:
     return {k: v.format(run_dir=run_dir, run=run_name) for k, v in io.items()}
 
 
+def _stage_io_for_branch(stage: str, branch: str, run_dir: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Resolve a stage's (inputs, outputs) for `branch`, honouring branch-aware edges.
+
+    inputs_by_stage edges are included only when their source stage runs on this branch
+    (so they track pipeline membership); outputs_atac is merged on ATAC-bearing branches.
+    """
+    io = _STAGE_IO.get(stage, {})
+    members = stages_for_branch(branch) if branch in STAGES_BY_BRANCH else set()
+
+    inputs = dict(io.get("inputs", {}))
+    for name, (src_stage, path) in io.get("inputs_by_stage", {}).items():
+        if src_stage in members:
+            inputs[name] = path
+
+    outputs = dict(io.get("outputs", {}))
+    if branch_has_atac(branch):
+        outputs.update(io.get("outputs_atac", {}))
+
+    return _resolve_io(inputs, run_dir), _resolve_io(outputs, run_dir)
+
+
 def build_stage_spec(
     stage: str,
     run_dir: str | Path,
@@ -191,13 +241,8 @@ def build_stage_spec(
     branch: str,
 ) -> dict[str, Any]:
     """Build a spec dict for one stage."""
-    from . import provenance
-
     run_dir_s = str(Path(run_dir).resolve())
-    io = _STAGE_IO.get(stage, {"inputs": {}, "outputs": {}})
-    outputs = dict(io.get("outputs", {}))
-    if provenance.branch_has_atac(branch):
-        outputs.update(io.get("outputs_atac", {}))
+    inputs, outputs = _stage_io_for_branch(stage, branch, run_dir_s)
     return {
         "schema_version": "1",
         "stage": stage,
@@ -207,8 +252,8 @@ def build_stage_spec(
             "mem_mb": resources["mem_mb"],
             "walltime_min": runtime_min,
         },
-        "inputs":  _resolve_io(io.get("inputs", {}),  run_dir_s),
-        "outputs": _resolve_io(outputs, run_dir_s),
+        "inputs":  inputs,
+        "outputs": outputs,
         "progress_timeout_hint": progress_timeout_hint,
     }
 
@@ -230,7 +275,7 @@ def write_stage_specs(run_dir: Path | str, branch: str) -> list[Path]:
     paths = RunPaths(Path(run_dir))
     paths.stage_meta_dir.mkdir(parents=True, exist_ok=True)
 
-    stages = _BRANCH_STAGES.get(branch, _BRANCH_STAGES["paired"])
+    stages = _spec_stages(branch)
     written: list[Path] = []
     for stage in stages:
         if stage not in resources:
@@ -283,11 +328,7 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
 
     stage_stem = target.removesuffix("_execute")
     if stage_stem != target:
-        io = _STAGE_IO.get(stage_stem, {"inputs": {}, "outputs": {}})
-        outputs_tpl = dict(io.get("outputs", {}))
-        if provenance.branch_has_atac(branch):
-            outputs_tpl.update(io.get("outputs_atac", {}))
-        outputs = _resolve_io(outputs_tpl, str(run_dir_path))
+        _inputs, outputs = _stage_io_for_branch(stage_stem, branch, str(run_dir_path))
     else:
         outputs = {}
 
@@ -302,7 +343,7 @@ def write_head_job_spec(run_dir: Path | str, target: str) -> Path:
     if stage_stem != target:
         target_stages = {stage_stem}
     else:
-        target_stages = set(_BRANCH_STAGES.get(branch, _BRANCH_STAGES["paired"]))
+        target_stages = set(_spec_stages(branch))
     gpu_stages_present = bool(gpu_capable & target_stages)
 
     spec: dict[str, Any] = {

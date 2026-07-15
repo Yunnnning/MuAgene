@@ -89,7 +89,7 @@ ATAC_H5AD = PROCESSED_DIR / "atac_processed.h5ad"
 if H5MU.exists():
     mdata = mu.read_h5mu(H5MU)
 elif RNA_H5AD.exists() and ATAC_H5AD.exists():
-    # Separate branch: two independent h5ads
+    # Unpaired branch: two independent h5ads
     mdata = mu.MuData({{"rna": ad.read_h5ad(RNA_H5AD),
                        "atac": ad.read_h5ad(ATAC_H5AD)}})
 elif RNA_H5AD.exists():

@@ -72,8 +72,12 @@ class HeadJobSpecOutputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p = specs.write_head_job_spec(tmp, "s0_ingest_execute")
             spec = yaml.safe_load(p.read_text())
+            # Head-job outputs are the durable declared markers the monitor can verify
+            # (validation_report.json + plan), never the deletable rna_ingest.h5ad cache
+            # (which is not a declared Snakemake output and is removed at the QC gate).
             self.assertIn("validation_report", spec["outputs"])
-            self.assertIn("rna_h5ad", spec["outputs"])
+            self.assertIn("plan", spec["outputs"])
+            self.assertNotIn("rna_h5ad", spec["outputs"])
 
     def test_multistage_target_leaves_outputs_empty(self):
         with tempfile.TemporaryDirectory() as tmp:

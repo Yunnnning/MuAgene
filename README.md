@@ -2,7 +2,7 @@
 
 A two-subagent framework for **single-cell multi-omics preprocessing**. One agent owns the
 science; the other owns the machine. They communicate through versioned, machine-readable
-contracts — not prose.
+contracts.
 
 ## The two agents
 
@@ -37,16 +37,11 @@ MuAgene/
 ```
 
 ## How the harness is organized
-Each concern has exactly one home, referenced everywhere else (no restatement):
 - **Identity & policy** → each agent's `AGENT.md` + slim `agent/system_prompt.md`.
 - **Procedures** → `agent/skills/` (progressive disclosure; start at `skills/index.md`).
 - **Tool behavior** → `agent/tools.md` (per CLI command).
 - **Cross-boundary shapes, finding codes, state lifecycle** → `contracts/`.
 - **QC default values** → `Processing-MuAgent/executor/defaults.py`.
-
-Drift is caught by `tests/test_harness_consistency.py` in each agent (e.g. plan defaults ==
-`defaults.py`, every emitted finding code is registered, the handoff manifest validates
-against its schema).
 
 ## Quickstart
 
@@ -58,19 +53,23 @@ Execution-MuAgent init-machine --processing-repo /path/to/Processing-MuAgent --d
 **Run a preprocessing job** (the agent drives this conversationally; the CLI underneath):
 ```bash
 executor init --config run.yaml                 # scaffold the run dir
-executor declare-branch paired --config $CFG    # paired | separate | rna_only | atac_only
+executor declare-branch paired --config $CFG    # paired | unpaired | rna_only | atac_only
 executor configure-execution --config $CFG --mode local --confirmed-by-user   # or --mode slurm
 executor plan-review --config $CFG              # gate #1 — review deliverables/plan/plan_review_<run>.md
 executor approve plan_review --config $CFG
 executor run --config $CFG                      # local; or: executor submit (cluster, via Execution-MuAgent)
-#   ... at gate #2 (post_qc_review): review, optionally `revise`, then approve ...
+#   ... at gate #2: review QC, optionally `revise`, then approve ...
+executor approve post_qc_review --config $CFG
+executor run --config $CFG --target qc_handoff  # or submit; agent verifies the handoff
+#   ... confirm that the agent may start the unattended finish batch ...
+executor run --config $CFG --target all         # or submit
 ```
 
 See each agent's `agent/system_prompt.md` and `agent/skills/index.md` for the full flow.
 
 ## Conventions
 - All run state mutates **only** through the `executor` / `Execution-MuAgent` CLIs.
-- Raw inputs stay pristine; derived files are written alongside, never overwritten.
+- Raw data files are never overwritten; processed/output files are saved separately.
 - Failures fail **loud** (no silent degradation); environment/execution errors are fixed at
   the environment level and documented.
 - Tests: per agent, `PYTHONPATH=. conda run -n muagene python -m pytest tests/ -q`.

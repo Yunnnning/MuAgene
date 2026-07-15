@@ -20,16 +20,16 @@ meanings + recovery actions are in [`../../../contracts/findings.yaml`](../../..
 
 ## Ingest / branch (S0)
 
-- **S0 auto-downgrades `paired → separate`** (not an error). No ladder rung (direct overlap,
-  suffix-normalized, `barcode_translation_path`, `cell_metadata_path` with `atac_barcode`)
-  validated cell-level pairing. Surface `internal/artifacts/s0_ingest/validation_report.json`
-  verbatim (`pairing.downgrade_reason` has the specifics). Ask: (a) proceed on `separate`,
-  (b) supply `barcode_translation_path` + rerun S0, or (c) abort and fix inputs upstream.
+- **S0 cannot validate a declared `paired` run.** No ladder rung (direct/subset overlap,
+  suffix normalization, `barcode_translation_path`, or translatable `cell_metadata_path`)
+  established cell-level pairing. Do not change the branch. Relay the S0 error and ask the
+  user to choose: (a) explicitly `declare-branch unpaired` and rerun S0, (b) supply a
+  barcode translation and rerun S0, or (c) correct the inputs upstream.
 - **S0 raises "declared=… conflicts with detected=…"** — `declare-branch` disagrees with S0
   detection and the declaration is single-modality (`rna_only`/`atac_only`). Relay the
   message; ask the user to correct the declaration or drop the unwanted modality from config.
 - **S0 raises "pairing is ambiguous"** — RNA+ATAC Jaccard 30–80% with no subset relation and
-  no resolving declaration. Ask paired vs separate; `executor declare-branch <paired|separate>`
+  no resolving declaration. Ask paired vs unpaired; `executor declare-branch <paired|unpaired>`
   then re-run; for `paired`, supply `barcode_translation_path` if whitelists differ. Don't auto-pick.
 - **S3 raises "paired-branch joint barcode intersection is empty"** — S0 committed `paired`
   but no cell survived both modalities' QC + doublet removal (usually QC too aggressive).

@@ -8,7 +8,7 @@ outputs: [internal/parameters.yaml, post_qc_review.approved, deliverables/qc/pos
 calls_tools: [status, revise, "revise --dry-run", approve, marker-gene-check, propose, submit, run]
 reads_contracts: [parameters, latest_snapshot]
 writes_state: [parameters.yaml, post_qc_review.approved]
-handoff: { next: run_execution, when: post_qc_review approved (→ finish batch), on_error: troubleshooting }
+handoff: { next: run_execution, when: qc_handoff verified + user confirmed finish batch, on_error: troubleshooting }
 ---
 
 # QC review & revise — the post_qc_review gate (#2)
@@ -192,7 +192,7 @@ When the user approves QC (marker gene check complete or explicitly waived, thre
    executor approve post_qc_review --config $CFG
    ```
 
-   Approving also runs `_cleanup_qc_intermediates`, which deletes the large QC/ingest
+   Approving also runs `cleanup.cleanup_qc_intermediates`, which deletes the large QC/ingest
    working caches — including the S0 `rna_ingest.h5ad` and the S1a
    `rna_decontaminated.h5ad` (see the README QC-cleanup note). These are untracked
    working files (the durable markers `validation_report.json` / `summary.json` /

@@ -24,7 +24,7 @@ rule s0_ingest_propose:
             "inputs": {k: config[k] for k in _propose_keys if k in config},
             "action": ("validate formats, detect pairing via the diagnostics ladder "
                         "(direct overlap -> suffix-normalized -> translation table -> "
-                        "auto-downgrade to 'separate'), persist optional translation parquet "
+                        "explicit branch confirmation), persist optional translation parquet "
                         "for S2, handle metadata, hash inputs"),
         }))
 

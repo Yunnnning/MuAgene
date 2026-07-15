@@ -43,8 +43,8 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     art.mkdir(parents=True, exist_ok=True)
     params_path = run_dir / "internal" / "parameters.yaml"
     branch = _prov.current_branch(str(params_path))
-    has_rna = branch in ("paired", "separate", "rna_only")
-    has_atac = branch in ("paired", "separate", "atac_only")
+    has_rna = branch in ("paired", "unpaired", "rna_only")
+    has_atac = branch in ("paired", "unpaired", "atac_only")
 
     plan_params = plan["stages"]["s7_clustering"]["parameters"]
     rna_res = float(_prov.effective_value(params_path, plan_params, "s7_clustering",

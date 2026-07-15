@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-from .plan_assembler import _stages_for_branch
+from .pipeline import HUMAN_CHECKPOINTS, stages_for_branch as _stages_for_branch
 from .provenance import current_branch
 from .run_paths import RunPaths
 
@@ -25,12 +25,11 @@ MONITOR_PIPELINE: tuple[str, ...] = (
     "s8_umap",
 )
 
-HUMAN_GATES: frozenset[str] = frozenset({
-    "plan_review", "post_qc_review",
-})
+# The two human gates (pipeline.HUMAN_CHECKPOINTS) as a frozenset for membership tests.
+HUMAN_GATES: frozenset[str] = frozenset(HUMAN_CHECKPOINTS)
 
 # Stages that run on every branch but are NOT plan stages (absent from
-# _STAGES_BY_BRANCH): qc_handoff (the post-QC Integration bundle, a cluster job).
+# STAGES_BY_BRANCH): qc_handoff (the post-QC Integration bundle, a cluster job).
 # Always shown in the monitor pipeline regardless of branch.
 ALWAYS_APPLIES: frozenset[str] = frozenset({"qc_handoff"})
 
@@ -421,11 +420,11 @@ def infer_resume_target(run_dir: Path | str) -> str:
     phase's execute stages (its inputs are the last execute stage's outputs).
     Targeting that propose rule makes Snakemake pull the whole phase's execute
     stages in as dependencies AND run the gate-arming localrule at the end — so
-    one head-job submission runs the entire phase *and* arms the gate. The final
-    phase (S4→S8→manifest) has no gate, so it targets ``all`` and runs straight
-    through to the final results in one submission. Snakemake reruns any
-    missing/failed upstream stage before the target, so this also covers
-    partial-resume.
+    one head-job submission runs the entire phase *and* arms the gate. After QC
+    approval, the handoff is a separate target so the agent can verify it and ask
+    for user confirmation before submitting the final S4→S8→manifest phase.
+    Snakemake reruns any missing/failed upstream stage before the target, so this
+    also covers partial-resume.
     """
     paths = RunPaths(run_dir)
 
@@ -441,12 +440,14 @@ def infer_resume_target(run_dir: Path | str) -> str:
     if not paths.approved_sentinel("post_qc_review").exists():
         return "post_qc_review_propose"
 
-    # Final phase: no gate follows post_qc_review, so target ``all`` (the manifest).
-    # Snakemake pulls the entire remaining DAG — S4→S5→S6→S7 (clustering at fixed
-    # resolutions) → S8 → manifest — so a single submission runs straight through
-    # to the final results (run_manifest.json, review notebook, layout.json).
-    # Targeting s8_umap_execute instead would stop one rule short and
-    # leave results generation unrun. Idempotent once everything is built.
+    # Build and verify the canonical post-QC bundle before the agent asks the user
+    # whether to start the unattended finish batch. The manifest is qc_handoff's
+    # durable done-marker.
+    if not paths.post_qc_manifest_json.is_file():
+        return "qc_handoff"
+
+    # After explicit conversational confirmation, the agent submits again. Target
+    # ``all`` so Snakemake pulls S4→S8→manifest and finalizes every deliverable.
     return "all"
 
 

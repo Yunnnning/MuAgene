@@ -38,8 +38,9 @@ that stops one rule early and leaves the gate unarmed.
   ```
 
 Do **not** retry logic errors (pairing ambiguous, declared-vs-detected mismatch, missing
-index, S0 OOM) — see [`troubleshooting.md`](troubleshooting.md). After S0, if `paired` was
-downgraded or pairing is ambiguous, surface `validation_report.json` verbatim.
+index, S0 OOM) — see [`troubleshooting.md`](troubleshooting.md). A declared `paired`
+run that cannot be validated stops in S0; obtain an explicit branch/input resolution
+before rerunning.
 
 ## 2. Render the plan with an intro paragraph
 
@@ -64,7 +65,7 @@ sentinel.
      `atac_barcodes_source` and `rna_raw_n_barcodes` vs `rna_n_cells` (a raw ATAC file
      explains near-zero overlap), and read `run.yaml` for mismatched sources. Put the most
      likely root cause + concrete fix (e.g. use the filtered matrix, supply a
-     `barcode_translation_path`) into the intro. Skip for `rna_only`/`atac_only`/`separate`.
+     `barcode_translation_path`) into the intro. Skip for `rna_only`/`atac_only`/`unpaired`.
 3. `executor plan-review --intro "<paragraph>" --config $CFG` — re-renders BOTH
    `plan_review_<run>.md` and `plan_summary_<run>.html` with the intro prepended, persists
    the intro (pass `--intro` once), and writes the per-stage specs to `internal/stage_meta/`.

@@ -30,12 +30,12 @@ report progress and recognise a healthy finish.
 | S5 `s5_atac_spectral` | ATAC spectral embedding via SnapATAC2 (+ flexible peak/feature export). **Reads ATAC from the post-QC h5mu** — rebuilds a snap-native working file from the atac mod's fragments. |
 | S6 `s6_neighbors` | PCA (RNA) + neighbor graph — RNA PCA+neighbors; ATAC KNN on the S5 spectral embedding. |
 | S7 `s7_clustering` | Leiden clustering at **fixed per-modality resolutions** (values live in `executor/defaults.py` → `s7_clustering`; change them only at plan review via `revise s7_clustering …`). |
-| S8 `s8_umap` | UMAP per modality + final write: `processed_<run>.h5mu` (paired) or separate `*_processed.h5ad`. **Hard stop.** |
+| S8 `s8_umap` | UMAP per modality + final write: `processed_<run>.h5mu` (paired) or independent `*_processed.h5ad` files (unpaired). **Hard stop.** |
 | `manifest` | Writes `run_manifest.json` and finalizes `deliverables/results/` (localrule). |
 
 For `rna_only`/`atac_only`, the irrelevant per-modality stages are dropped from the plan and
 DAG automatically. On `paired`, S7 labels are diagnostic (UMAP only); on
-`separate`/single-modality they are the final `leiden_rna`/`leiden_atac` labels.
+`unpaired`/single-modality they are the final `leiden_rna`/`leiden_atac` labels.
 
 ## Your role here
 

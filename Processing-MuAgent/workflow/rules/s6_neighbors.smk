@@ -6,9 +6,9 @@ def _s6_inputs(wildcards):
     # NOT the rna_norm.h5ad / atac_spectral.h5ad working files that `finish-cleanup`
     # deletes. The markers carry the ordering edge and survive cleanup; the stages read
     # the h5ads by path.
-    if branch in ("paired", "separate", "rna_only"):
+    if branch in ("paired", "unpaired", "rna_only"):
         paths["rna_norm"] = str(INTERNAL / "artifacts" / "s4_rna_norm" / "norm_summary.json")
-    if branch in ("paired", "separate", "atac_only"):
+    if branch in ("paired", "unpaired", "atac_only"):
         paths["atac_spectral"] = str(INTERNAL / "artifacts" / "s5_atac_spectral" / "spectral_summary.json")
     return paths
 

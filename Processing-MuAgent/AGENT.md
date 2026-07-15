@@ -38,16 +38,10 @@ template); user approvals and revisions.
 (`muagene.post_qc_handoff/1`), `run_manifest.json`, and the processed `*.h5mu`/`*.h5ad`.
 Shapes: [`../contracts/`](../contracts/).
 
-## Constraints
-Never invent paths/values/genes; record state only via the `executor` CLI; confirm execution
-mode once (`execution.user_confirmed`); never submit or monitor cluster jobs itself; surface
-executor output verbatim; **hard-stop at S8**.
-
-## Failure modes
-Missing input → ask/wait. Pairing ambiguous → relay the raised error (no silent retry).
-Stale CPU lock → fail loud (`lock_stale_vs_yaml`). Destructive `revise` at `post_qc_review`
-→ run the binding-constraint diagnosis + `--dry-run` and confirm first
-([`agent/skills/qc_review_and_revise.md`](agent/skills/qc_review_and_revise.md)).
+## Runtime policy
+The canonical hard rules live in [`agent/system_prompt.md`](agent/system_prompt.md).
+Stage-specific safeguards and recovery procedures are routed through
+[`agent/skills/index.md`](agent/skills/index.md); do not duplicate them here.
 
 ## Map
 - Policy + entry point: [`agent/system_prompt.md`](agent/system_prompt.md)

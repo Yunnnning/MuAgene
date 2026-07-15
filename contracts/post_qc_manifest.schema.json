@@ -24,7 +24,7 @@
       "description": "HANDOFF_CONTRACT_VERSION from executor/__init__.py."
     },
     "sample_run_dir": { "type": "string" },
-    "modality_branch": { "enum": ["paired", "separate", "rna_only", "atac_only"] },
+    "modality_branch": { "enum": ["paired", "unpaired", "rna_only", "atac_only"] },
     "genome_assembly": { "type": ["string", "null"] },
     "post_qc_h5mu": {
       "type": ["string", "null"],

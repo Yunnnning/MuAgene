@@ -3,7 +3,8 @@
 Machine-readable single source of truth for everything that crosses an agent
 boundary or is handed to a downstream consumer. Both `Processing-MuAgent` and
 `Execution-MuAgent` reference these files; prose docs (READMEs, system prompts,
-skills) link here and must not restate the shapes or codes.
+skills) may summarize behavior for their audience but must not restate authoritative
+shapes or finding-code definitions.
 
 | File | What it pins | Producer → Consumer |
 |------|--------------|---------------------|

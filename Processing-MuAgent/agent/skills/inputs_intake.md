@@ -4,10 +4,10 @@ domain: intake
 purpose: Collect paths + biological context + execution mode, scaffold the run (init), and declare the branch. The SSOT for execution-mode intake heuristics.
 activation: analysis type known; run.yaml not written yet
 inputs: [user dialogue, raw input paths, genome assembly]
-outputs: [deliverables/plan/config/run.yaml, deliverables/plan/config/biological_context.md, deliverables/plan/config/hpc.env, deliverables/plan/config/site.config, parameters.yaml]
+outputs: [deliverables/plan/config/run.yaml, deliverables/plan/config/biological_context.md, parameters.yaml, "SLURM only: hpc.env + site.config"]
 calls_tools: [init, hpc-info, configure-execution, declare-branch]
 reads_contracts: [run_yaml, site_config]
-writes_state: [run.yaml, biological_context.md, hpc.env, site.config, parameters.yaml]
+writes_state: [run.yaml, biological_context.md, parameters.yaml, "SLURM only: hpc.env + site.config"]
 handoff: { next: plan_confirm, when: run scaffolded + branch declared + exec-mode confirmed, on_error: troubleshooting }
 ---
 
@@ -43,7 +43,7 @@ Tailor the required paths to the declared `workflow_branch`:
 >
 > Optional: same as rna_only.
 
-### For `paired` or `separate`
+### For `paired` or `unpaired`
 
 > I need:
 > - **RNA input path** (h5 / MEX / h5ad)
@@ -52,7 +52,10 @@ Tailor the required paths to the declared `workflow_branch`:
 >
 > Optional: same as above.
 >
-> If the RNA and ATAC barcodes have Jaccard overlap ≥80%, or one modality's barcodes are ≥80% contained in the other (typical when cell counts differ before QC), I'll treat as `paired`. If they don't overlap at all I'll treat as `separate`. Jaccard between 30% and 80% with no subset relation, I'll stop and ask.
+> If the RNA and ATAC barcodes have Jaccard overlap ≥80%, or one modality's barcodes
+> are ≥80% contained in the other (typical when cell counts differ before QC), pairing
+> is validated. If you declared `paired` but validation fails, I will stop and ask
+> before switching to `unpaired`. Ambiguous overlap also stops for resolution.
 
 ## Actions
 
@@ -229,10 +232,13 @@ Do **not** invent partition/account names — use `hpc-info` results only. If `h
 ### 5. Declare the branch
 
 ```
-executor declare-branch <rna_only|atac_only|paired|separate> --config $CFG
+executor declare-branch <rna_only|atac_only|paired|unpaired> --config $CFG
 ```
 
-This writes `plan.workflow_branch_declared` to `parameters.yaml` as a `source=user` assertion. S0 will confirm it against its own pairing detection and raise with a clear diff if they don't match.
+This writes `plan.workflow_branch_declared` to `parameters.yaml` as a `source=user`
+assertion. S0 validates it against pairing diagnostics. A declared `paired` run that
+cannot be validated stops with three choices: provide a barcode translation, correct
+the inputs, or explicitly re-declare `unpaired`. No branch change is automatic.
 
 ## What to surface back
 

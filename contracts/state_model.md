@@ -7,8 +7,8 @@ marked machine-level.
 
 ## Golden rule
 All run state is mutated **only** through the `executor` CLI (Processing) or the
-`Execution-MuAgent` CLI. Prompts never hand-edit these files. The one documented
-exception is the QC-revision artifact cleanup (see the `qc_review_and_revise` skill).
+`Execution-MuAgent` CLI. Prompts never hand-edit these files. Biological context uses
+its deterministic mapper/writer API; QC revision and cleanup remain CLI-owned.
 
 ## Run state — written by Processing-MuAgent (`executor`)
 
@@ -18,7 +18,7 @@ exception is the QC-revision artifact cleanup (see the `qc_review_and_revise` sk
 | `internal/artifacts/p2_plan/preprocessing_plan.json` | `plan-review` (assemble_plan + write_plan) | all stages (the default layer; parameters.yaml overrides it) | Frozen plan snapshot; re-rendered if the plan is rebuilt. |
 | `internal/proposals/<stage>.yaml`, `<stage>.awaiting_approval` | Snakemake `*_propose` localrules | the agent (relayed to the user at a gate) | Created when a gate is reached; consumed at approval. |
 | `internal/checkpoints/<gate>.approved` | `approve <gate>` | Snakemake execute rules (hard gate) | Written on approval; presence unblocks downstream. Gates: `plan_review`, `post_qc_review`. |
-| `internal/artifacts/<stage>/*` | the stage `run()` | downstream stages; reports | Stage outputs (h5ad/parquet/bed/...). Large QC/ingest working files are deleted at the post_qc gate by `_cleanup_qc_intermediates` (the QC matrices `rna_qc.h5ad`/`atac_qc.h5ad`/`atac_snap.h5ad`, the S0 `rna_ingest.h5ad` + `metadata_minimal.tsv`, the S1a `rna_decontaminated.h5ad`, and S1a recompute caches; the fragment caches only when `retain_for_integration: false`). They are NOT declared outputs — the durable markers (`s0_ingest/validation_report.json`, `s1a_ambient/summary.json`, `s1`/`s2 qc_summary.json`) carry the DAG edges and survive — so deletion triggers no re-run, and no post-gate stage reads them. The S3 post-doublet h5ads (`s3_doublets/{rna,atac}_post_doublet.h5ad`) are **transient**: `qc_handoff` deletes them once the canonical post-QC h5mu exists, which S4/S5 read (S3's durable declared output is `calls.parquet`). The **S4–S8 working files** (`s4_rna_norm/rna_norm.h5ad`, `s5_atac_spectral/{atac_spectral.h5ad, feature_matrix.npz, feature_names.tsv, feature_kind.txt, peak_matrix_*.h5ad, *_prepared.bed}`, `s6_neighbors/rna_neighbors.h5ad`, `s7_clustering/{rna_clustered.h5ad, atac_leiden_labels.parquet}`) are likewise **transient**: `finish-cleanup` deletes them once S8's processed deliverable exists (it validates that first and refuses otherwise). Each S4–S8 stage's durable declared output / done-marker is its `*_summary.json` (`s8_done.txt` for S8); these survive cleanup so `status` and the DAG edges hold and no re-run is triggered. |
+| `internal/artifacts/<stage>/*` | the stage `run()` | downstream stages; reports | Durable markers preserve DAG/status state. Regenerable QC files are cleaned on QC approval, S3 post-doublet files after a successful handoff, and S4–S8 working files by `finish-cleanup`. Authoritative deletion sets live in `executor/cleanup.py` and `executor/stages/qc_handoff.py`; prepared ATAC fragments are retained by default for integration. |
 | `internal/stage_meta/<stage>.yaml`, `internal/stage_meta/head_job.yaml` | `plan-review` / `submit` (specs) | **Execution-MuAgent** (the spec contract) | Per-stage science intent + resources + I/O + progress_timeout_hint; head-job submission spec. |
 | `internal/log.jsonl` | `log_event` (all stages) | debugging / audit | Append-only event log. |
 | `deliverables/plan/config/run.yaml` | `init` (canonical copy) | every CLI call (`--config`) | The run config; canonical path after `init`. |
@@ -29,16 +29,17 @@ exception is the QC-revision artifact cleanup (see the `qc_review_and_revise` sk
 | `deliverables/qc/qc_review_<run>.md`, `qc_summary_<run>.html` | `post_qc_review` propose | user (checkpoint #2) | QC summary of filters actually applied. |
 | `deliverables/qc/post_qc_<run>.h5mu`, `peaks_<run>.bed`, `post_qc_manifest.json` | `qc_handoff` | downstream consumer | Post-QC handoff bundle — schema `muagene.post_qc_handoff/1` (see `post_qc_manifest.schema.json`). |
 | `deliverables/results/processed_<run>.h5mu` / `*_processed.h5ad` | S8 | user / downstream | Final per-modality processed output. |
-| `deliverables/results/run_manifest.json` | `manifest` | user / downstream | Preprocessing handoff manifest (v1.0.0). |
+| `deliverables/results/run_manifest.json` | `manifest` | user / downstream | Preprocessing handoff manifest (v1.0.1). |
 
-## Run state — written by Execution-MuAgent (under `internal/hpc_monitor/`)
+## Shared execution state (under `internal/hpc_monitor/`)
 
 | Path | Writer | Reader | Lifecycle |
 |------|--------|--------|-----------|
-| `latest_snapshot.json` | monitor (`execute-spec --watch`) every check | **Processing-MuAgent** (`hpc-status`) | THE structured contract: scheduler state, head/child logs, `error_context`, `monitor_state`, `findings` (see `findings.yaml`), `kill_action`, `interval_s`, `next_recheck_after_s`. Refreshed every interval (healthy or not). |
-| `latest_report.md` | monitor | daemon-internal debug/audit only | Never parsed by Processing; never shown to the user. |
-| `monitor.pid` | `execute-spec --watch` / `resume-monitor` | Processing (gate signal) | Present while the daemon runs; **removed on exit** — its absence signals the gate to Processing. |
-| `submissions.jsonl`, `execution_manifest.jsonl` | execute-spec / resume-monitor | audit; resume-monitor reconstructs context | Append-only submission/registration logs. |
+| `latest_snapshot.json` | `execute-spec` preflight and monitor watch loop | **Processing-MuAgent** (`hpc-status`) | Structured run contract. Pre-submit failures write `PRE_SUBMIT_FAILED`; active monitoring refreshes scheduler/log state, findings, actions, and recheck cadence. |
+| `latest_report.md` | monitor | explicit operator `report` command | Debug/audit only; never parsed by Processing or used for normal user status. |
+| `monitor.pid` | Processing `submit` / `supervisor-restart` | Processing (liveness signal); Execution removes | Written when Processing starts the supervisor; removed when Execution monitoring exits or Processing terminates/replaces the supervisor. |
+| `latest_submission.json` | `execute-spec` | `resume-monitor`; Processing status | Current submission context used to resume monitoring without resubmitting. |
+| `submissions.jsonl`, `execution_manifest.jsonl` | `execute-spec` / `resume-monitor` | audit | Append-only submission/registration logs. |
 | `scripts/<stage>_<ts>.sh` | submit (rendered) | scheduler (sbatch) | Rendered submission script per submit. |
 
 ## Machine-level state — written by Execution-MuAgent (under `~/.muagene/`)

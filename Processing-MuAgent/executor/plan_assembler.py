@@ -13,31 +13,13 @@ from . import hashing as _h
 from . import provenance
 from .hpc import load_execution_settings
 from .defaults import QC_DEFAULTS as _D
-
-
-# Per-branch stage set. Keys are stage IDs; values are the stages that should
-# appear under `plan["stages"]` for that branch. See also: workflow_branch ∈
-# {paired, separate, rna_only, atac_only}.
-_PIPELINE_STAGE_ORDER = (
-    "s1a_ambient",
-    "s1_rna_qc",
-    "s2_atac_qc",
-    "s3_doublets",
-    "s4_rna_norm",
-    "s5_atac_spectral",
-    "s6_neighbors",
-    "s7_clustering",
-    "s8_umap",
+# Stage topology is owned by pipeline.py (single source of truth). The private
+# aliases preserve this module's existing internal/public names; stage_progress.py
+# imports _stages_for_branch from here, so the re-export keeps that contract.
+from .pipeline import (
+    PIPELINE_STAGE_ORDER as _PIPELINE_STAGE_ORDER,
+    stages_for_branch as _stages_for_branch,
 )
-
-_STAGES_BY_BRANCH = {
-    "paired":    set(_PIPELINE_STAGE_ORDER),
-    "separate":  set(_PIPELINE_STAGE_ORDER),
-    "rna_only":  {"s1a_ambient", "s1_rna_qc", "s3_doublets", "s4_rna_norm",
-                   "s6_neighbors", "s7_clustering", "s8_umap"},
-    "atac_only": {"s2_atac_qc", "s3_doublets", "s5_atac_spectral",
-                   "s6_neighbors", "s7_clustering", "s8_umap"},
-}
 
 
 def _ordered_plan_stages(plan: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -48,16 +30,6 @@ def _ordered_plan_stages(plan: dict[str, Any]) -> list[tuple[str, Any]]:
         if s not in _PIPELINE_STAGE_ORDER:
             ordered.append(s)
     return [(s, stages[s]) for s in ordered]
-
-
-def _stages_for_branch(branch: str) -> set[str]:
-    """Return the stage IDs that should appear in `plan['stages']` for `branch`."""
-    try:
-        return _STAGES_BY_BRANCH[branch]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown workflow_branch={branch!r}; expected one of {sorted(_STAGES_BY_BRANCH)}."
-        ) from exc
 
 
 _AMBIENT_METHODS = frozenset({"auto", "none", "decontx", "soupx"})
@@ -206,10 +178,10 @@ def assemble_plan(
                                                         "cells with doublet_probability above this value "
                                                         "are flagged (SnapATAC2 default is 0.5).", "medium"),
                 "removal_policy_recommendation": p(
-                    "independent" if workflow_branch == "separate" else "union",
-                    "derived" if workflow_branch == "separate" else "recommended",
-                    ("separate branch: each modality's doublets removed independently; "
-                     "no cross-modal reconciliation." if workflow_branch == "separate" else
+                    "independent" if workflow_branch == "unpaired" else "union",
+                    "derived" if workflow_branch == "unpaired" else "recommended",
+                    ("unpaired branch: each modality's doublets removed independently; "
+                     "no cross-modal reconciliation." if workflow_branch == "unpaired" else
                      "Paired multiome: union of RNA and ATAC doublet calls (remove if either detector flags)."),
                     "high",
                 ),

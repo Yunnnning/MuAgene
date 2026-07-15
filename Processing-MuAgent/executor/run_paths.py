@@ -21,8 +21,8 @@ Top-level layout (direct-write; external inputs referenced via symlinks):
         results/                    final deliverables (data + manifest; no figures)
           review_processed_<run>.{ipynb,py}
           processed_<run>.h5mu        (paired branch)
-          rna_processed.h5ad          (separate / rna_only branches)
-          atac_processed.h5ad         (separate / atac_only branches)
+          rna_processed.h5ad          (unpaired / rna_only branches)
+          atac_processed.h5ad         (unpaired / atac_only branches)
           run_manifest.json           ← manifest rule (handoff artifact)
           layout.json                 ← layout.finalize (manifest of deliverables)
       internal/                     canonical pipeline state (not user-facing)

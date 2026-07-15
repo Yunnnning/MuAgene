@@ -1,171 +1,102 @@
-# Execution-MuAgent — interaction flow
+# Execution-MuAgent — operational workflow
 
-Execution-MuAgent is invoked programmatically by Processing-MuAgent. It never interacts with the user. This document describes the full spec → running job lifecycle.
+This is the canonical procedure for runtime execution and machine provisioning. Finding
+codes and state ownership are defined in [`../../../contracts/`](../../../contracts/);
+command mutations and flags are defined in [`../tools.md`](../tools.md).
 
----
+## `execute-spec` — Processing-invoked runtime
 
-## Triggered by: `execute-spec`
+Processing calls `execute-spec` after writing `site.config` and the head/stage specs.
+Execution never changes those inputs.
 
-Processing-MuAgent calls this after it has written `site.config` and the per-stage spec.
+### 1. Validate and preflight
 
-### Step 1 — Load and validate
+1. Load the head-job spec and `site.config`.
+2. Validate positive resources, SLURM support, and declared inputs.
+3. Reconcile the CPU environment. Reconcile GPU only when the site selects GPU and the
+   spec declares GPU-capable stages.
+4. If validation or environment preflight fails:
+   - preserve the original registered environment finding when available;
+   - otherwise use the appropriate validation/provisioning finding;
+   - write it to `latest_snapshot.json`;
+   - exit non-zero without rendering or submitting.
 
-1. Load `site.config` → `SiteConfig` (scheduler, partition, account, QOS, container, env).
-2. Load `internal/stage_meta/<stage>.yaml` → `StageSpec` (resources, inputs, outputs, progress_timeout_hint, science_description).
-3. `validate_spec(spec, site_config)`:
-   - Resources > 0.
-   - Scheduler is supported.
-   - Declared input paths exist on the filesystem.
-4. On any validation error: write `spec_validation_error` finding to `internal/hpc_monitor/latest_report.md`; exit non-zero. Processing-MuAgent surfaces the error to the user.
+Never convert an environment error into a warning or fall back to a different device.
 
-### Step 2 — Render submission script
+### 2. Render and submit
 
-1. Map spec resources → scheduler header directives:
-   - SLURM: `#SBATCH --cpus-per-task`, `--mem`, `--time`, `--partition`, `--account`, `--qos`
-2. If `site_config.container` is set: wrap command in `apptainer exec --bind <run_dir> <container> bash <launch_runner.sh>`.
-3. Write script to `internal/hpc_monitor/scripts/<stage>_<timestamp>.sh`.
+1. Map the spec resources and confirmed site settings to SLURM directives.
+2. Wrap the command with the configured container invocation when required.
+3. Write the scheduler script and call `sbatch --parsable`.
+4. Classify rejection before retrying:
+   - policy rejection: write `submit_rejected_policy` to the snapshot and stop;
+   - transient rejection: retry at most twice with the defined backoff, then write
+     `submit_rejected_transient` and stop.
+5. On success, record the job ID, script, expected outputs, and submission metadata; update
+   the latest-submission record used by `resume-monitor`.
 
-### Step 3 — Submit and diagnose
+The optional Markdown report is debug/audit output. Processing consumes only the structured
+snapshot.
 
-1. Run `sbatch --parsable <script>`.
-2. On success: capture job_id from stdout.
-3. On failure:
-   - **Policy rejection** (invalid partition/account, walltime over limit): write `submit_rejected_policy` finding to `latest_report.md`; exit non-zero. Processing-MuAgent reads this and tells the user what to adjust.
-   - **Transient failure**: retry up to 2× with 10 s backoff. If still failing: write `submit_rejected_transient` finding; exit non-zero.
+### 3. Monitor when `--watch`
 
-### Step 4 — Record to execution manifest
+Use the stage's `progress_timeout_hint` and the monitor's canonical check interval.
+Refresh `latest_snapshot.json` on every check, including healthy checks.
 
-Append to `internal/hpc_monitor/execution_manifest.jsonl`:
+For each check:
 
-```json
-{
-  "submitted_at": "2026-06-02T14:00:00Z",
-  "stage": "s3_doublets",
-  "science_description": "Detect and remove doublets using Scrublet (RNA) and SnapATAC2 (ATAC)",
-  "job_id": "987654",
-  "spec_path": ".../internal/stage_meta/s3_doublets.yaml",
-  "script_path": ".../internal/hpc_monitor/scripts/s3_doublets_20260602T140000Z.sh",
-  "run_dir": "/path/to/run",
-  "expected_outputs": { "calls": ".../internal/artifacts/s3_doublets/calls.parquet" }
-}
-```
+1. Collect bounded SLURM (`sacct`/`squeue`) state, run-scoped file/log progress, child-job
+   state, and error markers.
+2. Verify any declared outputs that have appeared and emit one informational verification
+   finding per completed stage.
+3. Treat scheduler failure and workflow error markers as definitive unhealthy evidence.
+4. If the workflow is cleanly complete but the head process lingers, cancel the head only,
+   emit completion, and exit without a failure action.
+5. Otherwise, count quiet intervals. Once the stage-specific tolerance is reached,
+   investigate; silence alone never authorizes cancellation.
+6. During investigation, classify the first conclusive signal:
+   - failed scheduler state or error marker → `CONFIRMED_DEAD`;
+   - storage sentinel or unresponsive filesystem → `FS_HANG`;
+   - advancing CPU time, or GPU utilization when available → `RECOVERED`;
+   - responsive filesystem plus RUNNING plus a measured-flat CPU sample →
+     `CONFIRMED_DEAD`;
+   - missing first comparison sample → `RECOVERED` and establish a baseline.
+7. For `CONFIRMED_DEAD` or `FS_HANG`, cancel children before the head, record the reason,
+   persist the snapshot, and exit. Never hold for a human or resubmit.
 
-### Step 5 — Register for monitoring
+Processing creates `monitor.pid` before launching the daemon. Remove it in `finally` on
+normal completion, failure, or cancellation.
 
-Write to `internal/hpc_monitor/submissions.jsonl` with `spec_path` and `progress_timeout_hint` fields so the watch loop uses the per-spec timeout.
+## `resume-monitor` — Processing-invoked recovery
 
-### Step 6 — Monitor (if `--watch`)
+Use only when the supervisor stopped but the recorded cluster job is still active.
 
-Poll loop at `interval_s` (default 270 s / 4.5 min; the constant lives in `monitor.DEFAULT_CHECK_INTERVAL_S`). The monitor drives a state machine; detection and decision are always separate.
+1. Load the latest successful submission record.
+2. Resume the same watch loop without submitting another job.
+3. Remove the Processing-created PID file in `finally`.
 
-**Two clocks:**
-- `interval_s` — sampling rate (how often the watcher wakes). Same for every stage.
-- `tolerance_n = ceil(progress_timeout_hint_min * 60 / interval_s)` — how many consecutive quiet intervals are allowed. A heartbeat fires when any run-scoped file mtime advances OR the head log size grows.
+## Machine provisioning — operator-facing
 
-**State machine per iteration:**
+These commands may print directly to the operator because they run before a Processing
+session exists.
 
-1. **Collect** — `collect_snapshot()`: scheduler state (sacct/squeue/qstat, ≤5 s), filesystem progress files, log tails, child job IDs, error markers.
+### `init-machine`
 
-1a. **Verify outputs (normal progress)** — `verify_stage_outputs()` properly verifies each per-stage spec's declared outputs that have appeared (HDF5/parquet/JSON open, or structural signature checks without those libs — not merely non-empty). The first time a stage's outputs all verify, emit a `stage_output_verified` finding. (The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage — e.g. a planning `plan_review_propose` submission — so a clean head-job exit still emits this finding.) `latest_snapshot.json` is refreshed every iteration (healthy or not) and now also carries `interval_s` + `next_recheck_after_s`, so Processing's `hpc-status` never reads stale state and its re-poll cadence is data-driven.
+1. Probe the Linux host for a conda-compatible manager, SLURM, container runtime, and GPU.
+2. Write the machine profile.
+3. Create/update the integrated `muagene` CPU environment from the committed lock.
+4. Install both agent packages into that environment without re-resolving dependencies.
+5. When requested, pull the pinned GPU image; never build it locally.
+6. Validate requested devices and print a readiness report. Fail loud on any error.
 
-2. **Definitive signals** (always checked, bypass silence machine):
-   - `scheduler_failed` → CONFIRMED_DEAD immediately.
-   - `workflow_error_marker` (Traceback, OOM, WorkflowError, …) → CONFIRMED_DEAD immediately.
+### `provision-env` / `validate-env` / `doctor`
 
-2a. **Workflow-complete cleanup** (positive terminal signal, checked after definitive signals, before the watcher): if the head log shows a clean finish (a `WORKFLOW_COMPLETE_MARKER` — `steps (100%) done` / `Complete log(s):` / `Nothing to be done`) **and** there are no error markers, but the scheduler still shows the head RUNNING, the orchestrator process is **lingering** (e.g. in-process leiden/UMAP worker threads block interpreter exit). Emit a `workflow_complete` finding, cancel the **head job only** (`cancel_submission_jobs(submission, [])` — children already finished; the result is discarded so **no `kill_action` is recorded** and Processing never mis-reads a completed stage as cancelled), set health `DONE`, and let the loop exit. This frees the allocation in one check instead of burning it to walltime.
+- Provisioning is idempotent and recipe-driven: CPU uses the committed lock; GPU pulls a
+  pinned image.
+- Validation checks presence, fingerprints, and declared imports without mutating the env.
+- `doctor` reports capabilities and validation results.
+- A run-specific site configuration is optional after machine bootstrap; otherwise use the
+  machine profile plus the shared environment manifest.
 
-3. **Watcher** (HEALTHY / RECOVERED state): if latest_progress_file mtime or head_log size grew since last check → heartbeat, silence resets to 0. Otherwise `silence_intervals += 1`. When `silence_intervals >= tolerance_n` → SUSPECT, emit `stall_suspected` (warning only).
-
-4. **Investigation** (SUSPECT state): gather independent evidence — `sstat` CPU/memory (SLURM), filesystem responsiveness probe (D-state detection), child storage-hang sentinel ("Storing output in storage."). Liveness is judged by **CPU activity since the last investigation** (`cpu_delta`), not absolute presence — a finished-but-lingering or deadlocked process still holds memory and cumulative CPU, so an absolute threshold would mis-read it as alive. (`sstat` MaxRSS is collected for the diagnostic report only — it is monotonic, so it can't signal idleness.) Classify by rules:
-   - Scheduler failed / error markers → `confirmed_dead`
-   - Child storage hang / filesystem probe timeout → `fs_hang`
-   - CPU time advanced (`cpu_delta > CPU_ACTIVE_DELTA_S`, ≈1 s) → `recovered`
-   - Responsive filesystem + RUNNING + a CPU sample that did **not** advance → `confirmed_dead` (now reachable for a lingering/deadlocked process)
-   - No prior sample yet (`cpu_delta` `None`, first investigation) or no sstat reading → `recovered` (conservative default; establishes the baseline, so a kill needs two samples)
-
-5. **Kill** (unhealthy verdict — CONFIRMED_DEAD or FS_HANG):
-   - `cancel_submission_jobs()` — children first, then head (cleanup so Processing can resubmit).
-   - Record `confirmed_dead_reason` (or `filesystem_hang`) in cancel result.
-   - Write full snapshot + monitor state to `latest_snapshot.json`, including structured `findings` and `kill_action` (the full machine contract Processing-MuAgent consumes).
-   - Also write a debug/audit copy to `latest_report.md` and `reports/<job_id>_<timestamp>.md` — daemon-internal only; Processing never parses these and they are never shown to the user.
-   - Execution never holds for a human and never resubmits — Processing-MuAgent reads the report, escalates to the human, fixes, and resubmits.
-
-6. **Loop exit** when no jobs are active in scheduler (all terminal states), or immediately after a terminal verdict this iteration (`DONE` from workflow-complete cleanup, or `KILLED`) — no extra sleep/re-poll.
-
-7. **PID cleanup** — `monitor.pid` is removed in a `finally` block whether the loop exits normally, via an exception, or after a kill verdict. A missing `monitor.pid` is the signal Processing-MuAgent uses to detect that the daemon has stopped.
-
----
-
-## Triggered by: `resume-monitor`
-
-Processing-MuAgent calls this (via `supervisor-restart`) when the supervision daemon dies mid-run but the cluster job is still active. It does not submit a new job.
-
-### Step 1 — Load submission
-
-Read `internal/hpc_monitor/latest_submission.json` and reconstruct the `Submission` dataclass. This file is written by `execute-spec` at step 5 above and is never modified afterward.
-
-### Step 2 — Resume watch loop
-
-Call `monitor_watch()` with the reconstructed `Submission` object and the same parameters that would have been used by the original `execute-spec --watch` invocation (`progress_timeout_hint` from the submission record, default `interval_s=DEFAULT_CHECK_INTERVAL_S` (270)). The watch loop is identical — same state machine, same file writes, same kill logic.
-
-### Step 3 — PID cleanup
-
-Remove `monitor.pid` in a `finally` block, same as `execute-spec --watch`.
-
----
-
-## Triggered by: `init-machine` / `provision-env` / `validate-env` (operator-facing)
-
-These are the **infrastructure-ownership** commands — the exception to "never contact the user" (see system_prompt Hard rule 1). At machine-setup time there is no Processing agent and no run dir, so they print structured results to stdout and exit non-zero on error.
-
-### `init-machine` (fresh-machine bootstrap)
-
-The first command run on a new machine. In order:
-1. `probe_capabilities()` → env manager, container runtime, scheduler, gpu_present.
-2. Write `~/.muagene/machine.config` (manager, container_runtime, singularity_module, gpu_image, pinned `gpu_image_uri`, policy, `processing_repo`, env names, detected scheduler/gpu_present).
-3. Provision the **CPU env** from the committed conda-lock lock (no science site.config needed — the recipe is synthesized from machine.config + `<processing-repo>/workflow/envs/manifest.yaml`).
-4. `pip install --no-deps -e` **both** agent packages (Processing-MuAgent and Execution-MuAgent) into the CPU env so **login-node** `Processing-MuAgent submit` can spawn `python -m execution_muagent` from that env (`--no-deps`: the lock already supplies every dependency, so pip only links source + console scripts and never re-resolves conda packages from PyPI). Cluster **child jobs** do not need this — they import `executor` from the repo via `PYTHONPATH=$PMA_REPO_ROOT` (exported by `scripts/launch_runner.sh` and inherited through `sbatch --export=ALL`).
-5. If `--device` includes gpu: **pull** the pinned image to the local `.sif` (never build). Requires `--gpu-image-uri`.
-6. `validate_env` per device; print a readiness report. Fail loud on any error.
-
-### `provision-env` / `validate-env`
-
-Idempotent per-device make/verify. `--site-config` is optional: with it, the run's `environments:` section drives provisioning (backward compatible); without it, the recipe is synthesized from machine.config + the manifest. CPU = conda-lock create; GPU = pull a pinned image. `validate-env` import-checks the declared modules and never silently degrades.
-
-### Failure handling (fail-loud, actionable)
-
-- GPU image not pullable / `image_uri` missing → `gpu_image_unavailable` (CPU stays ready; no local-build fallback).
-- Non-linux host with a linux-64 lock → `platform_unsupported` (never a silent cross-platform solve).
-- `processing.yaml` newer than the lock → `lock_stale_vs_yaml` (run `Processing-MuAgent regenerate-locks`).
-- No env manager on PATH → reported by `init-machine`/`doctor`.
-
-## Reporting back to Processing-MuAgent
-
-All state — including structured `findings` (list of `{severity, code, message}`) and `kill_action` — is persisted STRUCTURALLY in `internal/hpc_monitor/latest_snapshot.json`, not only rendered in `latest_report.md`. `latest_report.md` is a daemon-internal debug/audit log only. Processing-MuAgent reads `latest_snapshot.json` (via one-shot `hpc-status`):
-
-| Finding code | Meaning | Processing-MuAgent action |
-|---|---|---|
-| `submit_rejected_policy` | Scheduler rejected submission (partition/account/walltime) | Relay as adjustable hint; ask user to fix site.config |
-| `scheduler_failed` | Scheduler reports terminal failure state | Report to human; fix; resubmit |
-| `workflow_error_marker` | Error keywords in logs (Traceback, OOM, …); `message` appends `Root cause — <child_log>: <exception> \| …` scraped from the failing child rule log | Relay the root-cause line to the human; fix; resubmit |
-| `stage_output_verified` | A stage's outputs verified complete and loadable | Informational progress; continue |
-| `workflow_complete` | Workflow finished cleanly but the head job was lingering; the head job was cancelled and the daemon exits | Informational — job done (not a failure); drive the next gate / completion |
-| `stall_suspected` | N quiet intervals; investigation starting | Informational; no action needed |
-| `stall_confirmed` | Investigation concluded confirmed dead (job killed) | Report to human; fix; resubmit |
-| `stall_recovered` | Investigation found life; monitoring continues | Informational; no action needed |
-| `filesystem_hang_suspected` | D-state / storage-degraded hang (job killed) | Report to human; fix; resubmit |
-| `output_missing` | Declared output missing/empty/corrupt after COMPLETED | Report to human; fix; resubmit |
-| Clean exit | No findings; job completed normally | Continue normal pipeline flow |
-
-**Environment-preflight findings** (from `execute-spec` preflight, `provision-env`, `validate-env`, `init-machine`):
-
-| Finding code | Meaning | Processing-MuAgent action |
-|---|---|---|
-| `env_missing` | Device env not provisioned on this machine | Relay; provisioning is auto unless policy=manual (then run the printed `provision-env`) |
-| `provision_failed` | conda-lock create / image pull failed | Relay the stderr tail to the human; fix; re-run |
-| `gpu_image_unavailable` | GPU `image_uri` missing or not pullable (no local-build fallback) | Relay verbatim; set/fix the registry `image_uri`, then re-run |
-| `lock_stale_vs_yaml` | `processing.yaml` is newer than the lock | Relay; run `Processing-MuAgent regenerate-locks`, commit, re-run |
-| `platform_unsupported` | CPU lock is linux-64 but the host is not | Relay; use a linux host or a container (MuAgene CPU env is linux-only) |
-| `import_failed` | Env present but a declared module failed to import | Relay; re-provision / fix the env definition |
-| `gpu_import_needs_node` (warning) | GPU imports unverifiable on a non-GPU login node | Informational; the real check runs on the GPU node |
-| `env_stale` (warning) | Lock/image fingerprint drifted from what was provisioned | Informational; next submit re-provisions (policy=auto) |
+Do not duplicate failure-code explanations here. Emit the registered code and actionable
+message from the canonical finding registry.

@@ -1,6 +1,7 @@
 """Command line interface for Execution-MuAgent."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -20,6 +21,30 @@ from .monitor import (
     utc_now,
     validate_spec,
 )
+
+
+def _write_pre_submit_snapshot(
+    run_dir: Path,
+    findings: list[dict[str, str]],
+) -> Path:
+    """Persist a classified failure before a scheduler job exists."""
+    path = run_monitor_dir(run_dir) / "latest_snapshot.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "scheduler": {"state": "NOT_SUBMITTED"},
+                "monitor_state": {"health": "PRE_SUBMIT_FAILED"},
+                "findings": findings,
+                "kill_action": None,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 @click.group()
@@ -42,7 +67,9 @@ def main() -> None:
 @click.option("--interval", default=DEFAULT_CHECK_INTERVAL_S, show_default=True, type=float,
               help="Check interval in seconds when --watch is used.")
 @click.option("--kill-on-hang/--no-kill-on-hang", default=True, show_default=True)
+@click.pass_context
 def execute_spec(
+    ctx: click.Context,
     spec_path: str,
     site_config_path: str,
     run_dir: str,
@@ -62,6 +89,12 @@ def execute_spec(
     # the rendered SLURM script and break Snakemake profile resolution on compute
     # nodes whose working directory differs from the login-node invocation.
     repo_root = str(Path(repo_root).resolve())
+    run_dir_path = Path(run_dir).resolve()
+    pid_path = run_dir_path / "internal" / "hpc_monitor" / "monitor.pid"
+    if watch:
+        # Processing creates this liveness signal before launching us. Register
+        # cleanup before preflight so every watched exit path removes it.
+        ctx.call_on_close(lambda: pid_path.unlink(missing_ok=True))
 
     spec = load_stage_spec(spec_path)
     site_cfg = load_site_config(site_config_path)
@@ -70,6 +103,11 @@ def execute_spec(
     if errors:
         for err in errors:
             click.echo(f"validation error: {err}", err=True)
+        _write_pre_submit_snapshot(run_dir_path, [{
+            "severity": "error",
+            "code": "spec_validation_error",
+            "message": "; ".join(errors),
+        }])
         raise click.ClickException(
             f"Spec validation failed with {len(errors)} error(s); not submitting."
         )
@@ -87,6 +125,7 @@ def execute_spec(
     gpu_needed = (site_cfg.device or "cpu") == "gpu" and getattr(spec, "gpu_stages_present", False)
     devices = ["cpu"] + (["gpu"] if gpu_needed else [])
     env_errors: list[str] = []
+    env_error_findings: list[dict[str, str]] = []
     for dev in devices:
         try:
             rec = environment.reconcile(site_cfg, repo_root, dev)
@@ -96,6 +135,11 @@ def execute_spec(
             # unverified env (silent degrade). Record it as a hard preflight error so
             # the `if env_errors` check below aborts before submit_from_spec.
             env_errors.append(f"{dev}: env preflight crashed: {exc}")
+            env_error_findings.append({
+                "severity": "error",
+                "code": "provision_failed",
+                "message": f"{dev} env preflight crashed: {exc}",
+            })
             click.echo(f"env preflight [{dev}] error: {exc}", err=True)
             continue
         if rec.get("provision"):
@@ -105,11 +149,16 @@ def execute_spec(
             click.echo(f"env preflight [{dev}] {f['severity']}: {f['message']}", err=True)
             if f["severity"] == "error":
                 env_errors.append(f"{dev}: {f['message']}")
+                env_error_findings.append({
+                    "severity": "error",
+                    "code": str(f.get("code", "provision_failed")),
+                    "message": str(f["message"]),
+                })
     if env_errors:
+        _write_pre_submit_snapshot(run_dir_path, env_error_findings)
         raise click.ClickException(
             "Environment preflight failed; not submitting:\n  - " + "\n  - ".join(env_errors))
 
-    run_dir_path = Path(run_dir).resolve()
     log_dir = run_dir_path / "internal" / "hpc_monitor" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = utc_now().replace(":", "").replace("-", "")
@@ -130,19 +179,32 @@ def execute_spec(
                 "Adjust partition, account, or resources_scale in site.config and resubmit."
             ),
         )
-        from .monitor import render_report, write_report, collect_snapshot
         report_text = (
             f"# HPC Monitor Report\n\n"
             f"## Findings\n\n"
             f"- **ERROR `{finding.code}`**: {finding.message}\n"
         )
+        _write_pre_submit_snapshot(run_dir_path, [{
+            "severity": finding.severity,
+            "code": finding.code,
+            "message": finding.message,
+        }])
         latest = run_monitor_dir(run_dir_path) / "latest_report.md"
         latest.parent.mkdir(parents=True, exist_ok=True)
         latest.write_text(report_text, encoding="utf-8")
         click.echo(f"submit_rejected_policy: {finding.message}", err=True)
-        raise click.ClickException("Submission rejected (policy); see latest_report.md.")
+        raise click.ClickException("Submission rejected (policy); structured finding recorded.")
 
     if result["rejected_as"] == "transient":
+        message = (
+            f"Submission of {spec.stage!r} failed after retries due to a transient "
+            f"scheduler error. Scheduler said: {result['stderr']}"
+        )
+        _write_pre_submit_snapshot(run_dir_path, [{
+            "severity": "error",
+            "code": "submit_rejected_transient",
+            "message": message,
+        }])
         raise click.ClickException(
             f"Submission of {spec.stage!r} failed after retries (transient scheduler error). "
             f"stderr: {result['stderr']}"
@@ -183,7 +245,6 @@ def execute_spec(
     click.echo(f"  monitor registry: {registry}")
 
     if watch:
-        pid_path = run_dir_path / "internal" / "hpc_monitor" / "monitor.pid"
         try:
             report = monitor_watch(
                 submission,
@@ -248,11 +309,11 @@ def resume_monitor(run_dir: str, interval: float, kill_on_hang: bool) -> None:
 def report(run_dir: str) -> None:
     """Print the latest diagnostic report written by Execution-MuAgent.
 
-    The only human-facing command. Reads
+    Manual debug helper. Reads
     `<run_dir>/internal/hpc_monitor/latest_report.md` — the findings and
     confirmed-dead/verification diagnostics for the most recent monitor check —
-    and prints it to stdout. All other behaviour (submit, monitor, verify, kill)
-    is driven by Processing-MuAgent via `execute-spec`.
+    and prints it to stdout. Normal run status comes from Processing-MuAgent,
+    which consumes the structured snapshot.
     """
     latest = run_monitor_dir(run_dir) / "latest_report.md"
     if not latest.is_file():

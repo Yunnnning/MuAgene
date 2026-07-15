@@ -31,9 +31,9 @@ from `parameters.yaml` (ask if missing) to pick the path.
 `submit` writes `internal/stage_meta/head_job.yaml`, starts `Execution-MuAgent execute-spec`
 as a **background supervision daemon** (submits the head-job, records the job ID to
 `execution_manifest.jsonl`, runs the watch loop for the job's lifetime), returns within
-~90 s once the job ID is confirmed, and **fails loudly if Execution-MuAgent is absent**. The
-daemon writes `internal/hpc_monitor/monitor_<ts>.log` (symlinked `monitor.log`) and removes
-`monitor.pid` on exit. (On `KillUserProcesses=yes` sites, run `submit` inside `tmux`/`screen`.)
+~90 s once the job ID is confirmed, and **fails loudly if Execution-MuAgent is absent**.
+Processing writes `monitor.pid` when it starts the daemon; Execution removes it when monitoring
+exits. (On `KillUserProcesses=yes` sites, run `submit` inside `tmux`/`screen`.)
 
 ## HPC run phases + batch staging
 
@@ -49,7 +49,7 @@ daemon writes `internal/hpc_monitor/monitor_<ts>.log` (symlinked `monitor.log`) 
 
 After plan-review approval, `source deliverables/plan/config/hpc.env`, then:
 - **QC batch:** `executor submit --config $CFG --executor slurm --auto-approve --auto-approve-except post_qc_review`
-- **After QC approval:** `qc_handoff` runs immediately at the approval step (see [`qc_review_and_revise.md`](qc_review_and_revise.md)). Then, when the user is ready for the finish batch: `executor submit --config $CFG --executor slurm` — runs S4→S8→manifest to completion (target `all`, no further gate; Snakemake skips `qc_handoff` since its outputs already exist).
+- **After QC approval:** the agent immediately submits the separate `qc_handoff` target (see [`qc_review_and_revise.md`](qc_review_and_revise.md)). After it verifies the handoff and the user confirms the finish batch, `executor submit --config $CFG --executor slurm` runs S4→S8→manifest (target `all`; Snakemake skips the completed handoff).
 
 Each gated phase's head-job target is the **gate-arming `*_propose` localrule** (e.g.
 `post_qc_review_propose`), not the phase's last execute stage. Snakemake pulls every execute
@@ -68,11 +68,9 @@ phase has no gate → target `all`. You never run `propose` by hand to surface a
 4. Approve → `executor approve <stage> --config $CFG`; re-submit/re-run the next batch.
 5. Continue until `manifest` completes → [`completion_handoff.md`](completion_handoff.md).
 
-Branch-aware pauses: `p1_context` (only if context was skipped at intake), `plan_review`
-(#1, in `plan_confirm`), `post_qc_review` (#2, in `qc_review_and_revise`). `s7_clustering`
-is **not** a user checkpoint (fixed resolutions from `executor/defaults.py`); `s3_doublets`
-runs before QC review (policy confirmed at #2 on paired). Auto-approve other stages unless
-the user asked for per-stage review.
+The only human checkpoints are `plan_review` and `post_qc_review`. The handoff-to-finish
+confirmation is conversational agent policy, not another Snakemake gate. `s7_clustering`
+uses fixed planned resolutions and is not a checkpoint.
 
 ## Monitoring + signals
 

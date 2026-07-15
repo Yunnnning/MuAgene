@@ -98,7 +98,7 @@ def test_post_qc_manifest_schema_is_wellformed():
     assert schema["$id"] == "muagene.post_qc_handoff/1"
     assert "schema" in schema["required"]
     assert schema["properties"]["modality_branch"]["enum"] == [
-        "paired", "separate", "rna_only", "atac_only"]
+        "paired", "unpaired", "rna_only", "atac_only"]
     # Every schema-required top-level key is one the emitter actually writes.
     assert set(schema["required"]) <= set(_representative_manifest())
 
@@ -111,6 +111,16 @@ def test_post_qc_manifest_representative_validates_against_schema():
     bad["modality_branch"] = "bogus"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(bad, schema)
+
+
+def test_run_manifest_contract_version_matches_emitter():
+    import yaml
+    from executor import HANDOFF_CONTRACT_VERSION
+
+    registry = yaml.safe_load(
+        (pathlib.Path(__file__).resolve().parents[2] / "muagene.agents.yaml").read_text()
+    )
+    assert registry["handoff_contracts"]["run_manifest"] == HANDOFF_CONTRACT_VERSION
 
 
 # --- Stage 5: every CLI command has a tool contract ---
@@ -142,17 +152,6 @@ def test_revise_has_dry_run_flag():
     from executor.cli import main
     params = {p.name for p in main.commands["revise"].params}
     assert "dry_run" in params, f"revise is missing the --dry-run flag; has {sorted(params)}"
-
-
-# --- Stage 7: README values that are restated must match the SSOT ---
-
-def test_readme_clustering_resolutions_match_defaults():
-    """The README states the fixed Leiden resolutions in prose; they must match
-    executor/defaults.py so the doc can't drift from the code."""
-    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text()
-    d = defaults.QC_DEFAULTS["s7_clustering"]
-    assert f"RNA = {d['rna_resolution']}" in readme, "README RNA resolution out of sync with defaults.py"
-    assert f"ATAC = {d['atac_resolution']}" in readme, "README ATAC resolution out of sync with defaults.py"
 
 
 # --- Stage 8: stage-based skill router + per-skill frontmatter contracts ---
@@ -215,3 +214,47 @@ def test_no_skill_references_deleted_workflow_md():
     """workflow.md was dissolved into stage skills; nothing should reference it again."""
     for md in sorted(_skills_dir().glob("*.md")):
         assert "workflow.md" not in md.read_text(), f"{md.name} still references workflow.md"
+
+
+# --- Stage 9: per-stage specs mirror the pipeline SSOT and the DAG's durable markers ---
+
+def test_specs_membership_matches_pipeline_ssot():
+    """The stages specs writes for a branch (minus the always-present s0_ingest planning
+    compute + qc_handoff bundle) must equal pipeline.stages_for_branch — so specs can never
+    re-introduce the atac_only s6/s7 drift this refactor fixed."""
+    from executor import pipeline, specs
+    for branch in pipeline.STAGES_BY_BRANCH:
+        spec_modality = set(specs._spec_stages(branch)) - {"s0_ingest", "qc_handoff"}
+        assert spec_modality == pipeline.stages_for_branch(branch), branch
+
+
+def test_atac_only_specs_include_s6_s7_and_exclude_rna_stages():
+    """Ground truth: the Snakemake DAG runs s6_neighbors/s7_clustering on every branch."""
+    from executor import specs
+    stages = set(specs._spec_stages("atac_only"))
+    assert {"s6_neighbors", "s7_clustering"} <= stages
+    assert not ({"s1a_ambient", "s1_rna_qc", "s4_rna_norm"} & stages)
+
+
+def test_stage_spec_outputs_are_durable_markers():
+    """Each per-stage spec advertises its durable stage-done marker as the declared
+    output — what the monitor can verify and what survives cleanup — not a deletable
+    working h5ad. The marker set is stage_progress.EXECUTE_MARKERS (the DAG's edge keys)."""
+    from executor import specs
+    from executor.stage_progress import EXECUTE_MARKERS
+    for stage, marker in EXECUTE_MARKERS.items():
+        _inputs, outputs = specs._stage_io_for_branch(stage, "paired", "/runs/x")
+        vals = list(outputs.values())
+        assert any(v.endswith(f"{stage}/{marker}") for v in vals), (stage, marker, vals)
+
+
+def test_s6_inputs_are_branch_aware():
+    """s6_neighbors keys off the S4 RNA marker on RNA branches and the S5 spectral marker
+    on ATAC branches — exactly mirroring s6_neighbors.smk's _s6_inputs."""
+    from executor import specs
+    rna_in, _ = specs._stage_io_for_branch("s6_neighbors", "rna_only", "/runs/x")
+    atac_in, _ = specs._stage_io_for_branch("s6_neighbors", "atac_only", "/runs/x")
+    assert any("s4_rna_norm/norm_summary.json" in v for v in rna_in.values())
+    assert not any("s5_atac_spectral" in v for v in rna_in.values())
+    assert any("s5_atac_spectral/spectral_summary.json" in v for v in atac_in.values())
+    assert not any("s4_rna_norm" in v for v in atac_in.values())

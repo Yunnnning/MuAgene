@@ -4,7 +4,7 @@
 # Where per-run state + artifacts will be written. REQUIRED.
 run_dir: /Users/yunning/Desktop/MuAgene/example/output/run_example
 
-# Inputs — at least one is required. Both required for `paired` / `separate`
+# Inputs — at least one is required. Both required for `paired` / `unpaired`
 # branches; supply only one for `rna_only` or `atac_only`.
 #
 # `rna_path` accepts either a Cell Ranger filtered matrix (default) OR a raw

@@ -1,322 +1,150 @@
-# Execution-MuAgent (Internal Runtime Orchestrator)
+# Execution-MuAgent
 
-The Execution Agent operates entirely in the background as MuAgene's execution layer. It **translates** workflow specifications into scheduler-ready jobs, **submits** them to SLURM, and **supervises** execution using a dual-clock state machine (heartbeat signals + walltime tracking), and **reports** the job status to Processing-MuAgent. By continuously collecting telemetry, identifying failures, detecting stalled jobs, and generating diagnostics, it maintains execution observability and traceability throughout the job lifecycle. It is an internal support agent with **no direct user interaction**.
+Execution-MuAgent is MuAgene's platform execution layer. It prepares and supervises
+SLURM jobs and provisions the environments they need. It is deliberately science-free:
+[Processing-MuAgent](../Processing-MuAgent/README.md) decides what preprocessing to run
+and remains the user-facing agent.
 
+## Responsibilities
+
+Execution-MuAgent:
+
+- bootstraps and validates the MuAgene runtime environment;
+- validates Processing-authored job specifications;
+- renders and submits SLURM jobs;
+- monitors scheduler and workflow progress;
+- verifies declared outputs;
+- reports structured findings to Processing-MuAgent;
+- cancels work only after evidence confirms an unhealthy or filesystem-hung job.
+
+It does not choose scientific methods, change preprocessing parameters, modify job
+specifications, talk to users during a run, or resubmit failed work.
+
+## Relationship to Processing-MuAgent
+
+```text
+User
+  ↕
+Processing-MuAgent ── job intent and platform settings ──→ Execution-MuAgent
+Processing-MuAgent ←──── structured status/findings ────── Execution-MuAgent
+                                                           ↕
+                                                         SLURM
 ```
-Head-job Spec → Job Rendering → Cluster Submission → Runtime Monitoring → Diagnostics → Status Report.
-```
 
-**Harness layout.** Agent manifest + identity: [`AGENT.md`](AGENT.md). Run-time + provisioning procedures: [`agent/skills/`](agent/skills/) (start at `index.md`); policy + hard rules: [`agent/system_prompt.md`](agent/system_prompt.md); per-command tool contracts: [`agent/tools.md`](agent/tools.md). Finding codes + state model live once in [`../contracts/`](../contracts/). Repo overview: [`../README.md`](../README.md).
+Processing-MuAgent owns:
 
-## Architecture
+- scientific planning and user approvals;
+- local-versus-cluster selection and resource confirmation;
+- preprocessing job specifications;
+- user-visible status, failure explanation, recovery, and resubmission.
 
-Processing-MuAgent and Execution-MuAgent share a two-file contract:
+Execution-MuAgent owns everything from a confirmed cluster specification to a monitored
+job, plus machine-level environment provisioning.
 
-| File | Written by | Read by | Contains |
-|------|-----------|---------|----------|
-| `deliverables/plan/config/site.config` | Processing-MuAgent | Execution-MuAgent | Platform description: scheduler, partition, account/QOS, **compute device + GPU routing**, env identity, resource scale, and the **`environments:`** provisioning recipe (provider + definition per device) |
-| `internal/stage_meta/head_job.yaml` | Processing-MuAgent (`submit`) | Execution-MuAgent | Head-job submission spec: resources (CPU/mem/walltime), input config path, progress_timeout_hint, snakemake_target |
-| `internal/stage_meta/<stage>.yaml` | Processing-MuAgent (`plan-review`) | Execution-MuAgent (monitoring) | Per-stage metadata: science_description, resources, inputs/outputs, progress_timeout_hint. Not submitted — used for output validation and monitoring hints. |
+## Who runs which commands?
 
-`hpc.env` is generated from `site.config` by Processing-MuAgent; it is a shell-variable projection, not an independent source. Do not edit it directly.
+| Goal | Interface |
+|---|---|
+| Set up a new machine | Execution-MuAgent bootstrap |
+| Provision or validate environments | Execution-MuAgent operator commands |
+| Submit a preprocessing run | Processing-MuAgent |
+| Check run status | Processing-MuAgent |
+| Restart supervision without resubmitting | Processing-MuAgent |
 
-Processing-MuAgent never submits or monitors cluster jobs directly — `Processing-MuAgent run` is local-only and `Processing-MuAgent submit` is cluster-only. `submit` delegates to `Execution-MuAgent execute-spec`, which handles rendering, submission, recording, and monitoring. Snakemake submits per-stage child jobs from within the running head-job.
+The runtime commands that render, submit, and monitor jobs are invoked by
+Processing-MuAgent. They are not the normal user interface.
 
-## Commands
+## Requirements
 
-### `execute-spec` — full lifecycle (primary path)
+- Linux
+- SLURM access for cluster execution
+- `micromamba`, `mamba`, or `conda`
+- Python 3.10–3.12
+- Processing-MuAgent and Execution-MuAgent checked out as sibling directories
 
-Takes the head-job spec + `site.config`, validates, renders a submission script, submits, records to the execution manifest, registers for monitoring, and optionally watches until the job exits.
+CPU environments are created from the committed lock without solving dependencies on
+the target machine. GPU environments use a pinned, pull-only container image; target
+machines never build that image locally.
+
+## Installation
+
+From the Execution-MuAgent repository:
 
 ```bash
-Execution-MuAgent execute-spec \
-  --spec /path/to/run/internal/stage_meta/head_job.yaml \
-  --site-config /path/to/run/deliverables/plan/config/site.config \
-  --run-dir /path/to/run \
-  --repo-root /path/to/MuAgene/Processing-MuAgent \
-  --target all \
-  [--watch] [--interval 270] [--kill-on-hang]
+bash scripts/bootstrap.sh --processing-repo ../Processing-MuAgent
+conda activate muagene
 ```
 
-Steps performed in order:
-1. **Validate** — checks resources > 0, scheduler supported, input files exist. On error: writes `spec_validation_error` finding to `latest_snapshot.json` and exits non-zero.
-2. **Render** — maps spec resources to scheduler directives (partition, account, QOS, CPU, memory, walltime); wraps command in container invocation if `site.config` specifies one. Writes script to `internal/hpc_monitor/scripts/<stage>_<timestamp>.sh`.
-3. **Submit** — ``sbatch --parsable`.
-   - **Policy rejection** (invalid partition/account, walltime over site limit): writes `submit_rejected_policy` finding to `latest_snapshot.json`; exits non-zero. Processing-MuAgent relays this as an adjustable hint to the user.
-   - **Transient failure**: retries up to 2× with 10 s backoff; reports `submit_rejected_transient` if still failing.
-4. **Record** — appends to `internal/hpc_monitor/execution_manifest.jsonl` (stage, science_description, job_id, spec_path, script_path, expected_outputs).
-5. **Register** — writes to `internal/hpc_monitor/submissions.jsonl` with `spec_path` and `progress_timeout_hint`.
-6. **Monitor** (with `--watch`) — runs the watch loop until all jobs exit, then removes `internal/hpc_monitor/monitor.pid`.
+The bootstrap:
 
-### `resume-monitor` — restart supervision without resubmitting
+1. detects the available environment manager and platform capabilities;
+2. creates or updates the integrated `muagene` environment;
+3. installs both MuAgene agent packages;
+4. validates the installation;
+5. records reusable machine settings.
 
-Reads `internal/hpc_monitor/latest_submission.json`, reconstructs the monitoring context, and runs the same watch loop as `execute-spec --watch` — but without submitting a new job. Invoked by `Processing-MuAgent supervisor-restart` when the supervision daemon dies mid-run.
+CPU setup is the default. To prepare GPU infrastructure as well, provide a pinned image
+reference and any site-specific container module:
 
 ```bash
-Execution-MuAgent resume-monitor \
-  --run-dir /path/to/run \
-  [--interval 270] [--kill-on-hang]
+bash scripts/bootstrap.sh \
+  --processing-repo ../Processing-MuAgent \
+  --device both \
+  --gpu-image-uri docker://REGISTRY/IMAGE:TAG \
+  --singularity-module MODULE
 ```
 
-This is not a command you call directly — Processing-MuAgent starts it as a background daemon. It removes `monitor.pid` when it finishes (whether the job completed, was killed, or the command crashed).
+## Operator commands
 
-### `report` — read the latest debug/audit report
+| Command | Purpose |
+|---|---|
+| `init-machine` | Probe, provision, install, and validate a machine |
+| `provision-env` | Create or refresh CPU and/or GPU environments |
+| `validate-env` | Check environment identity and required imports |
+| `doctor` | Report platform capabilities and environment health |
 
-Prints `<run_dir>/internal/hpc_monitor/latest_report.md` — a daemon-internal markdown copy of the most recent monitor check. Processing-MuAgent never parses this file; the live machine contract is `latest_snapshot.json` (consumed by `Processing-MuAgent hpc-status`).
+These commands are operator-facing and fail loudly with actionable diagnostics. The
+`report` command is an advanced read-only debug helper; normal run status comes through
+Processing-MuAgent.
 
-```bash
-Execution-MuAgent report --run-dir /path/to/run
-```
+## What happens during a cluster run?
 
-`report` is a human/debug helper only; `execute-spec` and `resume-monitor` are machine entry points invoked by Processing-MuAgent. There is no manual-submission path beyond these.
+When Processing-MuAgent submits work, Execution-MuAgent:
 
-### `init-machine` / `provision-env` / `validate-env` / `doctor` — environment provisioning (runtime infra)
+1. validates the requested resources, inputs, platform, and environments;
+2. renders a scheduler script and submits it to SLURM;
+3. records the accepted job and starts background supervision;
+4. watches scheduler state, workflow progress, and declared outputs;
+5. returns structured progress or failure findings to Processing-MuAgent.
 
-Environment setup/management is Execution-MuAgent's responsibility (it owns the non-scientific runtime layer). Processing-MuAgent authors *what* the science needs — the env definitions/lock/`.def` in its repo and the `environments:` recipe; Execution-MuAgent makes them real on whatever machine, validates them, records a fingerprint, and reconciles when the definition (or the published image tag) changes. The env-definition *paths* live in one committed file, `<Processing-MuAgent>/workflow/envs/manifest.yaml`, read by both agents.
+Policy rejections are not retried. Transient submission failures receive a limited retry.
+A quiet job is investigated before any cancellation. Execution-MuAgent never resubmits;
+Processing-MuAgent presents the evidence and recovery choice to the user.
 
-```bash
-# Fresh machine — ONE command (see "Install"). Creates the integrated `muagene` env from the
-# lock and runs init-machine inside it:
-bash <Execution-MuAgent>/scripts/bootstrap.sh --processing-repo <Processing-MuAgent>
-#   + GPU:  ... --device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag> --singularity-module <module>
+## Troubleshooting
 
-# init-machine is the engine bootstrap.sh hands off to. Run it directly to re-provision/validate
-# an already-created env (probes the host, writes ~/.muagene/machine.config, fills the CPU env
-# from the lock, installs both agent packages into it, pulls the GPU image, validates):
-Execution-MuAgent init-machine --processing-repo <Processing-MuAgent> \
-  --device both --gpu-image-uri docker://<registry>/muagene-gpu:<tag> --singularity-module <module>
+- **Machine setup fails:** run `Execution-MuAgent doctor`, correct the reported platform
+  or environment issue, then rerun bootstrap or provisioning.
+- **An environment is missing or stale:** run `Execution-MuAgent provision-env` for the
+  affected device, or let the configured automatic policy reconcile it on submission.
+- **The supervisor stopped while the SLURM job is still active:** use
+  Processing-MuAgent's supervisor-restart action. It resumes monitoring without
+  submitting a second job.
+- **Your cluster kills background processes at logout:** run the submission session
+  inside `tmux` or `screen`.
+- **A run fails:** inspect status through Processing-MuAgent. Execution-MuAgent reports
+  evidence but does not choose or apply the scientific recovery.
 
-# Per-device make/verify. --site-config is OPTIONAL: omit it once the machine is bootstrapped
-# (the recipe is synthesized from machine.config + the manifest); pass it to use a run's config.
-Execution-MuAgent provision-env [--site-config <site.config>] [--repo-root <Processing-MuAgent>] --device cpu|gpu|both
-Execution-MuAgent validate-env  [--site-config <site.config>] [--repo-root <Processing-MuAgent>] --device ...
-Execution-MuAgent doctor        [--site-config <...>] [--repo-root <...>]   # capabilities + env validation
-```
+## Contracts and agent instructions
 
-- **CPU env** = conda-lock lockfile (linux-only; a non-linux host fails loud with `platform_unsupported`, never a silent solve). **GPU env** = a pinned container image **pulled** from a registry (`gpu_image_uri`) — built + published centrally from `muagene-gpu.def`, **never built on a target machine** (so no `--fakeroot`/subuid step). Provider/paths come from the `environments:` recipe / the manifest; the registry ref + env names come from machine.config.
-- **Fingerprint contract.** The *required* fingerprint is the provider's identity — the lock *content* (CPU) or the pinned image *reference* (GPU) — and the *provisioned* one is recorded in `~/.muagene/env_state.json`. Editing the lock, or republishing a new image tag, flips the env to **stale** → the next submit re-provisions it.
-- **Auto-provision.** `execute-spec` runs an env preflight before submitting: `policy: auto` (default) provisions a missing/stale env automatically; `policy: manual` fails loud with the exact `provision-env` command. A GPU job is never submitted to a CPU-only env — `validate-env` import-checks `rapids_singlecell`/`cupy` and fails loud (never silently degrade to CPU). A stale lock (YAML newer than the lock) fails loud with `lock_stale_vs_yaml`.
+The public README intentionally omits monitor algorithms and internal state layouts.
+Canonical details live in:
 
-## Monitoring state machine
+- [AGENT.md](AGENT.md) — concise role and contract;
+- [agent instructions](agent/skills/index.md) — runtime procedures;
+- [tool contracts](agent/tools.md) — command behavior;
+- [shared contracts](../contracts/) — state ownership, schemas, and finding codes;
+- [Processing-MuAgent](../Processing-MuAgent/README.md) — the user-facing preprocessing
+  workflow.
 
-Detection and decision are always separate. A stall signal is a suspicion, never a verdict.
-
-### Two clocks
-
-**Check interval** (`--interval`, default 270 s / 4.5 min — the constant `monitor.DEFAULT_CHECK_INTERVAL_S`) — how often the watcher wakes. A sampling rate, the same for every stage. A coarse interval only delays noticing a stall by up to one interval — it never causes a bad kill. Every snapshot records `interval_s` and `next_recheck_after_s` (= interval + `REPOLL_BUFFER_S`, ~25 s) so Processing-MuAgent re-polls just after each check rather than hardcoding a cadence.
-
-**tolerance_n** — how many consecutive quiet intervals are allowed before raising a stall flag. Derived from the stage's `progress_timeout_hint`: `tolerance_n = ceil(progress_timeout_hint_min × 60 / interval_s)`. The stage declares its tolerance; the interval is just how it is counted.
-
-`progress_timeout_hint` values in `internal/stage_meta/<stage>.yaml` come from `workflow/resources.smk` (the single source of truth), written at `plan-review` time. When no hint is present (e.g. for the head-job spec itself), a 90-minute fallback is used.
-
-A **heartbeat** fires when any run-scoped file mtime advances OR the head log grows since the previous check. Silence resets to 0 on a heartbeat; increments by 1 on a quiet interval.
-
-### States
-
-| State | Meaning | Transition |
-|---|---|---|
-| `HEALTHY` | No stall signal | → SUSPECT when silence_intervals ≥ tolerance_n |
-| `SUSPECT` | Stall flag raised | → INVESTIGATING immediately (same check) |
-| `INVESTIGATING` | Gathering evidence | → RECOVERED / CONFIRMED_DEAD / FS_HANG |
-| `RECOVERED` | Investigation found life; silence reset | → HEALTHY, continue |
-| `CONFIRMED_DEAD` | Evidence confirmed dead | → KILLED (if --kill-on-hang) |
-| `FS_HANG` | Filesystem-related hang | → KILLED (if --kill-on-hang); reported to Processing |
-| `KILLED` | Cancellation sent | → wait for terminal scheduler state |
-| `DONE` | Workflow finished but the job was still running (lingering) | → head job cancelled; daemon exits |
-
-Definitive signals (`scheduler_failed`, `workflow_error_marker`) bypass the silence counter and go directly to CONFIRMED_DEAD.
-
-If the workflow has finished cleanly (no errors) but the scheduler still shows the job running, the orchestrator process is **lingering** rather than progressing. The monitor recognises this, cancels the leftover job so it does not burn its allocation to walltime, and exits — this is a clean completion, not a failure, so no kill report is raised.
-
-An unhealthy verdict (`CONFIRMED_DEAD` or `FS_HANG`) is killed for cleanup and reported. Execution-MuAgent never holds for a human and never resubmits — Processing-MuAgent reads `latest_snapshot.json`, escalates to the human, fixes, and resubmits.
-
-### Investigation evidence
-
-Gathered when entering SUSPECT:
-
-| Signal | Source | Alive if… |
-|---|---|---|
-| Scheduler state | sacct/squeue (already in snapshot) | Not in FAILED_STATES |
-| Error markers | Log tails (already in snapshot) | None found |
-| CPU utilization | `sstat` (SLURM, best-effort) | CPU time advancing between checks |
-| GPU utilization (device=gpu only) | `sstat` gpu TRES on the child jobs (best-effort) | GPU util > 5% — a busy GPU with an idle CPU is normal mid-kernel |
-| Filesystem responsiveness | `os.stat()` in thread, 5 s timeout | Returns within timeout |
-| Child storage hang | Child log "Storing output in storage." | Not present |
-
-Liveness is judged by **CPU activity between checks**, not mere presence: a finished-but-lingering or deadlocked process still holds memory and accumulated CPU, so "it has memory / it used CPU" is not proof it is doing anything. Only CPU time advancing counts as alive. (`sstat` MaxRSS is collected for the diagnostic report but is monotonic, so it can't signal idleness and is not part of the decision.)
-
-### Classification rules (first match wins)
-
-1. `scheduler_state` in FAILED_STATES → `confirmed_dead`
-2. Error markers in logs → `confirmed_dead`
-3. Child RUNNING + "Storing output in storage." → `fs_hang`
-4. Filesystem probe timed out → `fs_hang`
-5. CPU advancing since the last check → `recovered`
-5b. GPU utilisation > 5% (`device=gpu`, best-effort) → `recovered` — a busy GPU with an idle CPU is normal mid-kernel; only fires when the cluster exposes GPU TRES, so it prevents a kill but never causes one
-6. Filesystem responsive + scheduler RUNNING + a measured-flat CPU sample → `confirmed_dead` (catches a lingering/deadlocked process)
-7. No prior sample yet / no reading → `recovered` (conservative default; a kill needs two samples)
-
-
-### Output verification (per step + terminal)
-
-Output verification is proper — not a folder/size check. `verify_output_file` opens each declared output and confirms it is a complete, loadable file:
-- `.h5ad`/`.h5mu`/`.h5` — opened with `h5py` and checked for the expected root groups (`X`/`obs`/`var`, or `mod` for h5mu). Without `h5py`, the HDF5 8-byte signature is checked at superblock offsets.
-- `.parquet` — `pyarrow.parquet.read_metadata` (footer); fallback to the `PAR1` head/tail magic.
-- `.json` — parsed; text sentinels — non-empty.
-
-Because stages write outputs atomically (`/tmp` stage + fsync + `os.rename`), a file present at its final path is complete, so a valid signature plus non-zero size is a strong correctness signal.
-
-**Per step (normal progress):** on every check the monitor verifies each spec's declared outputs that have appeared and emits a one-time `stage_output_verified` finding. The head-job spec is verified like any other when Processing has populated its `outputs` from the target stage (e.g. a planning `plan_review_propose` submission), so a clean head-job exit still emits this finding instead of leaving `verified_stages` empty. `latest_snapshot.json` (with `monitor_state.verified_stages`) is refreshed every check — healthy or not — so Processing's `hpc-status` never reads stale state.
-
-**Terminal:** when the head-job reaches COMPLETED, `validate_terminal_outputs` runs the same verifier over every `internal/stage_meta/<stage>.yaml` (excluding `head_job.yaml`). Any missing, empty, or corrupt output is reported as `output_missing` — a COMPLETED scheduler state with an unverifiable output is treated as a failure.
-
-### Unhealthy runs: no human fallback in Execution
-
-When a run is unhealthy (`CONFIRMED_DEAD` or `FS_HANG`), Execution-MuAgent kills the job (children first, then head) for cleanup and writes diagnostics. It never holds for a human and never resubmits. Processing-MuAgent reads `latest_snapshot.json`, reports to the human, implements the fix, and resubmits. There is no `fs_hang_policy` knob — filesystem hangs follow the same kill-and-report path as any other confirmed-dead verdict.
-
-### Finding codes
-
-The codes Execution emits in `latest_snapshot.json`'s `findings`, their severity, and the
-recovery action Processing takes for each are the single source of truth in
-[`../contracts/findings.yaml`](../contracts/findings.yaml) (covers the submit, monitoring, and
-env-provisioning codes). Where each finding is written and read:
-[`../contracts/state_model.md`](../contracts/state_model.md).
-
-## Output files
-
-All output lives under `<run_dir>/internal/hpc_monitor/`:
-
-```
-internal/hpc_monitor/
-├── submissions.jsonl            ← append-only registration log
-├── latest_submission.json       ← most recent submission record (used by resume-monitor)
-├── execution_manifest.jsonl     ← append-only per-submit record (execute-spec path)
-├── latest_snapshot.json         ← THE machine contract: full snapshot + monitor_state + findings (Processing-MuAgent hpc-status reads this)
-├── latest_report.md             ← daemon-internal debug/audit copy (never parsed by Processing)
-├── monitor.pid                  ← PID of the running supervision daemon (removed on exit)
-├── monitor.log                  ← symlink → most recent monitor_<timestamp>.log
-├── monitor_<timestamp>.log      ← daemon output for each submit or supervisor-restart
-├── scripts/
-│   └── <stage>_<timestamp>.sh   ← rendered submission scripts
-└── reports/
-    └── <job_id>_<timestamp>.md  ← historical problem reports
-```
-
-`latest_snapshot.json` includes a `"monitor_state"` key with `health`, `silence_intervals`, `tolerance_n`, `investigation`, `confirmed_dead_reason`, and `verified_stages` — readable by `Processing-MuAgent hpc-status`. It also carries `interval_s` and `next_recheck_after_s` (the daemon's poll cadence + re-poll buffer) so Processing's re-poll delay is data-driven, and — when error markers are present — `error_context`, the real exception + file:line scraped from the failing child rule log (mirrored into the `workflow_error_marker` finding's message). It is refreshed on every check, including healthy ones.
-
-## Head-job spec format
-
-The head-job spec is written by `Processing-MuAgent submit` to `internal/stage_meta/head_job.yaml`:
-
-```yaml
-schema_version: '1'
-stage: head_job
-science_description: Snakemake orchestrator — submits and monitors all per-stage child jobs
-resources:
-  cpus: 1
-  mem_mb: 4000
-  walltime_min: 1440
-inputs:
-  config: /path/to/run/deliverables/plan/config/run.yaml
-outputs: {}
-progress_timeout_hint: 120
-snakemake_target: all
-```
-
-## Per-stage metadata format
-
-Stage metadata files in `internal/stage_meta/<stage>.yaml` are written by `plan-review`. They are monitoring metadata — not submitted. `progress_timeout_hint` values come from `workflow/resources.smk`:
-
-```yaml
-schema_version: '1'
-stage: s3_doublets
-science_description: Detect and remove doublets using Scrublet (RNA) and SnapATAC2 (ATAC)
-resources:
-  cpus: 2
-  mem_mb: 32000
-  walltime_min: 330
-inputs:
-  rna_h5ad: /path/to/run/internal/artifacts/s1_rna_qc/rna_qc.h5ad
-  atac_h5ad: /path/to/run/internal/artifacts/s2_atac_qc/atac_qc.h5ad
-outputs:
-  calls: /path/to/run/internal/artifacts/s3_doublets/calls.parquet
-progress_timeout_hint: 60
-```
-
-S1/S2 declare their `qc_summary.json` as the monitored output (not the large h5ad), because the
-h5ad — along with the chr-normalised fragment caches (`atac_fragments_cbf[_chrnorm].tsv.gz`) and
-other QC-only working files — is deleted by `executor approve post_qc_review` and would otherwise
-cause false `output_missing` findings in subsequent post-QC job runs. None of the deleted files is
-a declared output, so monitoring keys only off the durable `qc_summary.json`:
-
-```yaml
-# s1_rna_qc.yaml
-outputs:
-  qc_summary_json: /path/to/run/internal/artifacts/s1_rna_qc/qc_summary.json
-
-# s2_atac_qc.yaml
-outputs:
-  qc_summary_json: /path/to/run/internal/artifacts/s2_atac_qc/qc_summary.json
-```
-
-## site.config format
-
-`site.config` is the single platform source of truth. Written by `Processing-MuAgent configure-execution`:
-
-```yaml
-schema_version: '1'
-scheduler: slurm       # slurm
-device: gpu            # cpu (default) | gpu — routes GPU-capable stages to the GPU env/partition
-slurm:
-  partition: cpu-medium
-  account: vaquerizas-lab
-  qos: null
-  gpu_partition: gpu           # GPU-capable child jobs land here
-  gpu_gres: gpu:A5000:1        # --gres for those jobs
-common:
-  resources_scale: 2
-  conda_env: muagene           # CPU env identity
-  gpu_conda_env: muagene-gpu   # GPU env identity (also labels the image)
-  container: null
-  scratch: null
-environments:                  # HOW each device's env is provisioned (consumed by provision-env).
-                               # Paths come from <repo>/workflow/envs/manifest.yaml (single source);
-                               # configure-execution auto-fills manager/module/image_uri from machine.config.
-  manager: mamba               # micromamba|mamba|conda (null -> Execution auto-detects)
-  container_runtime: singularity
-  singularity_module: singularityce/3.11.3   # module to load before pull/exec (optional)
-  policy: auto                 # auto = re-provision on missing/stale; manual = fail loud
-  cpu:
-    provider: lock             # lock | yaml | container  (linux-only; lock is what installs)
-    definition: workflow/envs/processing.yaml
-    lock: workflow/envs/processing.linux-64.lock
-    imports: workflow/envs/muagene.imports.txt
-  gpu:
-    provider: container        # PULL-ONLY — pulled from image_uri, never built on this machine
-    definition: workflow/envs/muagene-gpu.def   # the central-build recipe (provenance)
-    image: ~/.muagene/images/muagene-gpu.sif    # local .sif the image is pulled to
-    image_uri: docker://<registry>/muagene-gpu:25.04   # pinned ref it is pulled FROM
-    imports: workflow/envs/muagene-gpu.imports.txt
-```
-
-
-## Install
-
-A fresh machine needs **one command**. There is a single integrated env, `muagene`, that
-holds the science stack **and** both agent CLIs — no separate bootstrap env:
-
-```bash
-bash /path/to/Execution-MuAgent/scripts/bootstrap.sh --processing-repo /path/to/Processing-MuAgent
-# defaults: --processing-repo = the sibling ../Processing-MuAgent; --device cpu
-```
-
-`bootstrap.sh` detects a conda manager (`micromamba`/`mamba`/`conda`), creates `muagene` from
-the committed lock (solve-free), then hands off to `init-machine`, which validates the env,
-installs both agent packages into it (`pip install --no-deps -e`, so the conda-provisioned
-packages are never re-resolved from PyPI), writes `~/.muagene/machine.config`, and records the
-fingerprint. After `Machine ready.`, `conda activate muagene` drives everything — interactive
-`Processing-MuAgent`/`Execution-MuAgent` CLIs and the `python -m execution_muagent` daemon that
-`Processing-MuAgent submit` spawns all run from this one env.
-
-Requires a conda env manager and Python 3.10+ (Execution-MuAgent itself only needs
-`click>=8.1` + `pyyaml>=6`, both supplied by the lock).
+Execution-MuAgent is one component of [MuAgene](../README.md).

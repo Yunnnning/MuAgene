@@ -25,6 +25,6 @@ boundary:
 # Versioned artifacts handed to downstream consumers.
 handoff_contracts:
   post_qc_manifest: "muagene.post_qc_handoff/1"
-  run_manifest: "1.0.0"
+  run_manifest: "1.0.1"
 
 shared_contracts_dir: contracts

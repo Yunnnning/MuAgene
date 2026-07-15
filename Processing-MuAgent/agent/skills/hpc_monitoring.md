@@ -18,8 +18,8 @@ canonical statement of the monitoring rule; other skills link here instead of re
 
 Job monitoring is owned by the **Execution-MuAgent supervision daemon** that `submit`
 starts in the background (it refreshes `internal/hpc_monitor/latest_snapshot.json` each
-poll and owns kill-on-hang). Do **not** run a blocking `executor hpc-status --watch` or
-`tail -f` — that duplicates the daemon and blocks the session.
+poll and owns kill-on-hang). Do not start a second blocking watcher or use `tail -f` —
+that duplicates the daemon and blocks the session.
 
 ## Procedure
 1. Run one-shot `executor hpc-status --config $CFG`; relay the status to the user.

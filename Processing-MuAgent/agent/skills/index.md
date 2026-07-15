@@ -6,6 +6,16 @@ identify the current stage from observable state (`executor status` / which gate
 skill**. Don't load the whole flow at once — one stage skill per turn.
 Per-command tool contracts: [`../tools.md`](../tools.md).
 
+## Loading order
+1. [`../../AGENT.md`](../../AGENT.md) — identity and scope.
+2. [`../system_prompt.md`](../system_prompt.md) — always-loaded policy and hard rules.
+3. This router — select the current state.
+4. One selected skill — stage-specific procedure.
+5. [`../tools.md`](../tools.md) and [`../../../contracts/`](../../../contracts/) — consult
+   only for command or machine-contract details.
+
+The public README is user guidance, not an agent instruction source.
+
 ## State → skill router
 
 Pick the first row whose condition matches the current observable state.
@@ -17,6 +27,8 @@ Pick the first row whose condition matches the current observable state.
 | Run scaffolded (`init` done), branch declared, exec-mode confirmed; `plan_review` not approved | [`plan_confirm.md`](plan_confirm.md) | plan |
 | `plan_review` approved; QC stages (S1a–S3) not yet complete | [`run_execution.md`](run_execution.md) | execute |
 | `status`: `post_qc_review` is `awaiting_approval` | [`qc_review_and_revise.md`](qc_review_and_revise.md) | QC |
+| `post_qc_review` approved; `qc_handoff` pending or running | [`qc_review_and_revise.md`](qc_review_and_revise.md) | handoff |
+| `qc_handoff` complete; awaiting user confirmation for S4–S8 | [`qc_review_and_revise.md`](qc_review_and_revise.md) | handoff |
 | `post_qc_review` approved; finish batch (S4–S8) running | [`downstream_dimred_clustering.md`](downstream_dimred_clustering.md) | downstream |
 | `manifest` complete | [`completion_handoff.md`](completion_handoff.md) | finish |
 | Any cluster job running (during any batch) | [`hpc_monitoring.md`](hpc_monitoring.md) | monitor |
@@ -29,8 +41,8 @@ new state. **After every gate approval, re-run `executor status` and re-enter th
 **QC threshold revision is gate-scoped, not its own row.** Before `plan_review` is approved,
 a "change the thresholds" request is handled inside [`plan_confirm.md`](plan_confirm.md)
 (non-destructive there — it just re-renders the plan). [`qc_review_and_revise.md`](qc_review_and_revise.md)
-is entered **only** when `post_qc_review` is `awaiting_approval`; it owns the post-run gate and
-is the canonical reference for the revise keys both gates link to.
+owns the post-run gate and remains active through handoff verification and finish-batch
+confirmation; it is the canonical reference for the revise keys both gates link to.
 
 ## Skill frontmatter contract
 
@@ -60,6 +72,7 @@ handoff: { next: <skill|STOP>, when: <advance condition>, on_error: troubleshoot
 | Finding codes, state-file lifecycle, handoff schemas | [`../../../contracts/`](../../../contracts/) |
 | Marker-gene "never invent genes" rule | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
 | QC revise reference (keys, `*_override`, skip recipes, binding-constraint diagnosis) — used at both gates | [`qc_review_and_revise.md`](qc_review_and_revise.md) |
+| Local `run` / cluster `submit` execution boundary | [`run_execution.md`](run_execution.md) |
 | Report-and-repoll monitoring rule | [`hpc_monitoring.md`](hpc_monitoring.md) |
 | Execution-mode intake heuristics (file-size → scale) | [`inputs_intake.md`](inputs_intake.md) |
 | Error → remedy scenarios | [`troubleshooting.md`](troubleshooting.md) |

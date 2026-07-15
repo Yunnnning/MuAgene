@@ -6,7 +6,7 @@ scope:
   out_of_scope: [scientific decisions, modifying specs or site.config, contacting the user during a run]
 owned_tool: Execution-MuAgent       # Click CLI; per-command contracts in agent/tools.md
 consumes_contracts: [site_config, machine_config, head_job, stage_meta, env_manifest]
-emits_contracts:   [latest_snapshot, execution_manifest, submissions, env_state]
+emits_contracts:   [latest_snapshot, latest_submission, execution_manifest, submissions, env_state]
 hard_rules: [no-user-contact-during-run, classify-before-retry, kill-only-on-confirmed-verdict, children-before-head, time-bounded-scheduler-calls, never-modify-specs, never-silently-degrade-env]
 system_prompt: agent/system_prompt.md
 skills_dir:     agent/skills          # start at agent/skills/index.md
@@ -16,9 +16,9 @@ contracts_dir:  ../contracts
 # Execution-MuAgent
 
 Owns **everything between a spec and a running job**, plus the non-scientific infrastructure
-of the machine itself (environment provisioning). Science-free by design: its own tiny env
-(click + pyyaml), it shells out to schedulers/conda/containers and never imports science
-code. During a *run* it never talks to the user — it reports to
+of the machine itself (environment provisioning). Its code is science-free, but bootstrap
+installs both agents into the integrated `muagene` environment. During a *run* it never talks
+to the user — it reports to
 [Processing-MuAgent](../Processing-MuAgent/AGENT.md) via `latest_snapshot.json`. The only
 operator-facing commands are the bootstrap ones (`init-machine`/`provision-env`/
 `validate-env`/`doctor`), which print to stdout.
@@ -37,19 +37,14 @@ operator-facing commands are the bootstrap ones (`init-machine`/`provision-env`/
 ## Outputs (contracts it emits)
 `internal/hpc_monitor/latest_snapshot.json` (THE machine contract: `findings`,
 `monitor_state`, `kill_action`, `error_context`, cadence), `execution_manifest.jsonl`,
-`submissions.jsonl`, `monitor.pid`, rendered scripts, and `~/.muagene/env_state.json`
+`latest_submission.json`, `submissions.jsonl`, rendered scripts, and `~/.muagene/env_state.json`
 fingerprints. Finding codes: [`../contracts/findings.yaml`](../contracts/findings.yaml).
+Processing creates the supervisor PID file; Execution removes it when monitoring exits.
 
-## Constraints
-Never contact the user during a run (except bootstrap commands); classify rejections before
-any retry (policy → exit; transient → ≤2×); kill only from `CONFIRMED_DEAD`/`FS_HANG`; cancel
-children before the head; time-bound every scheduler call; never modify specs or `site.config`;
-never silently degrade an env.
-
-## Failure modes
-Policy rejection → finding + non-zero exit. Transient → retry ≤2×. `confirmed_dead`/`fs_hang`
-→ kill + report, never resubmit (Processing owns recovery). Env missing/stale →
-auto-provision (policy=auto) or fail loud (manual). GPU job on a CPU-only env → fail loud.
+## Runtime policy
+The canonical hard rules live in [`agent/system_prompt.md`](agent/system_prompt.md).
+Operational and recovery procedures live in [`agent/skills/workflow.md`](agent/skills/workflow.md)
+and the shared contracts; do not duplicate them here.
 
 ## Map
 - Policy + entry point: [`agent/system_prompt.md`](agent/system_prompt.md)

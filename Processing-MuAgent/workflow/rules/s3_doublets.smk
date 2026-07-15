@@ -7,9 +7,9 @@ def _s3_inputs(wildcards):
     # co-written with the h5ad at stage completion and survives post_qc_review
     # cleanup, so it carries the S1/S2 -> S3 ordering edge without making the
     # deletable h5ads part of the declared DAG. S3 reads the h5ads by path.
-    if branch in ("paired", "separate", "rna_only"):
+    if branch in ("paired", "unpaired", "rna_only"):
         paths["rna_done"] = str(INTERNAL / "artifacts" / "s1_rna_qc" / "qc_summary.json")
-    if branch in ("paired", "separate", "atac_only"):
+    if branch in ("paired", "unpaired", "atac_only"):
         paths["atac_done"] = str(INTERNAL / "artifacts" / "s2_atac_qc" / "qc_summary.json")
     return paths
 

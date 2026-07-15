@@ -1,4 +1,4 @@
-"""S8 — UMAP per modality + final h5mu (paired) or separate h5ad (separate). Hard stop."""
+"""S8 — UMAP per modality + final h5mu (paired) or two h5ad files (unpaired). Hard stop."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -104,8 +104,8 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     spread = float(p["spread"]["value"])
     seed = int(p["random_state"]["value"])
 
-    has_rna = workflow_branch in ("paired", "separate", "rna_only")
-    has_atac = workflow_branch in ("paired", "separate", "atac_only")
+    has_rna = workflow_branch in ("paired", "unpaired", "rna_only")
+    has_atac = workflow_branch in ("paired", "unpaired", "atac_only")
 
     from .. import figures as _fig
 
@@ -272,7 +272,7 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
         mdata = mu.MuData({"rna": rna, "atac": atac_adata})
         _io.write_mudata_safe(mdata, paths.processed_h5mu)
         outpath = str(paths.processed_h5mu)
-    elif workflow_branch == "separate":
+    elif workflow_branch == "unpaired":
         _io.write_h5ad_safe(rna, paths.rna_processed_h5ad)
         _io.write_h5ad_safe(atac_adata, paths.atac_processed_h5ad)
         outpath = f"{paths.rna_processed_h5ad},{paths.atac_processed_h5ad}"

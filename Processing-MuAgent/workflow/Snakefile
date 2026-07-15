@@ -2,8 +2,8 @@
 
 Rule DAG: p1_context -> s0_ingest (load + validate + assemble plan + QC explore in
           one job) -> plan_review -> s1a_ambient -> s1_rna_qc -> s2_atac_qc ->
-          s3_doublets -> post_qc_review -> s4_rna_norm -> s5_atac_spectral ->
-          s6_neighbors -> s7_clustering -> s8_umap -> manifest
+          s3_doublets -> post_qc_review -> qc_handoff -> s4_rna_norm ->
+          s5_atac_spectral -> s6_neighbors -> s7_clustering -> s8_umap -> manifest
 
 Each stage has a _propose / _execute pair (see rules/*.smk). The two human-gate
 stages (plan_review, post_qc_review) block their downstream execute rules on
@@ -34,11 +34,10 @@ QC = DELIVERABLES / "qc"
 RESULTS = DELIVERABLES / "results"
 
 STAGES = [
-    "p1_context", "plan_review",
-    "s0_ingest", "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
-    "post_qc_review",
+    "p1_context", "s0_ingest", "plan_review",
+    "s1a_ambient", "s1_rna_qc", "s2_atac_qc", "s3_doublets",
+    "post_qc_review", "qc_handoff",
     "s4_rna_norm", "s5_atac_spectral", "s6_neighbors", "s7_clustering", "s8_umap",
-    "qc_handoff",
 ]
 
 
