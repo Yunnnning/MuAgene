@@ -11,7 +11,7 @@ dataset.
 |---|---|
 | `deliverables/plan/` | Plan review markdown/HTML, biological context, sanitized `run.yaml` |
 | `deliverables/qc/` | QC review markdown/HTML and `post_qc_manifest.json` |
-| `deliverables/figures/` | QC exploration, ambient, doublet, and UMAP figures (PNG/PDF) |
+| `deliverables/figures/` | data exploration, QC filtering, and UMAP figures (PNG/PDF) |
 | `deliverables/results/` | `run_manifest.json`, `layout.json`, review notebook/script |
 
 Final cell count after QC and doublet removal: **7,531** jointly retained cells.
@@ -29,12 +29,3 @@ Referenced but not shipped:
   [`qc_summary_pbmc10k_multiome.html`](deliverables/qc/qc_summary_pbmc10k_multiome.html)
 - UMAPs: [`deliverables/figures/s8_umap_rna_by_leiden.png`](deliverables/figures/s8_umap_rna_by_leiden.png),
   [`deliverables/figures/s8_umap_atac_by_leiden.png`](deliverables/figures/s8_umap_atac_by_leiden.png)
-
-## Reproduce
-
-1. Download the Cell Ranger ARC outputs from the dataset page (filtered + raw
-   feature matrices and ATAC fragments + index).
-2. Point MuAgene at those inputs with `genome_assembly: GRCh38` and workflow
-   branch `paired` (see root [`README.md`](../README.md)).
-3. After a full run, copy the same lightweight deliverables into this folder
-   and scrub absolute paths as done here.
