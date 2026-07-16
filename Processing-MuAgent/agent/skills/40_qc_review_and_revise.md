@@ -77,9 +77,14 @@ After either path, read `qc_review_<run>.md` and relay it **verbatim**. Do not s
 
 ## Marker-gene decision
 
-If the QC report says **"Marker gene expression check not performed"**, relay that notice
-and obtain an explicit decision before approval: provide genes and run the check, or
-explicitly decline.
+Handle every marker-check warning before approval:
+
+- **"Marker gene expression check not performed"** → obtain genes and run the check, or
+  record an explicit decline.
+- **"Marker gene expression check failed"** → relay the missing symbols; ask for corrected
+  replacement genes and rerun, or obtain an explicit waiver.
+- **"Marker gene expression figure missing"** → relay the failure; ask the user to confirm
+  the genes and rerun `marker-gene-check`, or obtain an explicit waiver.
 
 **Hard rule — never pick genes:** do not select, suggest, look up, or test gene names.
 Ask the user to provide the symbols, then run:
@@ -113,10 +118,12 @@ When thresholds are accepted and the marker-gene decision is closed:
    # Local
    executor run --config $CFG --target qc_handoff
    ```
-3. Verify:
+3. Run `executor status --config $CFG` and require `qc_handoff` to be complete. Then verify:
    - `deliverables/qc/post_qc_<run>.h5mu`
    - `deliverables/qc/peaks_<run>.bed` for ATAC branches
    - `deliverables/qc/post_qc_manifest.json`
+   The required files must exist and be non-empty. Read the manifest, require schema
+   `muagene.post_qc_handoff/1`, and verify that its referenced output paths exist.
 4. Tell the user the handoff is ready and obtain explicit user approval before starting
    S4–S8. Do not submit the finish batch yet.
 

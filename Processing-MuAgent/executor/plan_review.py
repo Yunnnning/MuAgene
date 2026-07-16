@@ -581,11 +581,6 @@ def render_merged_markdown(run_dir: Path | str, intro: str | None = None) -> str
         "",
         _render_concise_section(items),
         "",
-        "_Machine-readable plan: `internal/artifacts/p2_plan/preprocessing_plan.json` "
-        "and `internal/parameters.yaml`. Full parameter listing in the appendix below._",
-        "",
-        "---",
-        "",
     ]
     if plan:
         from . import qc_explore

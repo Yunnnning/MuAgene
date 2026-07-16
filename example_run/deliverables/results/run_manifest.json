@@ -1,0 +1,76 @@
+{
+  "run_id": "pbmc10k_multiome",
+  "workflow_branch": "paired",
+  "inputs": {
+    "rna": {
+      "path": "<inputs>/10k_PBMC_Multiome_nextgem_Chromium_X_filtered_feature_bc_matrix.h5",
+      "format": null,
+      "sha256": "3897be5c916a66def9273049f6c5418ae042111f1b64ce769198253f56bf356d"
+    },
+    "atac_fragments": {
+      "path": "<inputs>/10k_PBMC_Multiome_nextgem_Chromium_X_atac_fragments.tsv.gz",
+      "sha256": "eca8f9f2a75ec6ae17872d351efcc35fc5873f8e5ab37a098e6f42bfed01ff4b"
+    },
+    "metadata": {
+      "path": null,
+      "source": null
+    },
+    "barcode_translation": {
+      "path": null
+    },
+    "atac_peaks": {
+      "path": null
+    },
+    "cell_metadata": {
+      "path": null
+    }
+  },
+  "biological_context": {
+    "ref": "internal/artifacts/p1_context/context_extraction.json"
+  },
+  "preprocessing_plan": {
+    "ref": "internal/artifacts/p2_plan/preprocessing_plan.json",
+    "plan_hash": "93a94d3e6f34837cb819d7813bb30514b8b0ace9cf5443fea1de726fb51918ef"
+  },
+  "outputs": {
+    "processed_h5mu": "deliverables/results/processed_pbmc10k_multiome.h5mu",
+    "figures": [
+      "deliverables/figures/s8_umap_rna_by_leiden.png",
+      "deliverables/figures/s8_umap_atac_by_leiden.png"
+    ]
+  },
+  "pairing": {
+    "declared": "paired",
+    "committed": "paired",
+    "method": "pairing.single_file_multiome",
+    "overlap": 0.015881127516623066,
+    "reason": null
+  },
+  "final_barcode_counts": {
+    "rna": 7531,
+    "atac": 7531,
+    "joint": 7531
+  },
+  "parameters": {
+    "ref": "internal/parameters.yaml",
+    "sha256": "83773302f768be47c9e61c10e0d9f11683a82ba27c3c7c67cb9f9f7a0cbb8e83"
+  },
+  "env": {
+    "tool_versions": {
+      "scanpy": "1.12.1",
+      "anndata": "0.12.17",
+      "muon": "0.1.7",
+      "mudata": "0.3.8",
+      "snapatac2": "2.9.0",
+      "scrublet": "unknown",
+      "leidenalg": "0.12.0",
+      "umap": "0.5.12",
+      "numpy": "2.4.6",
+      "scipy": "1.17.1",
+      "pandas": "2.3.3"
+    },
+    "seed": 42
+  },
+  "warnings": [],
+  "handoff_contract_version": "1.0.1"
+}

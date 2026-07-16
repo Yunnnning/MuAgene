@@ -1,0 +1,34 @@
+{
+  "schema": "muagene.post_qc_handoff/1",
+  "handoff_contract_version": "1.0.1",
+  "sample_run_dir": ".",
+  "modality_branch": "paired",
+  "genome_assembly": "GRCh38",
+  "post_qc_h5mu": "deliverables/qc/post_qc_pbmc10k_multiome.h5mu",
+  "atac": {
+    "peaks_bed": "deliverables/qc/peaks_pbmc10k_multiome.bed",
+    "fragments_prepared": "internal/artifacts/qc_explore/atac_fragments_cbf.tsv.gz",
+    "add_chr_prefix": false,
+    "frag_chrom_convention": "ucsc",
+    "peaks_source": "arc"
+  },
+  "n_cells": {
+    "rna": 7531,
+    "atac": 7531,
+    "joint": 7531
+  },
+  "parameters_ref": "internal/parameters.yaml",
+  "tool_versions": {
+    "scanpy": "1.12.1",
+    "anndata": "0.12.17",
+    "muon": "0.1.7",
+    "mudata": "0.3.8",
+    "snapatac2": "2.9.0",
+    "scrublet": "unknown",
+    "leidenalg": "0.12.0",
+    "umap": "0.5.12",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "pandas": "2.3.3"
+  }
+}

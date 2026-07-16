@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="svg-title svg-desc">
-  <title id="svg-title">MuAgene preprocessing overview</title>
+  <title id="svg-title">MuAgene Preprocessing Overview</title>
   <desc id="svg-desc">Two-panel overview of MuAgene. Environment setup, combined user intake and inputs, Processing-MuAgent orchestration, planning, and the first user checkpoint appear in the first panel. Quality control, the second checkpoint, post-QC handoff, processing, deliverables, and local or HPC runtime execution appear in the second panel. Solid arrows show workflow, teal arrows show interaction or revision, blue arrows show execution dispatch, and dashed arrows show contracts or returned status.</desc>
   <defs>
     <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -34,7 +34,7 @@
   </defs>
 
   <rect width="1200" height="800" fill="#ffffff"/>
-  <text x="24" y="36" class="title">MuAgene preprocessing</text>
+  <text x="24" y="36" class="title">MuAgene Preprocessing Overview</text>
 
   <!-- Panel 1: setup, intake, orchestration, and planning -->
   <text x="42" y="84" class="panel-title">SETUP, INTAKE &amp; PLAN</text>
@@ -83,21 +83,23 @@
   <text x="388" y="462" text-anchor="middle" class="label-strong on-dark">QC REVIEW</text>
   <text x="388" y="486" text-anchor="middle" class="helper on-dark">approve or revise</text>
   <path d="M388 516 V540 H198 V505" class="revision"/>
-  <text x="293" y="558" text-anchor="middle" class="helper teal-text">revise QC</text>
+  <text x="293" y="558" text-anchor="middle" class="helper teal-text">revise QC metrics</text>
 
   <path d="M471 453 H505" class="flow"/>
   <rect x="508" y="405" width="150" height="96" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-width="2"/>
   <rect x="508" y="405" width="150" height="30" rx="10" fill="#0f766e"/>
   <rect x="508" y="425" width="150" height="10" fill="#0f766e"/>
   <text x="583" y="427" text-anchor="middle" class="label-strong on-dark">HANDOFF</text>
-  <text x="583" y="474" text-anchor="middle" class="helper">post-QC handoff</text>
+  <text x="583" y="453" text-anchor="middle" class="helper" font-size="16px">post-QC handoff</text>
+  <text x="583" y="472" text-anchor="middle" class="helper" font-size="16px">with user-confirmed</text>
+  <text x="583" y="491" text-anchor="middle" class="helper" font-size="16px">cleanup</text>
 
   <path d="M661 453 H695" class="flow"/>
 
   <rect x="698" y="405" width="190" height="96" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
   <rect x="698" y="405" width="190" height="30" rx="10" fill="#475569"/>
   <rect x="698" y="425" width="190" height="10" fill="#475569"/>
-  <text x="793" y="427" text-anchor="middle" class="label-strong on-dark">PROCESS</text>
+  <text x="793" y="427" text-anchor="middle" class="label-strong on-dark">PROCESSING</text>
   <text x="793" y="453" text-anchor="middle" class="helper">normalization</text>
   <text x="793" y="472" text-anchor="middle" class="helper">dimensionality reduction</text>
   <text x="793" y="491" text-anchor="middle" class="helper">clustering | UMAP</text>

@@ -3,8 +3,7 @@ name: Processing-MuAgent
 role: Science planner/orchestrator for single-cell multi-omics preprocessing
 scope:
   does: [ingest, QC, ambient correction, doublets, normalization, dimred, clustering, UMAP — per modality]
-  hard_stop: S8 (per-modality UMAP)
-  out_of_scope: [integration, cell-type annotation, marker-gene discovery, GRN]
+  out_of_scope: [integration, cell-type annotation, downstream analysis]
 owned_tool: executor                # Click CLI; per-command contracts in agent/tools.md
 emits_contracts:   [run_yaml, parameters, site_config, head_job, stage_meta, post_qc_manifest, run_manifest]
 consumes_contracts: [latest_snapshot]   # written by Execution-MuAgent

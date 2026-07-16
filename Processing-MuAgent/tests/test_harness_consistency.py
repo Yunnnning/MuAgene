@@ -225,6 +225,7 @@ def test_processing_skill_frontmatter_preserves_semantic_ids():
 
 
 def test_qc_review_skill_is_compact_and_preserves_safety_actions():
+    import re
     text = (_skills_dir() / "40_qc_review_and_revise.md").read_text()
     required = [
         "--dry-run",
@@ -241,14 +242,42 @@ def test_qc_review_skill_is_compact_and_preserves_safety_actions():
         "post_qc_<run>.h5mu",
         "post_qc_manifest.json",
         "explicit user approval",
+        "Marker gene expression check failed",
+        "Marker gene expression figure missing",
+        "executor status --config $CFG",
+        "muagene.post_qc_handoff/1",
+        "non-empty",
         "total_counts_min_override",
         "pct_mt_k=999",
     ]
     missing = [phrase for phrase in required if phrase not in text]
     assert not missing, f"QC skill lost safety actions: {missing}"
     assert len(text.splitlines()) <= 220
-    assert "executor approve s3_doublets" not in text
-    assert "executor approve <stage>" not in text
+    approvals = set(re.findall(r"executor approve ([a-z0-9_<>-]+)", text))
+    assert approvals == {"post_qc_review"}
+    assert "approve every revised stage" not in text.lower()
+
+    required_parameter_rows = [
+        "| `s1_rna_qc` | `total_counts_k_mad`, `n_genes_k_mad`, `pct_mt_k`, `pct_mt_ceiling`, `pct_mt_floor`, `pct_ribo_max`, `min_counts_floor`, `min_genes_floor`, `min_cells_per_gene` |",
+        "| `s2_atac_qc` | `frip_min`, `tss_enrichment_min`, `tss_enrichment_max`, `nucleosome_signal_max`, `n_fragments_k_mad`, `n_fragments_floor` |",
+        "| `s3_doublets` | `rna_doublet_score_threshold`, `atac_doublet_probability_threshold` |",
+        "| `s1_rna_qc` | `total_counts_min_override`, `total_counts_max_override`, `n_genes_min_override`, `n_genes_max_override`, `pct_counts_mt_max_override` |",
+        "| `s2_atac_qc` | `n_fragments_min_override`, `n_fragments_max_override` |",
+        "| Skip `total_counts` | `total_counts_k_mad=999`, `min_counts_floor=0` |",
+        "| Remove only the `total_counts` upper bound | `total_counts_k_mad=999` |",
+        "| Skip `n_genes` | `n_genes_k_mad=999`, `min_genes_floor=0` |",
+        "| Remove only the `n_genes` upper bound | `n_genes_k_mad=999` |",
+        "| Skip `pct_counts_mt` | `pct_mt_k=999`, `pct_mt_ceiling=100` |",
+        "| Skip `pct_counts_ribo` | `pct_ribo_max=100` |",
+        "| Skip `n_fragments` | `n_fragments_k_mad=999`, `n_fragments_floor=0` |",
+        "| Remove only the `n_fragments` upper bound | `n_fragments_k_mad=999` |",
+        "| Skip `tss_enrichment` | `tss_enrichment_min=0`, `tss_enrichment_max=999` |",
+        "| Remove only the `tss_enrichment` upper bound | `tss_enrichment_max=999` |",
+        "| Skip `nucleosome_signal` | `nucleosome_signal_max=999` |",
+        "| Skip `frip` | `frip_min=0` |",
+    ]
+    missing_rows = [row for row in required_parameter_rows if row not in text]
+    assert not missing_rows, f"QC skill lost parameter rows: {missing_rows}"
 
 
 def test_no_markdown_references_unprefixed_processing_skill_filenames():

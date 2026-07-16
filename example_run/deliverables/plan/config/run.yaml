@@ -1,0 +1,6 @@
+run_dir: .
+rna_path: <inputs>/10k_PBMC_Multiome_nextgem_Chromium_X_filtered_feature_bc_matrix.h5
+rna_raw_path: <inputs>/10k_PBMC_Multiome_nextgem_Chromium_X_raw_feature_bc_matrix.h5
+atac_fragments_path: <inputs>/10k_PBMC_Multiome_nextgem_Chromium_X_atac_fragments.tsv.gz
+genome_assembly: GRCh38
+seed: 42

@@ -20,7 +20,7 @@ pip-wheel-metadata/
 # Outputs and caches 
 cache/
 output/
-results/
+/results/
 *.log
 *.tmp
 
