@@ -1,9 +1,10 @@
 # Execution-MuAgent
 
 Execution-MuAgent is MuAgene's platform execution layer. It prepares and supervises
-SLURM jobs and provisions the environments they need. It is deliberately science-free:
-[Processing-MuAgent](../Processing-MuAgent/README.md) decides what preprocessing to run
-and remains the user-facing agent.
+SLURM jobs and provisions the environments they need. It is a CLI-based execution
+service, not a second LLM agent. It is deliberately science-free: the
+[Processing-MuAgent workflow](../Processing-MuAgent/README.md) supplies the job
+specification for the user-approved preprocessing plan.
 
 ## Responsibilities
 
@@ -30,7 +31,10 @@ specifications, talk to users during a run, or resubmit failed work.
 | Submit a preprocessing run              | Processing-MuAgent        | Execution-MuAgent (behind scenes)|
 | Check run status                        | Processing-MuAgent        | Execution-MuAgent (reports back)|
 
-> **Note:**  The user interacts exclusively with Processing-MuAgent during regular preprocessing runs. However, Execution-MuAgent is responsible for actually rendering, submitting, and supervising jobs on the cluster as instructed by Processing-MuAgent. Direct operator interaction with Execution-MuAgent is limited to machine setup and environment management.  
+During normal preprocessing, the Processing CLI invokes Execution-MuAgent through a
+subprocess and structured-file handoff. No separate LLM conversation is started for
+cluster execution. Operators use Execution-MuAgent directly for machine setup and
+environment management.
 
 ## Requirements
 
@@ -54,7 +58,7 @@ The bootstrap script:
 
 1. detects the available environment manager and relevant platform capabilities.
 2. creates or updates the integrated `muagene` environment.
-3. installs both MuAgene agent packages.
+3. installs both MuAgene component packages.
 4. validates the installation.
 5. records reusable machine settings.
 
@@ -96,8 +100,9 @@ When Processing-MuAgent submits work, Execution-MuAgent:
 5. returns structured progress or failure findings to Processing-MuAgent.
 
 Policy rejections are not retried. Transient submission failures receive a limited retry.
-A quiet job is investigated before any cancellation. Execution-MuAgent never resubmits;
-Processing-MuAgent presents the evidence and recovery choice to the user.
+A quiet job is investigated before any cancellation. Execution-MuAgent never resubmits.
+The Processing interface exposes the findings; the LLM-assisted procedure presents
+the evidence and recovery choice to the user.
 
 ## Troubleshooting
 

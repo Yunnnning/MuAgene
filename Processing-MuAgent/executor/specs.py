@@ -15,8 +15,6 @@ key off the S5 spectral marker rather than the (absent) S4 RNA marker.
 """
 from __future__ import annotations
 
-import importlib.util
-import os
 from pathlib import Path
 from typing import Any
 

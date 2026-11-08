@@ -17,7 +17,7 @@ import gc
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import anndata as ad
 import numpy as np
@@ -323,7 +323,7 @@ def _wipe_marker_caches(art_dir: Path) -> None:
 
 def _write_cell_totals(
     art_dir: Path,
-    obs_names: list[str] | "pd.Index",
+    obs_names: Iterable[str],
     totals_raw: np.ndarray,
     totals_corrected: np.ndarray,
 ) -> None:
@@ -338,7 +338,7 @@ def _write_cell_totals(
 
 def _load_cell_totals(
     art_dir: Path,
-    obs_names: list[str] | "pd.Index",
+    obs_names: Iterable[str],
 ) -> tuple[np.ndarray, np.ndarray] | None:
     import pandas as pd
 

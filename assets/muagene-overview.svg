@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="svg-title svg-desc">
   <title id="svg-title">MuAgene Preprocessing Overview</title>
-  <desc id="svg-desc">Two-panel overview of MuAgene. Environment setup, combined user intake and inputs, Processing-MuAgent orchestration, planning, and the first user checkpoint appear in the first panel. Quality control, the second checkpoint, post-QC handoff, processing, deliverables, and local or HPC runtime execution appear in the second panel. Solid arrows show workflow, teal arrows show interaction or revision, blue arrows show execution dispatch, and dashed arrows show contracts or returned status.</desc>
+  <desc id="svg-desc">Two-panel overview of MuAgene. Environment setup, user intake, the LLM-assisted interaction layer, planning, and the first user checkpoint appear in the first panel. Quality control, the second checkpoint, post-QC handoff, processing, deliverables, and local or HPC runtime execution appear in the second panel. Solid arrows show workflow, teal arrows show user interaction or revision, blue arrows show execution dispatch, and dashed arrows show contracts or returned status.</desc>
   <defs>
     <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 Z" fill="#475569"/>
@@ -53,8 +53,8 @@
 
   <path d="M498 168 H532" class="dialogue"/>
   <rect x="535" y="130" width="230" height="76" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
-  <text x="650" y="160" text-anchor="middle" class="node-title">Processing-MuAgent</text>
-  <text x="650" y="187" text-anchor="middle" class="label">scientific orchestration</text>
+   <text x="650" y="160" text-anchor="middle" class="node-title">Processing workflow</text>
+   <text x="650" y="187" text-anchor="middle" class="label">LLM-assisted interaction</text>
 
   <path d="M768 168 H802" class="execution"/>
   <rect x="805" y="130" width="135" height="76" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
@@ -112,8 +112,8 @@
 
   <text x="42" y="602" class="panel-title">EXECUTION</text>
   <rect x="40" y="630" width="200" height="66" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
-  <text x="140" y="657" text-anchor="middle" class="label-strong">Processing-MuAgent</text>
-  <text x="140" y="682" text-anchor="middle" class="helper">execution dispatch</text>
+   <text x="140" y="657" text-anchor="middle" class="label-strong">Processing workflow</text>
+   <text x="140" y="682" text-anchor="middle" class="helper">CLI execution dispatch</text>
 
   <text x="282" y="621" text-anchor="end" class="helper">LOCAL</text>
   <path d="M243 649 C263 649 268 634 292 634" class="execution"/>

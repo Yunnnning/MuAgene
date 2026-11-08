@@ -156,10 +156,7 @@ def _plot_cell_count_waterfall(run_dir: Path, figs_dir: Path) -> list[Path]:
     import matplotlib.pyplot as plt
 
     counts = _qcs._stage_counts(run_dir)
-    branch = _qcs._workflow_branch(run_dir)
-    steps = _qcs._preprocessing_flow_steps(
-        run_dir, counts, branch, include_final_stage=False,
-    )
+    steps = _qcs._preprocessing_flow_steps(counts, include_final_stage=False)
     stages = [
         (_qcs._flow_chart_label(step["stage"]), step["rna"], step["atac"])
         for step in steps

@@ -33,7 +33,6 @@ import numpy as np
 from . import io as _io
 from . import qc_tables as _qc_tables
 from . import provenance as _prov
-from .md_tables import fmt as _fmt
 from .figures import (
     DEFAULT_MIN_COUNTS_FLOOR,
     DEFAULT_MIN_GENES_FLOOR,

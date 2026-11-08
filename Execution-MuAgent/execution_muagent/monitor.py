@@ -494,7 +494,7 @@ def render_submission_script(
         )
     else:
         lines += [
-            f"source $(conda info --base)/etc/profile.d/conda.sh",
+            "source $(conda info --base)/etc/profile.d/conda.sh",
             f"conda activate {conda_env}",
             f"bash {launch} {launch_args}",
         ]
@@ -1349,16 +1349,16 @@ def _probe_gpu(executor: str, job_ids: list[str], timeout_s: int = 5) -> dict[st
              "--format=TRESUsageInAve%200", "-n", "-P"], timeout_s)
         if rc != 0 or not out.strip():
             continue
-        for field in out.strip().replace("|", ",").split(","):
-            field = field.strip()
-            if field.startswith("gres/gpuutil="):
+        for token in out.strip().replace("|", ",").split(","):
+            token = token.strip()
+            if token.startswith("gres/gpuutil="):
                 try:
-                    val = float(field.split("=", 1)[1])
+                    val = float(token.split("=", 1)[1])
                     best_util = val if best_util is None else max(best_util, val)
                 except ValueError:
                     pass
-            elif field.startswith("gres/gpumem="):
-                best_mem = _parse_mem_token(field.split("=", 1)[1], best_mem)
+            elif token.startswith("gres/gpumem="):
+                best_mem = _parse_mem_token(token.split("=", 1)[1], best_mem)
     return {"gpu_util": best_util, "gpu_mem_mb": best_mem}
 
 

@@ -61,10 +61,6 @@ def is_unfilled_template(path: Path | str) -> bool:
     return not any_filled
 
 
-class ContextNotProvided(RuntimeError):
-    """Raised when the Biological Context Report is absent or still the blank template."""
-
-
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -199,7 +195,6 @@ def extract_context(
             "explicit",
             "User-declared.",
         )
-        gb_value = file_genome
     else:
         fields["genome_build"] = _entry(
             "unknown",
@@ -208,7 +203,6 @@ def extract_context(
             "missing",
             "Declare the reference genome as part of the biological context.",
         )
-        gb_value = "unknown"
 
     # Derived: modality_type
     mt_value, mt_conf, mt_rationale = _infer_modality_type(assay_txt)
@@ -244,17 +238,9 @@ def extract_context(
         [str(report_path)] if doi_entries else [],
     )
 
-    conflicts: list[dict[str, Any]] = []
-    file_chroms = set(file_input_signals.get("fragment_chromosomes", []) or [])
-    if file_chroms:
-        has_chr = any(c.startswith("chr") for c in file_chroms)
-        if gb_value == "mm10" and not has_chr and all(not c.startswith("chr") for c in file_chroms):
-            # Ensembl-style naming — not a conflict per se, but note it
-            pass
-
     return {
         "fields": fields,
-        "conflicts": conflicts,
+        "conflicts": [],
         "report_text": report_text,
         "parsed": parsed,
     }

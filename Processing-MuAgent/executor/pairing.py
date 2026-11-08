@@ -111,26 +111,6 @@ def detect_subset_relation(
     )
 
 
-def is_atac_subset_of_rna(
-    rna_barcodes: set[str],
-    atac_barcodes: set[str],
-    *,
-    threshold: float = SUBSET_COVERAGE_THRESHOLD,
-) -> bool:
-    """True when ≥threshold of ATAC barcodes appear in the RNA barcode set."""
-    return detect_subset_relation(rna_barcodes, atac_barcodes, threshold=threshold).relation == "atac_subset_of_rna"
-
-
-def is_rna_subset_of_atac(
-    rna_barcodes: set[str],
-    atac_barcodes: set[str],
-    *,
-    threshold: float = SUBSET_COVERAGE_THRESHOLD,
-) -> bool:
-    """True when ≥threshold of RNA barcodes appear in the ATAC barcode set."""
-    return detect_subset_relation(rna_barcodes, atac_barcodes, threshold=threshold).relation == "rna_subset_of_atac"
-
-
 @dataclass
 class PairingResult:
     status: str           # paired | unpaired | ambiguous | rna_only | atac_only

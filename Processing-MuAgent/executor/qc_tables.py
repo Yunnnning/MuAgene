@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 from .md_tables import fmt as _fmt
-from .md_tables import fmt_threshold_range as _fmt_range
 from .md_tables import md_table as _md_table
 
 # Upper-bound skip sentinels for 10x single-cell data.

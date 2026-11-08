@@ -1,16 +1,20 @@
 # Processing-MuAgent
 
-Processing-MuAgent guides reproducible preprocessing of single-cell RNA and ATAC
-data. It combines a conversational scientific workflow with a deterministic pipeline,
-pausing at the decisions that require biological judgment.
+Processing-MuAgent is MuAgene's scientific preprocessing workflow for single-cell RNA
+and ATAC data. Its predefined Snakemake DAG runs the scientific stages, with explicit
+user-review gates. An external LLM host can assist with intake, plan presentation,
+QC review, and recovery; it does not generate the stage graph or perform the numerical
+analysis.
 
 It produces quality-controlled, per-modality representations through clustering and
 UMAP. It does **not** perform multimodal integration, cell-type annotation, marker
 discovery, or gene-regulatory network inference.
 
-Processing-MuAgent owns the scientific plan and user interaction. Its sibling
-[Execution-MuAgent](../Execution-MuAgent/README.md) owns machine setup and cluster
-execution.
+The `Processing-MuAgent` CLI (also available as `executor`) manages the plan,
+parameters, approvals, and workflow execution. The accompanying instructions guide
+LLM-assisted user interaction. Its sibling [Execution-MuAgent](../Execution-MuAgent/README.md)
+handles machine setup and cluster execution through CLI and structured-file handoffs,
+not a separate LLM conversation.
 
 ## Supported analyses
 
@@ -66,14 +70,19 @@ P1 context extraction
   → S1a ambient RNA correction → S1 RNA QC → S2 ATAC QC → S3 doublets
   → (CHECKPOINT 2) post_qc_review
   → qc_handoff (post-QC h5mu + integration manifest; canonical post-QC input for S4/S5)
-  → user confirms the finish batch
+  → user confirms the finish batch (interaction procedure, not a Snakemake gate)
   → S4 RNA normalization + HVG → S5 ATAC spectral embedding
   → S6 RNA PCA + per-modality neighbor graphs
-  → S7 clustering (fixed resolutions: RNA 0.7, ATAC 0.5) → S8 UMAP
+  → S7 clustering (planned resolutions; defaults: RNA 0.7, ATAC 0.5) → S8 UMAP
   → manifest
 ```
 
 Stages that do not apply to an RNA-only or ATAC-only workflow are omitted automatically.
+The graph and branch membership are defined in
+[`executor/pipeline.py`](executor/pipeline.py) and implemented by the
+[Snakemake rules](workflow/Snakefile). LLM assistance surrounds selected interaction
+steps; the pipeline stages themselves use code to parse context, assemble the plan,
+compute QC metrics and cutoffs, and generate reports and processed data.
 
 ### 1. Extract context, ingest, and preview QC
 
@@ -97,7 +106,7 @@ Before QC runs, you review:
 - dimensionality-reduction and clustering choices.
 
 You can accept the proposal or revise supported parameters.
-Plan-stage revisions are non-destructive because preprocessing has not started.
+Plan-stage revisions are non-destructive because QC filtering has not started.
 
 ### 3. Run modality-aware QC
 
@@ -149,13 +158,15 @@ calls, and diagnostic figures. You can:
 - complete or waive an optional marker-gene comparison for ambient-RNA correction;
 - stop and resume later.
 
-Post-QC revisions can invalidate existing QC results, so the agent previews their
-impact and asks before applying them.
+Post-QC revisions can invalidate existing QC results. The LLM-assisted procedure uses
+the CLI's revision dry run to preview the impact and asks before applying them.
 
 ### 5. Create the handoff and finish
 
 After QC approval, Processing-MuAgent creates a stable post-QC handoff for downstream
-steps and verifies it. It then asks before starting the unattended finish batch.
+steps. The interaction procedure requires verification of that handoff and user
+confirmation before starting the unattended finish batch. This confirmation is not an
+additional Snakemake approval gate.
 
 Regenerable intermediates are cleaned as checkpoints complete, while durable QC and
 handoff outputs are retained. Later QC revisions regenerate the affected steps.
@@ -167,7 +178,7 @@ The finish batch performs:
 - Leiden clustering and UMAP separately for each modality.
 
 Paired workflows retain diagnostic RNA and ATAC clusterings; they do not create a joint
-multimodal embedding. The agent stops after the processed data and manifests are ready.
+multimodal embedding. The workflow ends after the processed data and manifests are ready.
 
 ## Your decision points
 
@@ -179,8 +190,9 @@ multimodal embedding. The agent stops after the processed data and manifests are
 | Post-QC handoff | Confirm whether to start the final unattended batch |
 
 These are the only points that require scientific or operational input on the normal
-path. The agent reports failures and asks for a decision instead of silently changing
-data interpretation or execution settings.
+path. Runtime failures are reported as errors or structured findings. The LLM-assisted
+procedure presents the evidence and asks for a recovery decision instead of silently
+changing data interpretation or execution settings.
 
 ## Outputs
 

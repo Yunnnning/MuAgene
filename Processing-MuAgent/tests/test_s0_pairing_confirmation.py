@@ -1,4 +1,6 @@
 import pytest
+import anndata as ad
+import numpy as np
 
 from executor import pairing
 from executor.stages import s0_ingest
@@ -30,3 +32,17 @@ def test_confirmed_pairing_keeps_paired_branch():
 def test_disjoint_modalities_are_detected_as_unpaired():
     result = pairing.detect_pairing({"rna-1", "rna-2"}, {"atac-1", "atac-2"})
     assert result.status == "unpaired"
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_ingest_rejects_normalized_rna_counts(tmp_path, monkeypatch, sparse):
+    from scipy import sparse as sp
+
+    counts = np.array([[1.5, 2.0], [3.0, 4.25]])
+    rna = ad.AnnData(sp.csr_matrix(counts) if sparse else counts)
+    monkeypatch.setattr(s0_ingest._io, "detect_rna_format", lambda _: "h5ad")
+    monkeypatch.setattr(s0_ingest._io, "detect_filtered_status", lambda *a, **k: "filtered")
+    monkeypatch.setattr(s0_ingest._io, "load_rna_ingest", lambda *a, **k: (rna, None, None))
+
+    with pytest.raises(ValueError, match="raw integer counts"):
+        s0_ingest.run(tmp_path, {"rna_path": "normalized.h5ad"})

@@ -132,7 +132,6 @@ def build_environments_section(settings: dict[str, str | None]) -> dict[str, obj
         },
     }
 
-
 # Marker bracketing the conda-activation block we inject into child jobscripts.
 # Used to keep injection idempotent across repeated sanitize passes.
 PMA_ACTIVATION_MARKER = "# >>> PMA conda activation (injected) >>>"
@@ -870,25 +869,3 @@ def load_execution_settings(run_dir: Path | str) -> dict[str, object]:
             "must not run on the login node). In local mode it runs on this machine."
         ),
     }
-
-
-_RESOURCE_FAILURE_MARKERS = (
-    "out of memory",
-    "oom",
-    "memoryerror",
-    "cannot allocate memory",
-    "killed",
-    "signal 9",
-    "sigkill",
-    "walltime",
-    "time limit",
-    "exceeded memory",
-    "std::bad_alloc",
-    "memory allocation failed",
-)
-
-
-def looks_like_resource_failure(text: str) -> bool:
-    """True when stderr/log output suggests OOM or walltime rather than a logic error."""
-    lowered = text.lower()
-    return any(marker in lowered for marker in _RESOURCE_FAILURE_MARKERS)

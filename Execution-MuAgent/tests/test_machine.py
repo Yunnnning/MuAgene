@@ -25,7 +25,9 @@ _MANIFEST = (
 
 class MachineConfigTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        temporary_dir = tempfile.TemporaryDirectory(prefix="muagene-test-")
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp = Path(temporary_dir.name)
         envs = self.tmp / "workflow" / "envs"
         envs.mkdir(parents=True)
         (envs / "manifest.yaml").write_text(_MANIFEST)

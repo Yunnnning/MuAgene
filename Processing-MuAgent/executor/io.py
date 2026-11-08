@@ -81,7 +81,6 @@ def detect_rna_format(path: Path | str) -> str:
     p = Path(path)
     if p.is_dir():
         names = {x.name for x in p.iterdir()}
-        stems = {n.split(".")[0] for n in names}
         if ("matrix.mtx" in names or "matrix.mtx.gz" in names) and (
             "barcodes.tsv" in names or "barcodes.tsv.gz" in names
         ):

@@ -35,7 +35,7 @@ from .cleanup import (
     ensure_process_markers as _ensure_process_markers,
 )
 from .revision import (
-    qc_downstream_targets as _qc_downstream_targets,
+    qc_downstream_targets as _qc_downstream_targets,  # noqa: F401 — compatibility export
     invalidate_qc_downstream as _invalidate_qc_downstream,
     revise_dry_run as _revise_dry_run,
     regenerate_plan_deliverables as _regenerate_plan_deliverables,
@@ -46,7 +46,6 @@ from .gates import (
     enforce_context_gate as _enforce_context_gate,
     enforce_execution_mode_gate as _enforce_execution_mode_gate,
     infer_submit_target as _infer_submit_target,
-    missing_approvals as _missing_approvals,
     seed_approvals as _seed_approvals,
     prepare_submit_approvals as _prepare_submit_approvals,
 )

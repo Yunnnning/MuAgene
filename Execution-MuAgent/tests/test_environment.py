@@ -48,7 +48,9 @@ class ResolveSpecTests(unittest.TestCase):
 
 class FingerprintAndStatusTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        temporary_dir = tempfile.TemporaryDirectory(prefix="muagene-test-")
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp = Path(temporary_dir.name)
         self._state = self.tmp / "env_state.json"
         patcher = mock.patch.object(env, "_state_path", return_value=self._state)
         patcher.start()
@@ -112,7 +114,9 @@ class FingerprintAndStatusTests(unittest.TestCase):
 
 class ValidateAndReconcileTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        temporary_dir = tempfile.TemporaryDirectory(prefix="muagene-test-")
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp = Path(temporary_dir.name)
         patcher = mock.patch.object(env, "_state_path", return_value=self.tmp / "state.json")
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -192,7 +196,9 @@ class LockPreflightTests(unittest.TestCase):
     """Linux-only + lock-freshness guards for the CPU (lock) provider."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        temporary_dir = tempfile.TemporaryDirectory(prefix="muagene-test-")
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp = Path(temporary_dir.name)
         patcher = mock.patch.object(env, "_state_path", return_value=self.tmp / "state.json")
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -274,7 +280,9 @@ class CreateFromLockTests(unittest.TestCase):
     """Tests for the create-vs-update routing and broken-prefix cleanup in _create_from_lock."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        temporary_dir = tempfile.TemporaryDirectory(prefix="muagene-test-")
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp = Path(temporary_dir.name)
         self.lock = self.tmp / "processing.linux-64.lock"
         self.lock.write_text("@EXPLICIT\nhttps://x/a.conda\n")
         self.spec = env.EnvSpec(device="cpu", provider="lock", env_name="grn",
@@ -397,7 +405,9 @@ class NamedEnvUsableTests(unittest.TestCase):
     unusable so it re-provisions, while never false-negativing a healthy or unlocatable env."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        temporary_dir = tempfile.TemporaryDirectory(prefix="muagene-test-")
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp = Path(temporary_dir.name)
         self.envs = self.tmp / "envs"
 
     def _prefix(self, name, *, healthy):
@@ -434,7 +444,9 @@ class ReconcileStaleWarningTests(unittest.TestCase):
     """reconcile() emits env_stale_reprovision warning before updating a stale conda env."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        temporary_dir = tempfile.TemporaryDirectory(prefix="muagene-test-")
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp = Path(temporary_dir.name)
         patcher = mock.patch.object(env, "_state_path", return_value=self.tmp / "state.json")
         patcher.start()
         self.addCleanup(patcher.stop)

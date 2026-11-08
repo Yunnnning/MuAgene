@@ -1,10 +1,8 @@
-"""sha256 of inputs, env fingerprint, param snapshot hashing."""
+"""Input/parameter hashing and scientific tool-version collection."""
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -26,27 +24,6 @@ def sha256_bytes(data: bytes) -> str:
 
 def sha256_json(obj: Any) -> str:
     return sha256_bytes(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode())
-
-
-def env_fingerprint(tool_versions: dict[str, str]) -> str:
-    payload = {"tool_versions": tool_versions, "python": os.sys.version.split()[0]}
-    return sha256_json(payload)
-
-
-def git_sha(repo_dir: Path | str) -> str:
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if out.returncode == 0:
-            return out.stdout.strip()
-    except FileNotFoundError:
-        pass
-    return "nogit"
 
 
 def tool_versions() -> dict[str, str]:

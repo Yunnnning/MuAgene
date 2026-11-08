@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import yaml
 from click.testing import CliRunner
 
 from executor import cli

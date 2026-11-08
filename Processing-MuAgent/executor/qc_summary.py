@@ -33,7 +33,6 @@ import yaml
 from . import qc_tables as _qc_tables
 from .md_tables import fmt as _fmt
 from .md_tables import md_table as _md_table
-from .md_tables import md_table_cell as _md_table_cell
 
 
 @dataclass(frozen=True)
@@ -553,9 +552,7 @@ def _flow_chart_label(stage: str) -> str:
 
 
 def _preprocessing_flow_steps(
-    run_dir: Path,
     counts: dict[str, Any],
-    workflow_branch: str,
     *,
     include_final_stage: bool = True,
 ) -> list[dict[str, Any]]:
@@ -629,7 +626,7 @@ def _paired_shared_flow_counts(run_dir: Path, counts: dict[str, Any]) -> list[in
     from .run_paths import RunPaths
     A = RunPaths(run_dir).artifacts
     n_rows = len(_preprocessing_flow_steps(
-        run_dir, counts, "paired", include_final_stage=counts.get("rna_final") is not None,
+        counts, include_final_stage=counts.get("rna_final") is not None,
     ))
     shared: list[int | None] = [None] * n_rows
 
@@ -684,9 +681,7 @@ def _flow_section(
 
     paired = workflow_branch == "paired"
     shared_counts = _paired_shared_flow_counts(run_dir, counts) if paired else []
-    steps = _preprocessing_flow_steps(
-        run_dir, counts, workflow_branch, include_final_stage=include_final_stage,
-    )
+    steps = _preprocessing_flow_steps(counts, include_final_stage=include_final_stage)
 
     rows: list[list[Any]] = []
     for idx, step in enumerate(steps):
@@ -715,7 +710,6 @@ def _flow_figures(run_dir: Path, *, render: _FigRender = _DEFAULT_FIG_RENDER) ->
 def _ambient_section(
     run_dir: Path,
     params: dict[str, Any],
-    counts: dict[str, Any],
     *,
     render: _FigRender = _DEFAULT_FIG_RENDER,
 ) -> str:
@@ -876,7 +870,6 @@ def _override_warning_block(summary_json: Path) -> str:
 def _rna_section(
     run_dir: Path,
     params: dict[str, Any],
-    counts: dict[str, Any],
     *,
     render: _FigRender = _DEFAULT_FIG_RENDER,
 ) -> str:
@@ -1037,7 +1030,7 @@ def _qc_review_intro(run_name: str, run_dir: Path) -> str:
     return "\n".join(lines)
 
 
-def _qc_review_actions(branch: str) -> str:
+def _qc_review_actions() -> str:
     lines = [
         "## How to approve or revise",
         "",
@@ -1112,8 +1105,6 @@ def _doublet_section(
     rna_scored = calls["scrublet_score"].notna()
     atac_scored = calls["atac_doublet_score"].notna()
     both_scored = rna_scored & atac_scored
-    only_rna_scored = rna_scored & ~atac_scored
-    only_atac_scored = ~rna_scored & atac_scored
 
     # Per-detector totals (across all cells the detector saw)
     n_rna_flag_total = int(calls.loc[rna_scored, "scrublet_is_doublet"].fillna(False).sum())
@@ -1128,18 +1119,6 @@ def _doublet_section(
     atac_only_n = int(((~rna_flag_b) & (atac_flag_b)).sum())
     neither_n = int(((~rna_flag_b) & (~atac_flag_b)).sum())
     n_both = int(both_scored.sum())
-
-    # Per-modality doublet removals: compare S2/S1 post-QC cells to post-doublet cells
-    n_removed_rna = None
-    if counts.get("rna_qc_post") is not None and counts.get("rna_post_doublet") is not None:
-        n_removed_rna = counts["rna_qc_post"] - counts["rna_post_doublet"]
-    n_removed_atac = None
-    if counts.get("atac_qc_post") is not None and counts.get("atac_post_doublet") is not None:
-        n_removed_atac = counts["atac_qc_post"] - counts["atac_post_doublet"]
-    # Distinct flagged barcodes (in the union merged set) — this is what the
-    # raw overlap_summary.json previously called "n_removed".
-    n_distinct_flagged = int(((calls["scrublet_is_doublet"].fillna(False)) |
-                              (calls["atac_is_doublet"].fillna(False))).sum())
 
     overlap_summary = json.loads(overlap_path.read_text())
     policy = (_param(params, "s3_doublets.removal_policy")
@@ -1338,8 +1317,8 @@ def _qc_review_result_sections(
     return [
         _flow_section(run_dir, counts, workflow_branch, include_final_stage=False)
         + _flow_figures(run_dir, render=render),
-        _ambient_section(run_dir, params, counts, render=render),
-        _rna_section(run_dir, params, counts, render=render),
+        _ambient_section(run_dir, params, render=render),
+        _rna_section(run_dir, params, render=render),
         _atac_section(run_dir, params, counts, render=render),
         _doublet_section(run_dir, params, counts, render=render),
     ]
@@ -1359,7 +1338,7 @@ def build_qc_review(run_dir: Path | str) -> str:
     sections = [
         _qc_review_intro(run_dir.name, run_dir),
         *_qc_review_result_sections(run_dir, params, counts, render, branch),
-        _qc_review_actions(branch),
+        _qc_review_actions(),
     ]
     return "\n".join(sections).rstrip() + "\n"
 
@@ -1447,9 +1426,9 @@ def _html_flow_section(
 
 
 def _html_ambient_section(
-    run_dir: Path, params: dict[str, Any], counts: dict[str, Any],
+    run_dir: Path, params: dict[str, Any],
 ) -> str:
-    md = _ambient_section(run_dir, params, counts, render=_FigRender(embed_figures=False))
+    md = _ambient_section(run_dir, params, render=_FigRender(embed_figures=False))
     if "## Ambient RNA correction\n" not in md or "| parameter | value |" not in md:
         return f'<section class="qc-section qc-ambient">{_md_html(md)}</section>'
 
@@ -1484,14 +1463,14 @@ def _html_ambient_section(
 
 
 def _html_rna_section(
-    run_dir: Path, params: dict[str, Any], counts: dict[str, Any],
+    run_dir: Path, params: dict[str, Any],
 ) -> str:
     from .run_paths import RunPaths
     s1 = RunPaths(run_dir).stage_dir("s1_rna_qc")
     pre = s1 / "qc_metrics_pre.parquet"
     post = s1 / "qc_metrics_post.parquet"
     if not (pre.exists() and post.exists()):
-        return _md_html(_rna_section(run_dir, params, counts, render=_FigRender(embed_figures=False)))
+        return _md_html(_rna_section(run_dir, params, render=_FigRender(embed_figures=False)))
 
     pre_df = pd.read_parquet(pre)
     post_df = pd.read_parquet(post)
@@ -1635,8 +1614,8 @@ def build_qc_review_html_body(run_dir: Path | str) -> str:
         title,
         context_html,
         _html_flow_section(run_dir, counts, branch),
-        _html_ambient_section(run_dir, params, counts),
-        _html_rna_section(run_dir, params, counts),
+        _html_ambient_section(run_dir, params),
+        _html_rna_section(run_dir, params),
         _html_atac_section(run_dir, params, counts),
         _html_doublet_section(run_dir, params, counts, branch),
     ]

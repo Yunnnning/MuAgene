@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import anndata as ad
-import numpy as np
 import scanpy as sc
 
 from ..methods import qc_thresholds as _qct

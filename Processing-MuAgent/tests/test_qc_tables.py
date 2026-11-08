@@ -151,7 +151,6 @@ class SkipDisplayTests(unittest.TestCase):
 
 class FlowStepTests(unittest.TestCase):
     def test_preprocessing_flow_steps_split_rna_atac_qc(self):
-        from pathlib import Path
         from executor import qc_summary as qcs
 
         counts = {
@@ -160,9 +159,7 @@ class FlowStepTests(unittest.TestCase):
             "rna_post_doublet": 60, "atac_post_doublet": 60,
             "n_cells_joint": 60,
         }
-        steps = qcs._preprocessing_flow_steps(
-            Path("/tmp/run"), counts, "paired", include_final_stage=False,
-        )
+        steps = qcs._preprocessing_flow_steps(counts, include_final_stage=False)
         self.assertEqual([s["stage"] for s in steps], [
             "1. raw",
             "2. after RNA QC",

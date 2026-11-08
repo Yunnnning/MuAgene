@@ -1,7 +1,6 @@
 """Metadata ingestion: provided-file validation, recovery, minimal reconstruction."""
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 from typing import Any
 
@@ -53,20 +52,6 @@ def reconstruct_minimal(
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, sep="\t", index=False)
     return df
-
-
-def search_adjacent_metadata(input_dirs: list[Path]) -> list[dict[str, Any]]:
-    """Look for sibling metadata-ish files; return list of candidates with path + reason."""
-    hits: list[dict[str, Any]] = []
-    patterns = ["*metadata*", "*samples*", "GSE*_series_matrix*", "*.csv", "*.tsv"]
-    for d in input_dirs:
-        if not d.exists() or not d.is_dir():
-            continue
-        for pat in patterns:
-            for f in d.glob(pat):
-                if f.is_file() and f.stat().st_size > 0:
-                    hits.append({"path": str(f), "reason": f"glob:{pat}"})
-    return hits
 
 
 def unrecoverable_categories(source: str) -> list[str]:

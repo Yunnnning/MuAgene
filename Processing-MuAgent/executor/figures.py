@@ -73,7 +73,7 @@ QC_HIST_HSPACE = 0.50
 # Plan-default QC parameters — reference cutoff lines on explore histograms.
 # Single source of truth: executor/defaults.py (re-exported here so qc_explore and
 # the figure helpers keep importing these names from `executor.figures`).
-from .defaults import (  # noqa: E402
+from .defaults import (  # noqa: E402, F401 — QC-default compatibility exports
     DEFAULT_TOTAL_COUNTS_K_MAD,
     DEFAULT_N_GENES_K_MAD,
     DEFAULT_PCT_MT_K,
