@@ -752,12 +752,17 @@ def _read_tail(path: Path, max_bytes: int = 8000) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+# Whole-token match: a bare substring test let "oom" fire on "room"/"zoom"/"bloom",
+# and a false workflow_error_marker drives CONFIRMED_DEAD -> scancel of a healthy job.
+# A letter/digit on either side blocks a match; slurm's "oom_kill"/"oom-kill", "OOM:" hit.
+_MARKER_PATTERNS = tuple(
+    (m, re.compile(r"(?<![A-Za-z0-9])" + re.escape(m) + r"(?![A-Za-z0-9])", re.IGNORECASE))
+    for m in TERMINAL_ERROR_MARKERS
+)
+
+
 def _extract_markers(text: str) -> list[str]:
-    found: list[str] = []
-    for marker in TERMINAL_ERROR_MARKERS:
-        if marker.lower() in text.lower():
-            found.append(marker)
-    return found
+    return [marker for marker, pat in _MARKER_PATTERNS if pat.search(text)]
 
 
 def _workflow_complete(snapshot: dict[str, Any]) -> bool:

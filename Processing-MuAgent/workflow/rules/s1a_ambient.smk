@@ -21,16 +21,12 @@ rule s1a_ambient_propose:
     run:
         import json, yaml
         from pathlib import Path
+        from executor import provenance as _prov
         plan = json.loads(Path(input.plan).read_text())
-        method_val = (plan.get("stages", {}).get("s1a_ambient", {})
-                          .get("parameters", {}).get("method", {}).get("value", "auto"))
+        s1a_params = plan.get("stages", {}).get("s1a_ambient", {}).get("parameters", {})
         # User revisions made at plan review take precedence over the frozen plan.
         params_path = Path(params.run_dir) / "internal" / "parameters.yaml"
-        if params_path.exists():
-            pdata = yaml.safe_load(params_path.read_text()) or {}
-            override = pdata.get("s1a_ambient", {}).get("method", {}).get("value")
-            if override:
-                method_val = override
+        method_val = _prov.planned_value(params_path, s1a_params, "s1a_ambient", "method", "auto")
         _DESCRIPTIONS = {
             "auto":    "auto-select (SoupX if raw matrix present, else DecontX)",
             "decontx": "DecontX — filtered counts only (explicit)",
@@ -49,6 +45,7 @@ rule s1a_ambient_propose:
 rule s1a_ambient_execute:
     input:
         plan     = str(INTERNAL / "artifacts" / "p2_plan" / "preprocessing_plan.json"),
+        plan_review_done = str(INTERNAL / "checkpoints" / "plan_review.approved"),
         # Durable S0 marker, not the deletable rna_ingest.h5ad (read by path in-stage).
         rna      = str(INTERNAL / "artifacts" / "s0_ingest" / "validation_report.json"),
     output:

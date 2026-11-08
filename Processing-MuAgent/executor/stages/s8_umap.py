@@ -100,9 +100,9 @@ def run(run_dir: Path | str, plan: dict[str, Any], workflow_branch: str) -> dict
     params_path = paths.parameters_yaml
 
     p = plan["stages"]["s8_umap"]["parameters"]
-    min_dist = float(p["min_dist"]["value"])
-    spread = float(p["spread"]["value"])
-    seed = int(p["random_state"]["value"])
+    min_dist = float(_prov.planned_value(params_path, p, "s8_umap", "min_dist", 0.5))
+    spread = float(_prov.planned_value(params_path, p, "s8_umap", "spread", 1.0))
+    seed = int(_prov.planned_value(params_path, p, "s8_umap", "random_state", 42))
 
     has_rna = workflow_branch in ("paired", "unpaired", "rna_only")
     has_atac = workflow_branch in ("paired", "unpaired", "atac_only")

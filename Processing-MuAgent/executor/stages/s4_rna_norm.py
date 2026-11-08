@@ -68,9 +68,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     a = _load_rna_postqc(run_dir)
 
     p = plan["stages"]["s4_rna_norm"]["parameters"]
-    target_sum = p["target_sum"]["value"]
-    flavor = p["hvg_flavor"]["value"]
-    n_top_cap = int(p["hvg_n_top_genes"]["value"])
+    target_sum = _prov.planned_value(params_path, p, "s4_rna_norm", "target_sum", 1e4)
+    flavor = _prov.planned_value(params_path, p, "s4_rna_norm", "hvg_flavor", "seurat_v3")
+    n_top_cap = int(_prov.planned_value(params_path, p, "s4_rna_norm", "hvg_n_top_genes", 2000))
 
     # Guard: seurat_v3 requires raw counts
     if flavor == "seurat_v3":

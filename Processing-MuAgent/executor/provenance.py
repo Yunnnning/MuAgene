@@ -140,6 +140,30 @@ def effective_value(
     return default
 
 
+def planned_value(
+    path: Path | str,
+    plan_params: dict[str, Any],
+    stage: str,
+    name: str,
+    default: Any = None,
+) -> Any:
+    """Plan value for ``<stage>.<name>`` with only *user* revisions overlaid.
+
+    For stages that echo their resolved values back into parameters.yaml as
+    ``derived``/``default`` (e.g. S4 ``hvg_n_top_genes``, S6 ``rna_n_pcs``): a rerun
+    must not feed the previous run's resolved value back in as the new input, so
+    only a ``source=user`` entry (a ``revise``) overrides the frozen plan.
+    """
+    entry = load(path).get(f"{stage}.{name}")
+    if isinstance(entry, dict) and entry.get("source") == "user" \
+            and entry.get("value") is not None:
+        return entry["value"]
+    plan_entry = plan_params.get(name)
+    if isinstance(plan_entry, dict) and "value" in plan_entry:
+        return plan_entry["value"]
+    return default
+
+
 def effective_params(
     path: Path | str, plan_params: dict[str, Any], stage: str
 ) -> dict[str, Any]:

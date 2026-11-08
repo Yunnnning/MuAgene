@@ -19,11 +19,19 @@ PACKAGE_DIR = Path(__file__).resolve().parent.parent  # Processing-MuAgent/
 SNAKEFILE = PACKAGE_DIR / "workflow" / "Snakefile"
 
 
+def _with_package_on_pythonpath(env: dict[str, str]) -> None:
+    """Prepend PACKAGE_DIR to PYTHONPATH, keeping any inherited entries (site modules)."""
+    parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+    if str(PACKAGE_DIR) not in parts:
+        parts.insert(0, str(PACKAGE_DIR))
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+
+
 def unlock_snakemake(run_dir: Path, config_path: Path) -> None:
     """Run `snakemake --unlock` on the run's workdir (clears a stale lock; no execution)."""
     paths = RunPaths(run_dir)
     env = os.environ.copy()
-    env.setdefault("PYTHONPATH", str(PACKAGE_DIR))
+    _with_package_on_pythonpath(env)
     env.setdefault("PMA_REPO_ROOT", str(PACKAGE_DIR))
     paths.snakemake_workdir.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -51,7 +59,7 @@ def run_snakemake(args: list[str], run_dir: Path) -> None:
     Expected args shape from callers: ["--configfile", <path>, <target>].
     """
     env = os.environ.copy()
-    env.setdefault("PYTHONPATH", str(PACKAGE_DIR))
+    _with_package_on_pythonpath(env)
     env.setdefault("PMA_REPO_ROOT", str(PACKAGE_DIR))
     paths = RunPaths(run_dir)
     paths.snakemake_workdir.mkdir(parents=True, exist_ok=True)

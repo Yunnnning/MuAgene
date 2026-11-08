@@ -145,8 +145,10 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                                      "io.load_rna_ingest — no S0 re-run")})
 
     p = plan["stages"].get("s1a_ambient", {}).get("parameters", {})
-    method_choice = p.get("method", {}).get("value", "auto")
-    max_contam = float(p.get("max_contamination", {}).get("value", 1.0))
+    method_choice = str(_prov.planned_value(params_path, p, "s1a_ambient", "method",
+                                            "auto")).strip().lower()
+    max_contam = float(_prov.planned_value(params_path, p, "s1a_ambient",
+                                           "max_contamination", 1.0))
 
     if method_choice == "none":
         chosen = "none"
