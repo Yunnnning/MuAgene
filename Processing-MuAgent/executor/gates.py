@@ -57,6 +57,18 @@ def resolve_marker_gene_gate(run_dir: Path, *, defer: bool, skip: bool) -> None:
         raise click.ClickException(MARKER_GENE_GATE_MSG)
 
 
+def _configured_context_path(paths: RunPaths) -> Path | None:
+    """run.yaml `biological_context_path`, if set (a .md/.txt/.docx/.pdf report)."""
+    import yaml
+
+    try:
+        cfg = yaml.safe_load(paths.run_yaml.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    value = cfg.get("biological_context_path")
+    return Path(value) if value else None
+
+
 def enforce_context_gate(paths: RunPaths, no_context: bool) -> None:
     """Phase 1 biological-context gate (MANDATORY before any preprocessing).
 
@@ -65,9 +77,10 @@ def enforce_context_gate(paths: RunPaths, no_context: bool) -> None:
     Raises if the report is still the blank template and the caller did not pass
     --no-context.
     """
-    report_path = paths.biological_context_md
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    if not report_path.exists():
+    # Same resolution as p1_context.smk: run.yaml `biological_context_path` wins.
+    report_path = _configured_context_path(paths) or paths.biological_context_md
+    if report_path == paths.biological_context_md and not report_path.exists():
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         _ctx.write_template(report_path)
     if _ctx.is_unfilled_template(report_path) and not no_context:
         raise click.ClickException(

@@ -26,10 +26,18 @@ def test_emitted_code_literals_are_registered():
     """Every `code: "x"` / `code="x"` literal in the package is registered."""
     reg = _registry()
     pkg = _root() / "Execution-MuAgent" / "execution_muagent"
-    pat = re.compile(r"""code["']?\s*[:=]\s*["'](\w+)["']""")
+    keyword = re.compile(r"""code["']?\s*[:=]\s*["'](\w+)["']""")
+    # MonitorFinding("warning", "stall_suspected", ...) — positional severity, code.
+    positional = re.compile(
+        r"""MonitorFinding\(\s*(?:severity\s*=\s*)?["'](?:error|warning|info)["']\s*,\s*["'](\w+)["']""")
     seen: set[str] = set()
     for py in pkg.glob("*.py"):
-        seen |= set(pat.findall(py.read_text()))
+        text = py.read_text()
+        seen |= set(keyword.findall(text)) | set(positional.findall(text))
+    assert {"stall_suspected", "workflow_error_marker", "scheduler_completing"} <= seen, \
+        "scanner no longer sees positional MonitorFinding codes"
+    # environment.reconcile emits f"env_{status}" for the non-ok env_status values.
+    seen |= {"env_missing", "env_stale"}
     unregistered = seen - reg
     assert not unregistered, f"emitted finding codes not in registry: {sorted(unregistered)}"
 

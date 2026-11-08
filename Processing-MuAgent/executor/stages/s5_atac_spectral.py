@@ -120,9 +120,9 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     adata = _build_atac_working(run_dir, dst)
 
     p = plan["stages"]["s5_atac_spectral"]["parameters"]
-    n_components = int(p["n_components"]["value"])
-    max_top_peaks = int(p["max_top_peaks"]["value"])
-    drop_first = bool(p["drop_first"]["value"])
+    n_components = int(_prov.planned_value(params_path, p, "s5_atac_spectral", "n_components", 50))
+    max_top_peaks = int(_prov.planned_value(params_path, p, "s5_atac_spectral", "max_top_peaks", 50000))
+    drop_first = bool(_prov.planned_value(params_path, p, "s5_atac_spectral", "drop_first", True))
 
     # Tile matrix (peaks-free accessibility at fixed bin size)
     try:

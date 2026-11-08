@@ -29,6 +29,19 @@ def write_template(path: Path | str) -> None:
     p.write_text(TEMPLATE)
 
 
+def read_report_text(path: Path | str) -> str:
+    """Report text in template form. `.docx`/`.pdf` go through `doc_ingest` and are
+    canonicalised to the template lines that `parse_report` understands."""
+    p = Path(path)
+    if not p.exists():
+        return ""
+    if p.suffix.lower() in {".docx", ".pdf"}:
+        from . import doc_ingest
+        return doc_ingest.canonicalise_to_template(
+            doc_ingest.extract_fields(doc_ingest.read_document(p)))
+    return p.read_text()
+
+
 def is_unfilled_template(path: Path | str) -> bool:
     """True if the Biological Context Report exists but has no user-provided values.
 
@@ -39,7 +52,7 @@ def is_unfilled_template(path: Path | str) -> bool:
     p = Path(path)
     if not p.exists():
         return True
-    text = p.read_text()
+    text = read_report_text(p)
     parsed = parse_report(text)
     # Consider it "unfilled" only if ALL four non-optional fields are empty.
     required = ["organism", "tissue", "assay"]
@@ -132,7 +145,7 @@ def extract_context(
 ) -> dict[str, Any]:
     """Produce context_extraction.json payload."""
     report_path = Path(report_path)
-    report_text = report_path.read_text() if report_path.exists() else ""
+    report_text = read_report_text(report_path)
     parsed = parse_report(report_text)
     file_input_signals = file_input_signals or {}
 

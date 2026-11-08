@@ -61,10 +61,10 @@ def run(run_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     has_atac = branch in ("paired", "unpaired", "atac_only")
 
     s6_params = plan["stages"].get("s6_neighbors", {}).get("parameters", {})
-    n_pcs_param = s6_params.get("rna_n_pcs", {}).get("value", "auto")
-    n_pcs_max = int(s6_params.get("rna_n_pcs_max", {}).get("value", 50))
-    do_scale = bool(s6_params.get("rna_scale", {}).get("value", True))
-    n_neighbors = int(s6_params.get("n_neighbors", {}).get("value", 15))
+    n_pcs_param = _prov.planned_value(params_path, s6_params, "s6_neighbors", "rna_n_pcs", "auto")
+    n_pcs_max = int(_prov.planned_value(params_path, s6_params, "s6_neighbors", "rna_n_pcs_max", 50))
+    do_scale = bool(_prov.planned_value(params_path, s6_params, "s6_neighbors", "rna_scale", True))
+    n_neighbors = int(_prov.planned_value(params_path, s6_params, "s6_neighbors", "n_neighbors", 15))
 
     # --- RNA ---
     if has_rna:

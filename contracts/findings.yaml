@@ -101,7 +101,7 @@ findings:
     meaning: The target device env is absent.
     processing_action: policy=auto -> auto-provisioned; policy=manual -> run the printed provision-env command.
   env_stale:
-    severity: warning
+    severity: warning   # error at execute-spec preflight when machine policy = manual (blocks submit)
     emitted_by: validate-env / execute-spec preflight
     meaning: Env fingerprint differs from the required one (lock hash or pinned image_uri changed).
     processing_action: Reprovision (auto at preflight when policy=auto).
